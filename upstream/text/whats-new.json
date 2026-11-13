@@ -1,5 +1,8 @@
 {
   "_how": "One entry per released version, newest first. Each line is one bullet; **bold** works. Shown once after an update, and used as the release notes on GitHub. npm run release refuses a version with no entry here.",
+  "1.2.6": [
+    "**No false \"falling behind\" during Cloudflare checks** — clicks held back while a Cloudflare check waits no longer count as missed, so the card doesn't show \"Falling behind\" or suggest a Busy test when nothing else is using the account. Open the check and tick the box as usual."
+  ],
   "1.2.5": [
     "**Import: one sign-in window at a time** — accounts still sign in several at once in the background, but only one window comes up when a sign-in needs you. The site's own pop-ups on the sign-in page (like \"also available in the browser\") no longer count as a failed sign-in.",
     "**Smoother with many accounts** — plugin requests are spread out per proxy IP instead of all firing at once, which stopped Cloudflare checks on every IP in a 109-account test. Accounts whose proxy wasn't ready at launch move back to it once it is. Long-running plugins no longer slowly use more memory.",

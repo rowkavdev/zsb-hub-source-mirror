@@ -249,10 +249,11 @@ class Engine extends EventEmitter {
         return { due, missed: Math.max(0, due - ok.filter(x => x >= from).length) };
     }
 
-    // CC-SLOW-01 while an account misses 3+ of its recent batches; gone once it's down to 1.
+    // CC-SLOW-01 while an account misses 3+ of its recent batches; gone once it's down to 1. Not during a Cloudflare
+    // check on its route (that's CC-CF-01's notice; the window starts again once it passes).
     checkBehind() {
         for (const r of this.run.values()) {
-            if (r.refreshing || r.held) continue;
+            if (r.refreshing || r.held || this.errors.has(routeKey(r.route), 'CC-CF-01')) continue;
             const { due, missed } = this.behind(r);
             const on = this.errors.has(r.id, 'CC-SLOW-01');
             if (missed >= 3) {
@@ -288,6 +289,9 @@ class Engine extends EventEmitter {
                 r.firstDueAt = t + this.period(r); r.okTimes = [];   // the wait isn't "falling behind"
                 continue;
             }
+            // A Cloudflare check on its route: batches keep going out (the first one through clears it), but the ones
+            // the check stops aren't "falling behind" — that read as CC-SLOW-01 and pointed at a busy test.
+            if (this.errors.has(routeKey(r.route), 'CC-CF-01')) { r.firstDueAt = t + this.period(r); r.okTimes = []; }
             // A batch due before the next tick gets its own timer: firing on the 500 ms tick lost ~0.25 s per
             // batch, one whole batch every ~4 hours. The gap between sends is still never under the interval.
             const clickIn = r.lastClick + this.period(r) - t;
