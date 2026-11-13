@@ -1,0 +1,240 @@
+{
+  "id": "armory",
+  "name": "Armory",
+  "version": "1.14.4",
+  "description": "Star farming for the Armory: one list of accounts and the games they farm XP with (battles, jackpot, upgrade, Guess the Rank, blackjack, crash, dice and plinko (by the Games plugin when it is on, otherwise by the Armory itself)). Keeps every pass going. Credits are spent by hand in the Armory shop tab. Starts off, in practice mode.",
+  "minCore": "1.2.5",
+  "main": "index.js",
+  "tab": "Armory",
+  "defaultEnabled": false,
+  "settings": {
+    "accounts": {
+      "type": "accounts",
+      "label": "Star farming accounts"
+    },
+    "practice": {
+      "type": "boolean",
+      "label": "Practice mode",
+      "default": true,
+      "hidden": true
+    },
+    "passes": {
+      "type": "boolean",
+      "label": "Keep every pass slot active",
+      "default": true
+    },
+    "restart": {
+      "type": "boolean",
+      "label": "Redeem full passes (also while farming is off)",
+      "default": true
+    },
+    "farm_blackjack": {
+      "type": "boolean",
+      "label": "Blackjack",
+      "default": true
+    },
+    "farm_crash": {
+      "type": "boolean",
+      "label": "Crash",
+      "default": true
+    },
+    "farm_dice": {
+      "type": "boolean",
+      "label": "Dice",
+      "default": true
+    },
+    "farm_plinko": {
+      "type": "boolean",
+      "label": "Plinko",
+      "default": true
+    },
+    "coinflip": {
+      "type": "boolean",
+      "label": "Coinflip",
+      "default": false,
+      "hidden": true
+    },
+    "coinflipBet": {
+      "type": "number",
+      "label": "Bet (tokens)",
+      "default": 1,
+      "min": 1,
+      "hidden": true
+    },
+    "upgrade": {
+      "type": "boolean",
+      "label": "Upgrade",
+      "default": true
+    },
+    "jackpot": {
+      "type": "boolean",
+      "label": "Jackpot",
+      "default": true
+    },
+    "jackpot_low": {
+      "type": "boolean",
+      "label": "Low room",
+      "default": true
+    },
+    "jackpot_medium": {
+      "type": "boolean",
+      "label": "Medium room",
+      "default": true
+    },
+    "jackpot_high": {
+      "type": "boolean",
+      "label": "High room",
+      "default": true
+    },
+    "jackpot_ultra": {
+      "type": "boolean",
+      "label": "Ultra room",
+      "default": true
+    },
+    "jackpotCustom": {
+      "type": "boolean",
+      "label": "Pro accounts' private rooms",
+      "default": true
+    },
+    "jackpotTime": {
+      "type": "number",
+      "label": "Private round length (seconds)",
+      "default": 30,
+      "min": 30,
+      "max": 600
+    },
+    "jackpotSkinMax": {
+      "type": "number",
+      "label": "Put in skins worth up to ($)",
+      "default": 0.1,
+      "min": 0.01
+    },
+    "jackpotTokenSkins": {
+      "type": "boolean",
+      "label": "Make skins from tokens when short",
+      "default": true
+    },
+    "gtr": {
+      "type": "boolean",
+      "label": "Guess the Rank",
+      "default": true
+    },
+    "gtrBurst": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "jackpotMakeSkins": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "keepTokens": {
+      "type": "number",
+      "label": "Keep tokens",
+      "default": 0,
+      "min": 0
+    },
+    "coinflipBurst": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "upgradeBurst": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "jackpotBurst": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "battles": {
+      "type": "boolean",
+      "label": "Case battles",
+      "default": true
+    },
+    "battleCase": {
+      "type": "choice",
+      "label": "Case",
+      "dynamic": true,
+      "default": ""
+    },
+    "mode": {
+      "type": "choice",
+      "label": "Mode",
+      "default": "coop",
+      "options": [
+        {
+          "value": "coop",
+          "label": "Co-op"
+        },
+        {
+          "value": "standard",
+          "label": "Standard"
+        }
+      ]
+    },
+    "rounds": {
+      "type": "number",
+      "label": "Rounds (0 = full)",
+      "default": 0,
+      "min": 0
+    },
+    "package": {
+      "type": "boolean",
+      "label": "Use the case battle package (6 players, timeshift, 200 rounds)",
+      "default": true
+    },
+    "keepMoney": {
+      "type": "number",
+      "label": "Keep cash ($)",
+      "default": 0,
+      "min": 0
+    },
+    "turnMin": {
+      "type": "number",
+      "label": "Turn length (minutes)",
+      "default": 20,
+      "min": 5
+    },
+    "everyMin": {
+      "type": "number",
+      "label": "Check every (minutes)",
+      "default": 5,
+      "min": 1
+    },
+    "everyMs": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "turnMs": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "joinWaitMs": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "socketsAtOnce": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "crashWaitMs": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "crashAtOnce": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    }
+  },
+  "power": true
+}

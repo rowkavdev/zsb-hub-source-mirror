@@ -1,0 +1,107 @@
+{
+  "_how": "One entry per released version, newest first. Each line is one bullet; **bold** works. Shown once after an update, and used as the release notes on GitHub. npm run release refuses a version with no entry here.",
+  "1.2.5": [
+    "**Import: one sign-in window at a time** — accounts still sign in several at once in the background, but only one window comes up when a sign-in needs you. The site's own pop-ups on the sign-in page (like \"also available in the browser\") no longer count as a failed sign-in.",
+    "**Smoother with many accounts** — plugin requests are spread out per proxy IP instead of all firing at once, which stopped Cloudflare checks on every IP in a 109-account test. Accounts whose proxy wasn't ready at launch move back to it once it is. Long-running plugins no longer slowly use more memory.",
+    "**Armory: battles keep going** — a slow site connection retries with longer waits instead of ending the account's battle turn. Connections open a few at a time. Its own blackjack, crash, dice and plinko (when Games is off) wait out the site's crash pauses and play crash at most 30 accounts at once. Update Armory to 1.14.4 in the Plugins tab.",
+    "**Games: crash waits out the site's pauses** — when the site's crash game stalls, accounts wait for it on the same connection instead of reconnecting and giving up. At most 30 accounts play crash at once; the rest play their other games first and get a place when one frees up. Update Games to 1.8.0 in the Plugins tab."
+  ],
+  "1.2.4": [
+    "**Close alerts** — the alerts at the top have a × that closes them. One comes back only if its problem happens again. \"Set your main account\" stays until a main is set."
+  ],
+  "1.2.3": [
+    "**Premier ratings** — each account card shows its Premier rating in the header, in the site's rank colour. The Overview adds a total Premier tile, Premier per folder, and a Premier column you can sort by.",
+    "**Armory: case battles that never get stuck** — a battle nobody joined gets bots after 1 minute and is cancelled a minute later if it still hasn't started. Before hosting, each account checks for a battle it still has open: a waiting one is deleted, a running one is waited out. Accounts leave the lobby and watch rooms once they've joined. Games uses the same battles, so it gets this too. Update Armory to 1.10.0 in the Plugins tab.",
+    "**Opener: auto-favourite** — set the site's auto-open favourites from the Opener tab: low and high floats with their limits, up to 10 custom floats, and patterns with a blacklist. Update Opener to 1.6.0 in the Plugins tab.",
+    "**Decimal settings** — plugin number settings take small decimals like 0.0000001 and show them as typed."
+  ],
+  "1.2.2": [
+    "**Set your main account** — the hub now asks which site account is your main, and nothing clicks until it's set. Pick one of your hub accounts or paste its profile link, from the banner or Settings → Clicking. Accounts that were waiting start by themselves once it's set, and the Trader sends to it by default.",
+    "**Overview tab** — every account's totals in one place: clicking, income per hour, money, tokens, net worth and Pro, then totals per folder, accounts per rank, and a table of every account you can sort by any column.",
+    "**Trader: single trade** — send by hand from one account or many. Pick a preset (Tokens, Dragon Lores, Terminals, Genesis, Dead Hand) or type items one at a time — Enter adds the next. **Look up** shows what each account has, item by item, with Show all past 3. **Include favourited items** sends those too.",
+    "**Trader: routes** — the sender list shows each account's tokens, **Keep favourited items** now covers terminals as well as skins, and **Add a route to your main** sets one up in one click.",
+    "**Steadier when the site is busy** — the hub waits as long as the site asks before trying again, instead of retrying right away."
+  ],
+  "1.2.1": [
+    "**Folders** — group your accounts with **+ New folder**, then drag cards into them. Each folder opens and closes with a click on its heading and has its own Start all / Stop all.",
+    "**Drag to reorder** — grab a card by the dots at its top left (or its name bar with a mouse) and drop it where you want it. Folders move the same way. The arrow keys work too.",
+    "**Compact cards** — a button above the cards switches to small ones: name, income and Start/Stop. Each device remembers its own choice.",
+    "**Search** — with more than 8 accounts, a search box above the cards finds one by name.",
+    "**A shorter tab bar** — plugin tabs sit in Farming and Trading drop-downs.",
+    "**Pick a whole folder** — in plugin settings, the account list is grouped by folder, and one tick picks a whole folder.",
+    "**No more accidental highlighting** — clicking and dragging around the hub doesn't select text anymore (the Log tab still does)."
+  ],
+  "1.2.0": [
+    "**Troubleshoot** — the Copy report button is now Troubleshoot: copy the report, see every place each account is signed in (and sign the others out), and see why clicks are refused or missed, with a connection test that shows each route's IP and speed.",
+    "**Another clicker on your account? The hub notices** — every 15 minutes it compares the site's own click counter with what the hub sent. Anything extra was clicked from somewhere else, and the card says so (CC-AUTH-07). A Busy test (card menu) pauses the hub on one account for up to 2 minutes to check on the spot.",
+    "**New sign-in notice** — when an account is signed in from a new place, the card says so (CC-AUTH-06), with a button to look.",
+    "**Old hub sign-ins cleaned up** — logging in again left the old sign-in on the site; the hub now removes the ones it made itself (Settings → Remove old hub sign-ins).",
+    "**Waits exactly as long as the site asks** — after a refused batch, the next try goes when the site says it's allowed, instead of a guessed minute later.",
+    "**Same account twice** — two entries for one site account now show it (CC-AUTH-08): the newer one stops so they don't refuse each other's batches."
+  ],
+  "1.1.2": [
+    "**Fewer \"falling behind\" warnings with many accounts** — the site also limits how many batches one IP sends at the same moment. Accounts that share an IP now take turns across the minute instead of clicking together, and keep their turns after a refusal.",
+    "**Margins come back down** — a \"too fast\" from that IP-wide limit no longer adds to an account's wait between batches, and waits that grew large ease back within a few hours.",
+    "**Clearer reports** — the report now says which connection each account uses (this PC or proxy N) and which accounts share an IP."
+  ],
+  "1.1.1": [
+    "**No more false CC-API-01** — when the site turned down something a plugin asked for (a bet, a game at its daily limit, not enough money), the account showed CC-API-01 and \"update the app\". The plugin handles those answers itself; they now only go in the log."
+  ],
+  "1.1.0": [
+    "**Open check opens the right window** — with proxies, each connection has its own Cloudflare check. \"Open check\" on a card, the banner or the notification now opens that connection's window, not this PC's.",
+    "**The clicking count includes your proxies** — the top bar now counts 20 for each exit IP (this PC's and each proxy's), so it shows e.g. 25/40 instead of 25/20."
+  ],
+  "1.0.9": [
+    "**Imports sign in on this PC** — every imported account now signs in through your own connection, then spreads over your proxies by itself (20 per IP), like any new account.",
+    "**Proxies with a password fixed** — on a proxy that needs a username and password, a new sign-in could end in \"signed in, but the new session never worked\". Fixed; a failure now also shows the proxy's last answer."
+  ],
+  "1.0.8": [
+    "**Importing onto proxies fixed** — accounts signed in through a proxy could end in \"no answer after Login\": the new sign-in was checked without a Cloudflare pass, which proxies often need. It is now checked the same way the account clicks.",
+    "**The site's own reasons** — a wrong password or a banned account now shows the site's message straight away, and a refused check is simply tried again.",
+    "**Two-factor and unconfirmed emails** — an account with a two-factor code opens its sign-in window so you can type the code; one whose email isn't confirmed yet says so instead of waiting."
+  ],
+  "1.0.7": [
+    "**Import fixed** — only the first account signed in and the rest timed out on some setups: the importer pressed the site's cookie-banner button instead of Login. It now presses only Login, once the site lets it.",
+    "**Sign-in checks** — when the site wants you to tick its check, the sign-in window comes to the front sooner and flashes in the taskbar.",
+    "**Stop works at once** — Stop on the import banner cancels the account signing in now, instead of waiting for it to finish.",
+    "**Clearer reasons** — an account that couldn't sign in now says why (the check never passed, too many sign-ins, or no answer)."
+  ],
+  "1.0.6": [
+    "**New plugin: Armory** — farms Armory stars on the accounts you pick: case battles (full rounds, your accounts host and join each other, or the bot for a single account), jackpot rounds, upgrades and Guess the Rank. Full passes are redeemed for their credits even while it's off.",
+    "**Armory shop** — its own tab with everything laid out: type an amount, press Buy, and pick which accounts buy it. Credits are never spent by themselves.",
+    "**New plugin: Games** — plays plinko, dice, crash and blackjack at the smallest bets that reach each reward tier worth more than the expected loss, and stops at each game's daily limit.",
+    "**New plugin: Opener** — a tool, not a schedule: Preview shows what it would do; Open now buys a case, capsule or collection you choose, opens it all, and sells the drops under a price you set (or keeps them).",
+    "**Converter:** a new step upgrades tokens into Dragon Lores (non-Pro, Pro or both accounts; those accounts skip the Armory's upgrades). Non-Pro accounts lost auto-sell on the site, so the Converter and Opener now open into the inventory and sell the drops before it's 90% full.",
+    "**On / Off with Live and Practice:** every plugin that plays or spends has the same switch. Practice only shows what it would do; On works in Live.",
+    "**Missions page:** one row per mission in plain words, with how many accounts have done it and what gets it done.",
+    "**Plugin settings on their own pages** — Monthly pass and Rewards included (they also get an On / Off switch); the Plugins tab has an Open button for each.",
+    "**New plugin: Proxy manager** — paste your proxies (HTTP with or without a password, SOCKS5 without) or WireGuard configs (each runs through a small helper the app downloads once, checked against its published checksum) and accounts are spread over them, 20 per exit IP, so one install can click more than 20. Pin an account to a proxy if you like; a proxy that stops working pauses only its accounts until it works again.",
+    "**Import accounts** — the new Import button takes a pasted email:password list (commas, tabs, semicolons all work), shows what it understood, then signs the accounts in one by one, each through a proxy with room. Their passwords are kept sealed on this PC so they can sign in again by themselves when a session ends.",
+    "**Site maintenance:** when case-clicker.com is under maintenance the hub says so once, pauses clicking and plugins, and carries on by itself when the site is back.",
+    "**Small windows:** account cards, the tab strip and popups now fit narrow and short windows — no more buttons sticking out of the cards."
+  ],
+  "1.0.5": [
+    "**Fewer \"too fast\" warnings:** 1.0.4 sent each batch exactly 60 s after the last one, and the site sometimes counted that as too soon. Batches now leave a small safety gap that grows by itself on accounts the site turns away, and shrinks again when all is well.",
+    "A batch the site turns away now waits for the next slot instead of retrying straight away (those retries were turned away too)."
+  ],
+  "1.0.4": [
+    "**Plugins can now be installed and updated from the Plugins tab** (Get more / Update). Every download is signed and checked before it's installed, and a plugin fix no longer needs a new app version.",
+    "**Linux:** one command installs ZSB Hub on a Linux desktop or VPS with a desktop, and it updates itself like the Windows app.",
+    "Clicks now go out exactly on time. Before, each batch slipped a fraction of a second, which cost about one batch every 4 hours.",
+    "**Settings > Help > Get test builds** gets new versions early (they may have bugs).",
+    "Copy report leaves out the routine \"Vault collected\" lines so the useful ones fit."
+  ],
+  "1.0.3": [
+    "**Plugins tab is now a plugin manager:** plugins that are on and ones you can turn on, each with a Settings window.",
+    "**New: Rewards** claims ready /rewards tiers, and **Monthly pass** claims pass tiers (Free, Pro or both). Both start with no accounts chosen, so pick which accounts claim in Settings. Pick All accounts to include ones you add later.",
+    "After a restart, accounts wait out their click cooldown (counted from the last batch sent, even if the app was closed mid-batch) instead of clicking straight away.",
+    "Cases per hour now counts whole clicks per case (30% is one case every 4 clicks), so the estimate matches what you get."
+  ],
+  "1.0.2": [
+    "**Anonymous usage stats:** about once an hour the app sends how many accounts are clicking, income per hour, error codes and the app version, so problems show up without anyone having to send a report. Never account names, logins or anything that says who you are.",
+    "See exactly what's sent, or turn it off, in **Settings > App**."
+  ],
+  "1.0.1": [
+    "**What's new:** the What's new panel. After each update it shows what changed, once. Open it again any time from Settings."
+  ]
+}

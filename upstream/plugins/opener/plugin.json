@@ -1,0 +1,156 @@
+{
+  "id": "opener",
+  "name": "Opener",
+  "version": "1.6.0",
+  "description": "A tool for opening cases, capsules or collections on the accounts you choose: Preview shows what it would do, Open now buys with the cash above your keep amounts (or uses what is in stock), opens it all and keeps or sells the drops. Tracks XP and rank-ups.",
+  "minCore": "1.2.3",
+  "main": "index.js",
+  "tab": "Opener",
+  "defaultEnabled": false,
+  "settings": {
+    "accounts": {
+      "type": "accounts",
+      "label": "Accounts"
+    },
+    "item": {
+      "type": "choice",
+      "label": "Item",
+      "dynamic": true,
+      "default": ""
+    },
+    "source": {
+      "type": "choice",
+      "label": "Source",
+      "default": "buy",
+      "options": [
+        {
+          "value": "buy",
+          "label": "Buy"
+        },
+        {
+          "value": "owned",
+          "label": "From stock"
+        }
+      ]
+    },
+    "maxPrice": {
+      "type": "number",
+      "label": "Max price each ($, 0 = no limit)",
+      "default": 0,
+      "min": 0
+    },
+    "keepMoney": {
+      "type": "number",
+      "label": "Keep cash ($)",
+      "default": 0,
+      "min": 0
+    },
+    "keepPct": {
+      "type": "number",
+      "label": "Keep % of cash",
+      "default": 0,
+      "min": 0,
+      "max": 100
+    },
+    "spendPerRun": {
+      "type": "number",
+      "label": "Most to spend per Open now ($, 0 = no limit)",
+      "default": 0,
+      "min": 0
+    },
+    "drops": {
+      "type": "choice",
+      "label": "Drops",
+      "default": "money",
+      "options": [
+        {
+          "value": "money",
+          "label": "Sell for cash"
+        },
+        {
+          "value": "tokens",
+          "label": "Sell for tokens"
+        },
+        {
+          "value": "keep",
+          "label": "Keep"
+        }
+      ]
+    },
+    "keepOver": {
+      "type": "number",
+      "label": "Sell drops worth under ($, 0 = sell all)",
+      "default": 0,
+      "min": 0
+    },
+    "lanes": {
+      "type": "number",
+      "label": "Accounts opening at once",
+      "default": 1,
+      "min": 1,
+      "max": 5
+    },
+    "exclusive": {
+      "type": "boolean",
+      "label": "Pause other plugins on these accounts until it's done (clicking goes on)",
+      "default": false
+    },
+    "favSet": {
+      "type": "boolean",
+      "label": "Set auto-favourite from here",
+      "help": "Off: each account keeps the favourite rules set on the site. On: these rules go to every account before it opens. Favourited drops are never sold.",
+      "default": false
+    },
+    "favLow": {
+      "type": "boolean",
+      "label": "Favourite low floats",
+      "default": true
+    },
+    "lowFloat": {
+      "type": "number",
+      "label": "Low floats: under",
+      "default": 0.0000001,
+      "min": 0,
+      "max": 0.1
+    },
+    "favHigh": {
+      "type": "boolean",
+      "label": "Favourite high floats",
+      "default": true
+    },
+    "highFloat": {
+      "type": "number",
+      "label": "High floats: over",
+      "default": 0.99999,
+      "min": 0.9,
+      "max": 1
+    },
+    "favCustom": {
+      "type": "boolean",
+      "label": "Favourite custom floats",
+      "default": false
+    },
+    "customFloats": {
+      "type": "tags",
+      "label": "Custom floats",
+      "placeholder": "e.g. 0.123456, then Enter",
+      "help": "Digits and one dot, up to 20 characters, at most 10."
+    },
+    "favPatterns": {
+      "type": "boolean",
+      "label": "Favourite patterns, gems and tiers",
+      "default": true
+    },
+    "patternBlacklist": {
+      "type": "tags",
+      "label": "Never favourite these patterns",
+      "placeholder": "e.g. Blue Gem, then Enter",
+      "help": "Pattern names as the site writes them."
+    },
+    "turnMs": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    }
+  }
+}

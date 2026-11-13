@@ -1,0 +1,45 @@
+{
+  "id": "pass",
+  "name": "Monthly pass",
+  "version": "1.3.0",
+  "description": "Claims ready monthly pass tiers on the accounts you choose — the free track, the Pro track or both.",
+  "minCore": "1.0.6",
+  "main": "index.js",
+  "defaultEnabled": false,
+  "settings": {
+    "on": {
+      "type": "boolean",
+      "label": "On",
+      "default": true
+    },
+    "accounts": {
+      "type": "accounts",
+      "label": "Accounts"
+    },
+    "track": {
+      "type": "choice",
+      "label": "Tracks",
+      "default": "free",
+      "options": [
+        {
+          "value": "free",
+          "label": "Free"
+        },
+        {
+          "value": "pro",
+          "label": "Pro"
+        },
+        {
+          "value": "both",
+          "label": "Both"
+        }
+      ]
+    },
+    "checkEveryMin": {
+      "type": "number",
+      "label": "Check every (minutes)",
+      "default": 10
+    }
+  },
+  "tab": "Pass"
+}

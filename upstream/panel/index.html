@@ -1,0 +1,46 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'self'; style-src 'self'; script-src 'self'; img-src 'self' data: https://case-clicker.com">
+<title>ZSB Hub</title>
+<link rel="icon" href="data:,">
+<link rel="stylesheet" href="panel.css">
+</head>
+<body>
+<header class="top">
+  <div class="brand"><span class="logo" aria-hidden="true"></span><span data-t="app.name"></span> <span id="version" class="stage"></span></div>
+  <div id="summary" class="summary"></div>
+  <div class="actions">
+    <button id="startAll" class="ghost" data-t="header.startAll"></button>
+    <button id="stopAll" class="ghost" data-t="header.stopAll"></button>
+    <button id="report" class="ghost" data-t="header.report" data-t-title="header.report.tip"></button>
+    <button id="import" class="ghost" data-t="header.import" data-t-title="header.import.tip"></button>
+    <button id="add" class="primary" data-t="header.add"></button>
+  </div>
+</header>
+
+<div id="banners"></div>
+
+<nav id="tabs" class="tabs" role="tablist"></nav>
+
+<main>
+  <section id="tab-accounts" class="tab"></section>
+  <section id="tab-overview" class="tab" hidden></section>
+  <section id="tab-plugins" class="tab" hidden></section>
+  <section id="tab-plugin" class="tab" hidden></section>
+  <section id="tab-log" class="tab" hidden>
+    <div class="log-tools"><label><input type="checkbox" id="logProblems"> <span data-t="log.problemsOnly"></span></label></div>
+    <div id="log" class="log"></div>
+  </section>
+  <section id="tab-settings" class="tab" hidden></section>
+</main>
+
+<div id="trouble" class="modal" hidden><div class="modal-box trouble" role="dialog" aria-modal="true" aria-labelledby="troubleTitle"></div></div>
+<div id="modal" class="modal" hidden><div class="modal-box" role="dialog" aria-modal="true"></div></div>
+<div id="toast" class="toast" hidden></div>
+
+<script src="panel.js"></script>
+</body>
+</html>

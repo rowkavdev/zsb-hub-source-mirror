@@ -1,0 +1,15 @@
+{
+  "name": "clicker",
+  "productName": "ZSB Hub",
+  "version": "1.2.5",
+  "description": "ZSB Hub: case-clicker auto clicker with plugins",
+  "main": "main.js",
+  "private": true,
+  "dependencies": {
+    "electron-updater": "^6.8.11"
+  },
+  "releaseStage": "beta",
+  "releasesRepo": "GothGirlZSB/zsb-hub-releases",
+  "statsUrl": "https://zsb-stats.zsb-2bc.workers.dev/v1/report",
+  "pluginCatalogUrl": "https://raw.githubusercontent.com/GothGirlZSB/zsb-hub-releases/main/plugins/"
+}
