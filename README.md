@@ -2,7 +2,7 @@
 
 Private, versioned snapshots of the application files shipped in the stable ZSB Hub Linux releases. Browse the desktop code, inspect bundled plugins, or compare how the Hub changes between releases.
 
-[Browse the source](upstream/) · [Current snapshot metadata](upstream-release.json) · [Release tags](../../tags) · [Sync history](../../actions/workflows/sync.yml)
+[Browse the source](upstream/) · [Current snapshot metadata](upstream-release.json) · [Release tags](https://github.com/rowkavdev/zsb-hub-source-mirror/tags) · [Sync history](https://github.com/rowkavdev/zsb-hub-source-mirror/actions/workflows/sync.yml)
 
 ## Find your way around
 
@@ -24,7 +24,7 @@ git fetch --tags
 git diff upstream-v1.2.8 upstream-v1.2.9 -- upstream/
 ```
 
-[Compare 1.2.8 and 1.2.9 on GitHub](../../compare/upstream-v1.2.8...upstream-v1.2.9)
+[Compare 1.2.8 and 1.2.9 on GitHub](https://github.com/rowkavdev/zsb-hub-source-mirror/compare/upstream-v1.2.8...upstream-v1.2.9)
 
 ## How the mirror updates
 
