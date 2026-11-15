@@ -1,14 +1,14 @@
 {
   "repository": "GothGirlZSB/zsb-hub-releases",
-  "tag": "v1.2.8",
-  "releaseId": 445701281,
-  "publishedAt": "2026-11-15T00:27:09Z",
-  "releaseUrl": "https://github.com/GothGirlZSB/zsb-hub-releases/releases/tag/v1.2.8",
+  "tag": "v1.2.9",
+  "releaseId": 445726792,
+  "publishedAt": "2026-11-15T01:14:44Z",
+  "releaseUrl": "https://github.com/GothGirlZSB/zsb-hub-releases/releases/tag/v1.2.9",
   "asset": {
-    "id": 749259010,
+    "id": 749368829,
     "name": "ZSB-Hub-linux-x64.tar.gz",
-    "size": 113122236,
-    "digest": "sha256:d022abf3c5ddce39c90201d83344d8e2a7d4014a92a5b1c58fafc7df642109e2"
+    "size": 113123372,
+    "digest": "sha256:99819f2cede3490bcae166efdd7e21e596786c1e9df73263cffe07a88e7dd847"
   },
   "fileCount": 55
 }

@@ -31,6 +31,18 @@ const busy = new Set();      // accounts in a trade right now
 // Routes come first (a tester, 2026-11-14): a pair another plugin has tied up asks that plugin for the accounts
 // (ctx.accounts.want) and checks again every WANT_RETRY_MS; the Armory hands them over once what it has going ends.
 const WANT_RETRY_MS = 5000;
+// Single trades and Send to many ask for every account in them the same way (a tester 2026-11-15: 21 Dragon Lore
+// senders all "waiting — star farming") and go right away.
+const LOCKED = /locked|another action|wait a moment/i;   // the site's ways of saying the account is busy this moment
+const LOCK_RETRY_MS = 2000, LOCK_MAX_MS = 60000;
+const oneWants = new Set();   // accounts a single trade / Send to many asked for (the route check leaves these alone)
+function askFor(ids, why) {
+    if (!ctx.accounts.want) return;
+    for (const id of ids) { ctx.accounts.want(id, why); oneWants.add(id); }
+}
+function giveBack(ids) {
+    for (const id of ids) { oneWants.delete(id); if (ctx.accounts.want && !wanting.has(id)) ctx.accounts.want(id, null); }
+}
 const wanting = new Map();   // account id -> what it's wanted for
 const said = new Set();      // pairs whose wait was logged (said once until the trade happens)
 let running = false, lastRun = 0, rerun = false;
@@ -123,7 +135,7 @@ async function execute(from, to, sending, tokens, sMe, fromName, toName) {
         const rUid = await userId(to); sUid = await userId(from);
         const cr = await ctx.request(from, '/api/trading', { method: 'POST' });
         tradeId = cr.kind === 'ok' && cr.json && cr.json._id;
-        if (!tradeId) throw new Error(`couldn't create the trade (HTTP ${cr.status})`);
+        if (!tradeId) throw new Error(`couldn't create the trade (${(cr.json && (cr.json.error || cr.json.message)) || 'HTTP ' + cr.status})`);
         [sSock, rSock] = await Promise.all([ctx.socket(from), ctx.socket(to)]);
         sSock.emit('watchTrade', tradeId);
         if (!await sSock.wait(['tradeInfo'], 8000)) throw new Error('sender could not open the trade');
@@ -415,11 +427,28 @@ function oneProblem() {
 }
 
 // One sender's trade: works out what it sends, then sends it (in practice, only says what it would).
-async function sendFrom(from, to, accts, terms, want, tokens, withFavs) {
+async function sendFrom(from, to, accts, terms, want, tokens, withFavs, prog) {
     const fromName = accts.get(from).name, toName = accts.get(to).name;
     if (!accts.get(from).healthy) return { ok: false, skip: true, text: `${fromName} isn't clicking.` };
-    const other = ctx.accounts.busy && (ctx.accounts.busy(from) || ctx.accounts.busy(to));
-    if (other || busy.has(from) || busy.has(to)) return { ok: false, text: other ? `${fromName}: waiting — ${other.what} (${other.plugin}). Try again in a moment.` : `${fromName}: in a route trade right now. Try again in a moment.` };
+    // A trade you start goes now. Other plugins' marks (the Armory's star farming, Games, the Opener) cover whole turns,
+    // but the site only locks an account for the moment one action is in flight, so their marks aren't waited on: the
+    // accounts were asked for when the send started (nothing new starts on them), and a "locked" answer is tried again
+    // every LOCK_RETRY_MS for up to LOCK_MAX_MS. Only a route trade on the same account (the Trader's own) is waited out.
+    const practice = ctx.power.practice(), end = Date.now() + LOCK_MAX_MS;
+    while (busy.has(from) || busy.has(to)) {
+        if (ctx.stopping) return { ok: false, text: `${fromName}: the Trader was turned off.` };
+        if (Date.now() > end) return { ok: false, text: `${fromName}: still in a route trade after a minute — try again.` };
+        if (prog) prog(`waiting for a route trade on ${fromName}`);
+        await ctx.sleep(500);
+    }
+    for (;;) {
+        const r = await sendFromNow(from, to, accts, terms, want, tokens, withFavs, fromName, toName);
+        if (!r.locked || Date.now() > end || ctx.stopping) return r;
+        if (prog) prog(`the site says ${fromName} or ${toName} is busy for a moment — trying again`);
+        await ctx.sleep(LOCK_RETRY_MS);
+    }
+}
+async function sendFromNow(from, to, accts, terms, want, tokens, withFavs, fromName, toName) {
     const [sMe, rMe] = await Promise.all([getJson(from, '/api/me'), getJson(to, '/api/me')]);
     if (rMe.dailyTradesLeft != null && num(rMe.dailyTradesLeft) <= 0) return { ok: false, stop: true, text: `${toName} has no received trades left today.` };
     const pro = sMe.membership === 'pro', cap = num(sMe.tradeItems) || (pro ? 200 : 50), held = Math.floor(num(sMe.tokens));
@@ -468,7 +497,7 @@ async function sendFrom(from, to, accts, terms, want, tokens, withFavs) {
     try {
         const rec = await execute(from, to, items, tk, sMe, fromName, toName);
         if (rec.ok && inv && inv.aid === from) { for (const x of items) inv.sel.delete(x._id); inv.items = inv.items.filter(x => !items.some(y => y._id === x._id)); }
-        return rec.ok ? { ok: true, what, note } : { ok: false, text: `${fromName}: the trade didn't go through — ${rec.why}` };
+        return rec.ok ? { ok: true, what, note } : { ok: false, locked: LOCKED.test(rec.why || ''), text: `${fromName}: the trade didn't go through — ${rec.why}` };
     } finally { mark(false); }
 }
 
@@ -479,16 +508,22 @@ async function sendOne() {
     const terms = oneTerms(), want = amount(S('oneCount'), true), tokens = amount(S('oneTokens'), false), withFavs = !!S('oneFavs');
     const practice = ctx.power.practice();
     const me = one = { t: Date.now(), running: true, done: 0, total: ids.length, results: [], text: ids.length > 1 ? `Getting it ready… 0/${ids.length}` : 'Getting it ready…' };
+    const asked = practice ? [] : [...new Set([to, ...ids])];
+    askFor(asked, `single trade to ${toName}`);
+    try {
     for (const id of ids) {
         if (ctx.stopping) break;
         let r;
-        try { r = await sendFrom(id, to, accts, terms, want, tokens, withFavs); } catch (e) { r = { ok: false, text: `${accts.get(id).name}: ${e.message}` }; }
+        const head = ids.length > 1 ? `${practice ? 'Working it out' : 'Sending'}… ${me.done}/${ids.length} · ` : '';
+        try { r = await sendFrom(id, to, accts, terms, want, tokens, withFavs, (w) => { me.text = head + w[0].toUpperCase() + w.slice(1) + '…'; }); } catch (e) { r = { ok: false, text: `${accts.get(id).name}: ${e.message}` }; }
+        giveBack(asked.filter(x => x === id && x !== to));
         const name = accts.get(id).name;
         me.results.push({ name, ...r, text: r.ok ? `${practice ? 'would send' : 'sent'} ${r.what}${r.note}` : r.text });
         me.done++;
         if (ids.length > 1) me.text = `${practice ? 'Working it out' : 'Sending'}… ${me.done}/${ids.length}`;
         if (r.stop) break;
     }
+    } finally { giveBack(asked); }
     const ok = me.results.filter(r => r.ok), skipped = me.results.filter(r => r.skip), failed = me.results.filter(r => !r.ok && !r.skip);
     if (ids.length === 1 && me.results.length === 1) {
         const r = me.results[0];
@@ -534,6 +569,9 @@ async function sendFan() {
     const practice = ctx.power.practice();
     const me = fan = { t: Date.now(), running: true, done: 0, total: ids.length, results: [], text: `Getting it ready… 0/${ids.length}` };
     let left = null;
+    const asked = practice ? [] : [...new Set([from, ...ids])];
+    askFor(asked, `send to many from ${fromName}`);
+    try {
     try { left = Math.floor(num((await getJson(from, '/api/me')).tokens)); } catch (_) {}
     for (const id of ids) {
         if (ctx.stopping) break;
@@ -541,13 +579,15 @@ async function sendFan() {
         let r;
         if (left != null && left < tk) r = { ok: false, skip: true, text: `not sent: ${fromName} has ${count(left)} tokens left` };
         else {
-            try { r = await sendFrom(from, id, accts, [], 'all', tk, false); } catch (e) { r = { ok: false, text: e.message }; }
+            try { r = await sendFrom(from, id, accts, [], 'all', tk, false, (w) => { me.text = `Sending… ${me.done}/${ids.length} · ${w[0].toUpperCase() + w.slice(1)}…`; }); } catch (e) { r = { ok: false, text: e.message }; }
+            giveBack(asked.filter(x => x === id && x !== from));
             if (r.ok && left != null) left -= tk;
         }
         me.results.push({ name, ok: r.ok, skip: r.skip, text: r.ok ? `${practice ? 'would get' : 'got'} ${count(tk)} tokens${r.note || ''}` : String(r.text || '').replace(fromName + ': ', '') });
         me.done++;
         me.text = `${practice ? 'Working it out' : 'Sending'}… ${me.done}/${ids.length}`;
     }
+    } finally { giveBack(asked); }
     const ok = me.results.filter(r => r.ok), failed = me.results.filter(r => !r.ok);
     me.text = practice ? `Practice — ${ok.length} of ${ids.length} would get ${count(tk)} tokens from ${fromName} (${count(ok.length * tk)} in all)${failed.length ? ` · ${failed.length} wouldn't` : ''}. Set the mode to Live to send.`
         : `${ok.length} of ${ids.length} got ${count(tk)} tokens from ${fromName} (${count(ok.length * tk)} in all)${failed.length ? ` · ${failed.length} not sent` : ''}.`;
@@ -595,7 +635,7 @@ async function check() {
         if (rerun) { rerun = false; setTimeout(() => { if (!ctx.stopping && ctx.power.live()) check(); }, 1000); }
         else if (waited) setTimeout(() => { if (!ctx.stopping && ctx.power.live()) check(); }, wantNow.size ? WANT_RETRY_MS : WAIT_RETRY_MS);   // a busy account: try again soon
         // Asks for accounts no pair waits on any more are taken back.
-        for (const id of wanting.keys()) if (!wantNow.has(id) && ctx.accounts.want) ctx.accounts.want(id, null);
+        for (const id of wanting.keys()) if (!wantNow.has(id) && !oneWants.has(id) && ctx.accounts.want) ctx.accounts.want(id, null);
         wanting.clear(); for (const [id, w] of wantNow) wanting.set(id, w);
     }
 }
