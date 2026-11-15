@@ -1,7 +1,35 @@
-# ZSB Hub source mirror
+# ZSB Hub Source Mirror
 
-Private reference snapshots of the application files shipped in the public [ZSB Hub Linux releases](https://github.com/GothGirlZSB/zsb-hub-releases/releases). The original files are under `upstream/` and the release and archive digest are recorded in `upstream-release.json`. Each imported release gets an `upstream-vX.Y.Z` Git tag for comparison.
+Private, versioned snapshots of the application files shipped in the stable ZSB Hub Linux releases. Browse the desktop code, inspect bundled plugins, or compare how the Hub changes between releases.
 
-The mirror starts at the latest stable release. GitHub Actions checks every six hours for newer stable releases with a Linux x64 archive and imports them in publication order. Use **Actions → Sync ZSB Hub release source → Run workflow** to check immediately. An unchanged run leaves Git history untouched.
+[Browse the source](upstream/) · [Current snapshot metadata](upstream-release.json) · [Release tags](../../tags) · [Sync history](../../actions/workflows/sync.yml)
 
-The workflow checks the archive against the SHA-256 digest published by GitHub. It extracts regular application files from the Electron archive and leaves installer binaries and vendored dependencies out of Git. It never runs the installer, application, or bundled plugin code. This snapshot may differ from the original development tree and is intended for private inspection. The original authors retain ownership of their files.
+## Find your way around
+
+| Path | Contents |
+| --- | --- |
+| [`upstream/main.js`](upstream/main.js) | Electron entry point |
+| [`upstream/src/core/`](upstream/src/core/) | Farming engine, account storage, and core services |
+| [`upstream/src/plugins/`](upstream/src/plugins/) | Plugin host, ZIP importer, and catalog integration |
+| [`upstream/plugins/`](upstream/plugins/) | Plugins bundled with the release |
+| [`upstream/panel/`](upstream/panel/) | Desktop panel HTML, JavaScript, and CSS |
+| [`upstream-release.json`](upstream-release.json) | Mirrored version, archive digest, and upstream release link |
+
+## Compare releases
+
+Each imported release is tagged `upstream-vX.Y.Z`. To compare the application files from 1.2.8 and 1.2.9 locally, fetch the tags and diff the snapshots.
+
+```sh
+git fetch --tags
+git diff upstream-v1.2.8 upstream-v1.2.9 -- upstream/
+```
+
+[Compare 1.2.8 and 1.2.9 on GitHub](../../compare/upstream-v1.2.8...upstream-v1.2.9)
+
+## How the mirror updates
+
+GitHub Actions checks hourly at **23 minutes past the hour (UTC)**. To check now, open **Actions → Sync ZSB Hub release source → Run workflow**. The workflow imports new stable releases with a Linux x64 archive in publication order. A check with no eligible release creates no snapshot commit.
+
+Each import verifies the archive's published SHA-256, extracts regular application files from the packaged Electron app, and records the source in the metadata. Installer binaries and vendored dependencies are excluded. The sync inspects the files without running the application.
+
+The snapshots reflect the shipped application and are kept here for private inspection. Ownership of the upstream files remains with their original authors. [Upstream releases](https://github.com/GothGirlZSB/zsb-hub-releases/releases)
