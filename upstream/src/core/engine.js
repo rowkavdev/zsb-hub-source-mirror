@@ -197,7 +197,7 @@ class Engine extends EventEmitter {
         this.run.set(id, {
             id, startedAt: now, clicks: 0, lastClickOkAt: 0, firstDueAt: lastClick + s.clickIntervalMs, failedBatches: 0, vaults: 0, rateLimited: 0,
             margin, clean: 0,
-            lastClick, lastVault: now - Math.floor(Math.random() * s.vaultFallbackMs), lastReport: now - s.reportMs + 2500,
+            lastClick, lastVault: now - Math.floor(Math.random() * s.vaultFallbackMs), lastReport: now - s.reportMs + 2500 + Math.floor(Math.random() * Math.min(5000, s.reportMs / 48)),   // spread Start all's first reports
             vaultEveryMs: null, me: null, busy: {}, refreshing: false, route,
         });
         acct.wasRunning = true; this.store.saveAccounts();
@@ -415,11 +415,24 @@ class Engine extends EventEmitter {
         if (res.kind === 'ok' && res.status === 200) { r.lastVaultOkAt = Date.now(); r.vaults++; this.log.add(r.id, 'Vault collected'); this.emit('change'); }
     }
 
+    // Until an account's first report lands its card has no numbers, so a failed one is tried again soon (reportRetryMs,
+    // doubling up to reportMs) instead of a whole reportMs later. Start all sends every first report at once and the site
+    // limits each IP's bursts, so some got refused: those cards sat empty for 4 minutes until a restart (tester, 2026-11-15).
+    reportFailed(r, why) {
+        const s = this.settings;
+        r.reportFails = (r.reportFails || 0) + 1;
+        if (r.me || this.run.get(r.id) !== r) return;
+        const wait = Math.min(s.reportMs, (s.reportRetryMs || 10000) * 2 ** (r.reportFails - 1));
+        r.lastReport = Date.now() - s.reportMs + wait;
+        if (r.reportFails === 1 || wait >= s.reportMs) this.log.add(r.id, `Couldn't get the account's numbers yet (${why}) — trying again in ${Math.round(wait / 1000)} s`, 'warn');
+    }
+
     async report(r) {
         const res = await this.call(r, '/api/me', { tries: 3 });
-        if (res.kind !== 'ok') return;
-        if (!res.json || typeof res.json !== 'object') { this.errors.raise(r.id, 'CC-API-01', '/api/me gave no data'); return; }
+        if (res.kind !== 'ok') { if (res.kind !== 'gone' && res.kind !== 'auth') this.reportFailed(r, res.kind); return; }
+        if (!res.json || typeof res.json !== 'object') { this.errors.raise(r.id, 'CC-API-01', '/api/me gave no data'); this.reportFailed(r, 'no data'); return; }
         const me = res.json;
+        r.reportFails = 0;
         const acct = this.store.get(r.id);
         const before = acct && this.clickType(acct);
         r.me = {

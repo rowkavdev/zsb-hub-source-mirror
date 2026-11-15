@@ -1,5 +1,8 @@
 {
   "_how": "One entry per released version, newest first. Each line is one bullet; **bold** works. Shown once after an update, and used as the release notes on GitHub. npm run release refuses a version with no entry here.",
+  "1.2.10": [
+    "**Account numbers show right after Start** — when Start all sent every account's first update at once, the site sometimes refused a few, and those cards stayed empty for 4 minutes (until you stopped and started them). The hub now spreads them out and asks again within seconds. The accounts were clicking the whole time."
+  ],
   "1.2.9": [
     "**Trades go out right away** — a single trade or Send to many no longer fails with \"waiting — star farming\" when the Armory, Games or the Opener is using an account. It asks them to start nothing new on those accounts and sends at once; if the site says an account is busy for a moment, it tries again for up to a minute."
   ],

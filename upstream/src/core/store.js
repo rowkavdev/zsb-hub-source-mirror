@@ -17,6 +17,7 @@ const SETTINGS_DEFAULTS = {
     clickIntervalMs: 60000,
     vaultFallbackMs: 600000,     // until an account's first report gives its vault numbers
     reportMs: 240000,
+    reportRetryMs: 10000,        // until an account's first report lands: retry after this, doubling up to reportMs
     maxPerIp: 20,                // the site's limit; can be lowered, never raised
     autoCasePct: 33.34,          // Auto clicks cases above this case click % (casesPerClick), money otherwise
     resumeOnLaunch: true,        // restart the accounts that were clicking when the app closed
