@@ -1,0 +1,177 @@
+{
+  "id": "trader",
+  "name": "Trader",
+  "version": "1.5.0",
+  "description": "Moves tokens and items between your accounts: one trade at a time, or by trade routes you set up (from which accounts, to which account, and what goes: tokens, terminals, skins over a price or by name). Both sides must be accounts in this app and clicking. Starts in practice mode.",
+  "minCore": "1.2.2",
+  "main": "index.js",
+  "tab": "Trader",
+  "defaultEnabled": false,
+  "settings": {
+    "practice": {
+      "type": "boolean",
+      "label": "Practice mode — only log what it would send",
+      "default": true
+    },
+    "routes": {
+      "type": "list",
+      "label": "Trade routes",
+      "itemLabel": "route",
+      "fields": {
+        "to": {
+          "type": "account",
+          "label": "Send to",
+          "help": "The account that receives everything on this route."
+        },
+        "from": {
+          "type": "accounts",
+          "label": "From these accounts",
+          "exclude": "to",
+          "when": "to",
+          "detail": "tokens"
+        },
+        "h1": {
+          "type": "heading",
+          "label": "What to send",
+          "help": "Switch on what this route moves. Each trade takes as many items as the sender may trade at once (50, or 200 for Pro).",
+          "when": "to"
+        },
+        "tokens": {
+          "type": "boolean",
+          "label": "Tokens (Pro senders only)",
+          "default": false,
+          "when": "to"
+        },
+        "keepTokens": {
+          "type": "number",
+          "label": "Keep on each sender",
+          "default": 0,
+          "when": "tokens"
+        },
+        "minTokens": {
+          "type": "number",
+          "label": "Only send when there are at least",
+          "default": 1000000,
+          "when": "tokens"
+        },
+        "terminals": {
+          "type": "choice",
+          "label": "Terminals",
+          "default": "none",
+          "when": "to",
+          "options": [
+            {
+              "value": "none",
+              "label": "Don't send"
+            },
+            {
+              "value": "all",
+              "label": "All terminals"
+            },
+            {
+              "value": "genesis",
+              "label": "Genesis only"
+            },
+            {
+              "value": "deadhand",
+              "label": "Dead Hand only"
+            }
+          ],
+          "newline": true
+        },
+        "skins": {
+          "type": "boolean",
+          "label": "Skins",
+          "default": false,
+          "when": "to"
+        },
+        "skinsOver": {
+          "type": "number",
+          "label": "Worth at least ($, 0 = by name only)",
+          "default": 0,
+          "when": "skins"
+        },
+        "names": {
+          "type": "text",
+          "label": "Or named (comma-separated)",
+          "default": "",
+          "placeholder": "e.g. Dragon Lore, Howl",
+          "when": "skins"
+        },
+        "skipFavorites": {
+          "type": "boolean",
+          "label": "Keep favourited items (skins and terminals)",
+          "default": true,
+          "when": "to"
+        },
+        "h2": {
+          "type": "heading",
+          "label": "Only trade when",
+          "when": "to"
+        },
+        "minItems": {
+          "type": "number",
+          "label": "There are at least this many items",
+          "default": 1,
+          "when": "to",
+          "help": "Saves the receiver's 100 trades a day for full trades."
+        }
+      }
+    },
+    "oneItem": {
+      "type": "tags",
+      "label": "Items (none = tokens only)",
+      "default": [],
+      "placeholder": "e.g. Dragon Lore, then Enter",
+      "page": true
+    },
+    "oneTo": {
+      "type": "account",
+      "label": "Send to",
+      "page": true
+    },
+    "oneCount": {
+      "type": "text",
+      "label": "How many of each, per sender (empty = all)",
+      "default": "",
+      "placeholder": "all",
+      "page": true
+    },
+    "oneFavs": {
+      "type": "boolean",
+      "label": "Include favourited items",
+      "default": false,
+      "page": true
+    },
+    "oneTokens": {
+      "type": "text",
+      "label": "Tokens per sender (Pro only)",
+      "default": "",
+      "placeholder": "none — or 500K, 2.5M, all",
+      "page": true
+    },
+    "oneFrom": {
+      "type": "accounts",
+      "hidden": true
+    },
+    "dailyCap": {
+      "type": "number",
+      "label": "Receiver trades to keep free each day",
+      "default": 5,
+      "min": 0,
+      "max": 100
+    },
+    "everyMin": {
+      "type": "number",
+      "label": "Check every (minutes)",
+      "default": 60,
+      "min": 5
+    },
+    "everyMs": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    }
+  },
+  "power": true
+}

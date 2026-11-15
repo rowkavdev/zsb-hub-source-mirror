@@ -1,0 +1,138 @@
+{
+  "id": "converter",
+  "name": "Converter",
+  "version": "1.4.0",
+  "description": "Turns what accounts earn into tokens, in steps you choose: sell clicked cases, sell cheap skins, buy capsules with the cash, open them with every drop sold to tokens, upgrade the tokens into Dragon Lores. Starts in practice mode.",
+  "minCore": "1.0.6",
+  "main": "index.js",
+  "tab": "Converter",
+  "defaultEnabled": false,
+  "settings": {
+    "accounts": {
+      "type": "accounts",
+      "label": "Accounts"
+    },
+    "practice": {
+      "type": "boolean",
+      "label": "Practice mode — only log what it would do",
+      "default": true
+    },
+    "sellCases": {
+      "type": "boolean",
+      "label": "Sell clicked cases",
+      "default": true
+    },
+    "sellCasesMin": {
+      "type": "number",
+      "label": "Only when worth at least ($)",
+      "default": 50000,
+      "min": 0
+    },
+    "sellSkins": {
+      "type": "boolean",
+      "label": "Sell skins",
+      "default": false
+    },
+    "sellSkinsMax": {
+      "type": "number",
+      "label": "Skins worth up to ($)",
+      "default": 9999,
+      "min": 1
+    },
+    "buy": {
+      "type": "boolean",
+      "label": "Buy capsules",
+      "default": true
+    },
+    "capsule": {
+      "type": "choice",
+      "label": "Capsule",
+      "dynamic": true,
+      "default": ""
+    },
+    "maxPrice": {
+      "type": "number",
+      "label": "Max price each ($, 0 = no limit)",
+      "default": 0,
+      "min": 0
+    },
+    "keepMoney": {
+      "type": "number",
+      "label": "Keep cash ($)",
+      "default": 0,
+      "min": 0
+    },
+    "keepPct": {
+      "type": "number",
+      "label": "Keep % of cash",
+      "default": 0,
+      "min": 0,
+      "max": 100
+    },
+    "minSpend": {
+      "type": "number",
+      "label": "Smallest purchase ($)",
+      "default": 1000000,
+      "min": 0
+    },
+    "open": {
+      "type": "boolean",
+      "label": "Open them",
+      "default": true
+    },
+    "dropSellMax": {
+      "type": "number",
+      "label": "Non-Pro: sell opened drops worth up to ($)",
+      "default": 9999,
+      "min": 1
+    },
+    "dlore": {
+      "type": "boolean",
+      "label": "Upgrade tokens into Dragon Lores",
+      "default": false
+    },
+    "dloreWho": {
+      "type": "choice",
+      "label": "On which accounts",
+      "default": "basic",
+      "options": [
+        {
+          "value": "basic",
+          "label": "Non-Pro only"
+        },
+        {
+          "value": "pro",
+          "label": "Pro only"
+        },
+        {
+          "value": "both",
+          "label": "Both"
+        }
+      ]
+    },
+    "dloreGapMs": {
+      "type": "number",
+      "hidden": true,
+      "default": 1500
+    },
+    "everyMin": {
+      "type": "number",
+      "label": "Run every (minutes)",
+      "default": 30,
+      "min": 5
+    },
+    "lanes": {
+      "type": "number",
+      "label": "Accounts converting at once",
+      "default": 1,
+      "min": 1,
+      "max": 5
+    },
+    "everyMs": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    }
+  },
+  "power": true
+}

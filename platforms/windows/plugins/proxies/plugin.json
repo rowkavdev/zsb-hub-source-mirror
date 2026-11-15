@@ -1,0 +1,35 @@
+{
+  "id": "proxies",
+  "name": "Proxy manager",
+  "version": "1.1.0",
+  "description": "Runs accounts through your own proxies or WireGuard configs, 20 per exit IP (the site's limit), so one install can click more than 20. Paste proxies (HTTP with or without user:pass, SOCKS5 without) or WireGuard configs, test them, and pin accounts to one if you like; the rest are spread by themselves.",
+  "minCore": "1.0.6",
+  "main": "index.js",
+  "tab": "Proxies",
+  "defaultEnabled": false,
+  "settings": {
+    "paste": {
+      "type": "textarea",
+      "label": "Add proxies — one per line (or comma separated), or paste WireGuard configs",
+      "default": "",
+      "placeholder": "host:port:user:pass\nhttp://user:pass@host:port\nsocks5://host:port\n…or a whole WireGuard config ([Interface] … [Peer] …)"
+    },
+    "pinAccount": {
+      "type": "account",
+      "label": "Account",
+      "default": ""
+    },
+    "pinRoute": {
+      "type": "choice",
+      "label": "Goes through",
+      "dynamic": true,
+      "default": "auto"
+    },
+    "checkEveryMin": {
+      "type": "number",
+      "label": "Test the proxies every (minutes)",
+      "default": 10,
+      "min": 2
+    }
+  }
+}

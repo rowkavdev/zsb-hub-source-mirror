@@ -1,0 +1,87 @@
+{
+  "id": "games",
+  "name": "Games",
+  "version": "1.8.0",
+  "description": "Plays the games tab for its rewards: the smallest bets that reach each game's next reward tier, only when the reward is worth more than the bets are expected to lose. Tracks bets, wins, rewards and the profit. Starts in practice mode.",
+  "minCore": "1.2.5",
+  "main": "index.js",
+  "tab": "Games",
+  "defaultEnabled": false,
+  "settings": {
+    "accounts": {
+      "type": "accounts",
+      "label": "Accounts"
+    },
+    "practice": {
+      "type": "boolean",
+      "label": "Practice mode — only log what it would play",
+      "default": true
+    },
+    "plinko": {
+      "type": "boolean",
+      "label": "Plinko",
+      "default": true
+    },
+    "dice": {
+      "type": "boolean",
+      "label": "Dice",
+      "default": true
+    },
+    "crash": {
+      "type": "boolean",
+      "label": "Crash",
+      "default": false
+    },
+    "blackjack": {
+      "type": "boolean",
+      "label": "Blackjack",
+      "default": false
+    },
+    "xpMode": {
+      "type": "boolean",
+      "label": "Armory XP",
+      "default": false
+    },
+    "maxLoss": {
+      "type": "number",
+      "label": "Expected loss allowed per tier (tokens)",
+      "default": 50,
+      "min": 0
+    },
+    "keepTokens": {
+      "type": "number",
+      "label": "Keep tokens",
+      "default": 0,
+      "min": 0
+    },
+    "maxPlays": {
+      "type": "number",
+      "label": "Most plays per game per run",
+      "default": 200,
+      "min": 1,
+      "max": 2000
+    },
+    "everyMin": {
+      "type": "number",
+      "label": "Run every (minutes)",
+      "default": 20,
+      "min": 5
+    },
+    "everyMs": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "crashWaitMs": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "crashAtOnce": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    }
+  },
+  "power": true
+}

@@ -1,0 +1,16 @@
+{
+  "id": "missions",
+  "name": "Missions",
+  "version": "1.1.0",
+  "description": "Claims finished missions on every clicking account and shows mission progress.",
+  "minCore": "1.0.6",
+  "main": "index.js",
+  "defaultEnabled": true,
+  "settings": {
+    "checkEverySec": {
+      "type": "number",
+      "label": "Check every (seconds)",
+      "default": 60
+    }
+  }
+}
