@@ -41,7 +41,7 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
         bundledDir: bundledPluginsDir, userDir: path.join(dataDir, 'plugins'), dataDir: path.join(dataDir, 'plugin-data'), publicKey: pluginKey, sockets, pace: pluginPace });
     const catalog = new Catalog({ host: plugins, url: catalogUrl, publicKey: pluginKey, log, fetch: fetchFn });
     const trouble = new Troubleshoot({ store, engine, site, log, errors, pluginBusy: (id) => plugins.busyOf(id), timing: busyTiming });
-    const stats = new Stats({ version, store, engine, errors, plugins, ...statsOpts });
+    const stats = new Stats({ version, store, engine, errors, plugins, log, ...statsOpts });
 
     // What scrub() hides in logs and reports: tokens, imported sign-ins, and account names (shown as acct#id instead).
     log.secrets = () => store.accounts.flatMap(a => [

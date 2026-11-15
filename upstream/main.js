@@ -154,6 +154,17 @@ async function postStats(url, body) {
     return res.ok;
 }
 
+// For the optional system / health diagnostics (Settings > share more): only read when those are on.
+function statsSystem() {
+    let keyring = null;
+    try { if (process.platform === 'linux' && safeStorage.getSelectedStorageBackend) keyring = safeStorage.getSelectedStorageBackend(); } catch (_) {}
+    return {
+        packaged: app.isPackaged, sealed: safeStorage.isEncryptionAvailable(), keyring,
+        // The whole app's memory (main, window, helpers) in MB.
+        metrics: () => app.getAppMetrics().reduce((n, m) => n + ((m.memory && m.memory.workingSetSize) || 0), 0) / 1024,
+    };
+}
+
 function keychain() {
     if (!safeStorage.isEncryptionAvailable()) return undefined;
     return {
@@ -184,7 +195,7 @@ app.whenReady().then(() => {
     transport = createTransport({ log: { add: (...a) => log && log.add(...a) } });
     const auth = createAuth({ transport, log: { add: (...a) => log && log.add(...a) } });
     core = createCore({ version: VERSION, dataDir, bundledPluginsDir: path.join(__dirname, 'plugins'), transport, auth, crypt: keychain(),
-        stats: { url: dev.STATS_URL ?? STATS_URL ?? '', post: postStats, timing: dev.STATS_TIMING || undefined },
+        stats: { url: dev.STATS_URL ?? STATS_URL ?? '', post: postStats, timing: dev.STATS_TIMING || undefined, ...statsSystem() },
         catalogUrl: dev.CATALOG_URL ?? CATALOG_URL ?? null,
         sockets: createSockets({ partition: 'persist:cc', evalInWindow: transport.evalInWindow, prepareWindow: transport.ready, log: { add: (...a) => log && log.add(...a) }, client: currentClient }) });
     setClient(() => core.site.clientId());
