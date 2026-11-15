@@ -43,6 +43,14 @@ let cases = null;   // battle cases, cheapest first
 let casesAt = 0;
 let battling = false, halt = false, farming = false;   // farming: a check (battles, flips, jackpots) is running
 const passBusy = new Set();
+// Lending an account mid-turn (the Trader's routes, a tester 2026-11-14): another plugin asks for an account with
+// ctx.accounts.want(); the Armory starts nothing new on it, and once its requests, sockets and battles on it are done it
+// clears its mark and leaves the account alone for the rest of the turn.
+const lent = new Set();      // accounts handed over this turn
+const inUse = new Map();     // account id -> the Armory's requests and sockets open on it right now
+const use = (id, d) => inUse.set(id, Math.max(0, (inUse.get(id) || 0) + d));
+const wantedBy = (id) => (ctx.accounts.wanted ? ctx.accounts.wanted(id) : null);
+const isOut = (id) => lent.has(id) || !!wantedBy(id);
 // Battle ids the hub hosted, per account (state.hosting). Merged with the copy on disk on every save: a run that was
 // just turned off can still be creating a battle while the next run starts, and neither may lose the other's id.
 const diskHosting = () => { try { return ctx.data.get().hosting || {}; } catch (_) { return {}; } };
@@ -348,13 +356,13 @@ async function battle(host, joiners, cs, rounds, players, timeshift, announce) {
 async function hostLoop(host, others, cs, ends, practice, lines) {
     let done = 0, waiting = false, busySaid = false, fails = 0;   // waiting: on its earlier battle, already said once; fails: in a row
     if (practice) await previewOwnBattles(host, lines);
-    while (Date.now() < ends && !halt && !ctx.stopping) {
+    while (Date.now() < ends && !halt && !ctx.stopping && !isOut(host.id)) {
         const keep = num(S('keepMoney'));
         let me;
         try { me = await snapshot(host); } catch (e) { ctx.log('battle: ' + e.message, 'warn', host.id); return; }
         if (me.host <= 0) { if (!done) lines.push(`${host.name}: no hosted battles left today`); return; }
         const pool = [];
-        for (const a of others) { try { const x = await sharedSnapshot(a); if (x.guest > 0) pool.push(x); } catch (_) {} }
+        for (const a of others) { if (isOut(a.id)) continue; try { const x = await sharedSnapshot(a); if (x.guest > 0) pool.push(x); } catch (_) {} }
         const pkg = me.pkg && !!S('package');
         // The accounts in the fewest battles right now first (then the most joins left today), taken at once (no wait
         // between choosing and counting them in) so the next host sees them as busier.
@@ -478,7 +486,7 @@ async function coinflipTurn(list, practice, lines, ends) {
             hs = await ctx.socket(h.id); gs = await ctx.socket(g.id);
             hs.emit('joinRoomCoinflip'); gs.emit('joinRoomCoinflip');
             await hs.wait(['games'], 8000); await gs.wait(['games'], 8000);
-            for (let i = 0; i < n && Date.now() < ends && !ctx.stopping && !halt; i++) {
+            for (let i = 0; i < n && Date.now() < ends && !ctx.stopping && !halt && !isOut(h.id) && !isOut(g.id); i++) {
                 if (i % 25 === 0) {
                     const me = await json(h.id, '/api/me'), them = await json(g.id, '/api/me');
                     if (num(me.tokens) - bet * 25 < keep || num(them.tokens) - bet * 25 < keep) { lines.push(`coinflip: not enough tokens (${h.name} / ${g.name})`); break; }
@@ -580,7 +588,7 @@ async function casinoTurn(list, practice, lines, ends) {
                 room: () => roomFor(a).catch(() => 0),
                 tokens: async () => num((await json(a.id, '/api/me')).tokens),
                 hold: () => beingSeated(a.id),
-                stop: () => ctx.stopping || halt || gamesLive() });
+                stop: () => ctx.stopping || halt || gamesLive() || isOut(a.id) });
         } catch (e) { ctx.log('games: ' + e.message, 'warn', a.id); return; }
         const t = today();
         for (const r of res) {
@@ -605,7 +613,7 @@ async function upgradeTurn(list, practice, lines, ends) {
         try { n = Math.min(n, Math.floor(await roomFor(a) / UP_XP)); } catch (_) { return; }
         let done = 0, won = 0, slow = 0;
         const keep = num(S('keepTokens'));
-        for (let i = 0; i < n && Date.now() < ends && !ctx.stopping && !halt; i++) {
+        for (let i = 0; i < n && Date.now() < ends && !ctx.stopping && !halt && !isOut(a.id); i++) {
             if (i % 25 === 0) { const me = await json(a.id, '/api/me'); if (num(me.tokens) - tokens < keep) break; }
             const r = await ctx.request(a.id, '/api/casino/upgrade', { method: 'POST', body: { userSkinReq: null, userTokensReq: tokens, upgradeSkinReq: target } });
             if (r.kind !== 'ok') {
@@ -652,7 +660,7 @@ async function gtrTurn(list, practice, lines, ends) {
         if (practice) { lines.push(`guess the rank — ${a.name}: ${n} 1-token guesses (rank ${pick()}), +15-25 XP each`); return; }
         try { n = Math.min(n, Math.floor(await roomFor(a) / GTR_XP)); } catch (_) { return; }
         let done = 0, right = 0, won = 0, slow = 0;
-        for (let i = 0; i < n && Date.now() < ends && !ctx.stopping && !halt; i++) {
+        for (let i = 0; i < n && Date.now() < ends && !ctx.stopping && !halt && !isOut(a.id); i++) {
             const r = await ctx.request(a.id, '/api/casino/guesstherank', { method: 'POST', body: { bet: 1, game: 'cs2' } });
             if (r.kind !== 'ok') {
                 const msg = (r.json && r.json.error) || 'HTTP ' + r.status;
@@ -687,7 +695,7 @@ async function tokenSkins(a, n, lines, ends) {
     const out = [], seen = new Set();
     const keep = num(S('keepTokens'));
     let tokens = num((await json(a.id, '/api/me')).tokens);
-    for (let i = 0; i < n && Date.now() < ends && !ctx.stopping && !halt; i++) {
+    for (let i = 0; i < n && Date.now() < ends && !ctx.stopping && !halt && !isOut(a.id); i++) {
         if (tokens - 1 < keep) { lines.push(`${a.name}: not enough tokens to make jackpot skins`); break; }
         const r = await ctx.request(a.id, '/api/casino/tokensToSkins', { method: 'POST', body: { tokens: 1, type: 'skins' } });
         if (r.kind !== 'ok') {
@@ -815,7 +823,7 @@ async function jackpotTurn(list, practice, lines, ends) {
         try {
             s = await ctx.socket(a.id);
             for (;;) {
-                if (!(p.left > 0 && Date.now() < ends && !ctx.stopping && !halt)) break;
+                if (!(p.left > 0 && Date.now() < ends && !ctx.stopping && !halt && !isOut(a.id))) break;
                 refill(p);
                 if (!p.skins.length) { if (p.refilling) { await p.refilling; continue; } break; }
                 // Rounds land their XP later; when the passes have no room left (counting what's still to land), wait for
@@ -902,6 +910,7 @@ async function check() {
     farming = true;
     const practice = practiceMode();
     const lines = [], held = [];
+    let lend = null, ends = 0;
     try {
         if (S('passes')) for (const a of chosen()) {
             if (!a.healthy) continue;
@@ -912,9 +921,18 @@ async function check() {
         // The accounts are held for the whole turn (Games and the Opener wait), and the upgrades go first: two of an
         // account's actions at once make the site refuse one ("User is locked").
         // Games' runs don't count: it plays the same accounts alongside, pausing while a battle seats them (armory/seating).
-        const list = chosen().filter(a => a.healthy && !(ctx.accounts.busy && ctx.accounts.busy(a.id, { ignore: ['games'] })));
-        const ends = Date.now() + (num(S('turnMs')) || Math.max(5, num(S('turnMin'))) * 60000);
+        lent.clear();
+        const list = chosen().filter(a => a.healthy && !wantedBy(a.id) && !(ctx.accounts.busy && ctx.accounts.busy(a.id, { ignore: ['games'] })));
+        ends = Date.now() + (num(S('turnMs')) || Math.max(5, num(S('turnMin'))) * 60000);
         if (!practice && ctx.accounts.setBusy) for (const a of list) { ctx.accounts.setBusy(a.id, 'star farming'); held.push(a.id); }
+        lend = setInterval(() => {
+            for (const id of [...held]) {
+                const w = wantedBy(id);
+                if (!w || (inUse.get(id) || 0) > 0 || (inBattle.get(id) || 0) > 0) continue;
+                lent.add(id); held.splice(held.indexOf(id), 1); ctx.accounts.setBusy(id, null);
+                ctx.log(`star farming paused on this account for the rest of the turn — ${w.what} (${w.plugin})`, 'info', id);
+            }
+        }, 1000);
         if (S('upgrade')) await upgradeTurn(list, practice, lines, Math.min(ends, Date.now() + 5 * 60000)).catch(e => ctx.log('upgrade: ' + e.message, 'warn'));
         const jobs = [];
         if (S('battles')) jobs.push(battleTurn(practice, lines, list, ends).catch(e => ctx.log('battles: ' + e.message, 'warn')));
@@ -925,7 +943,14 @@ async function check() {
         if (S('jackpot')) jobs.push(jackpotTurn(list, practice, lines, ends).catch(e => ctx.log('jackpot: ' + e.message, 'warn')));
         await Promise.all(jobs);
     } catch (e) { ctx.log('stopped: ' + e.message, e instanceof Stop ? 'warn' : 'error'); }
-    finally { for (const id of held) ctx.accounts.setBusy(id, null); }
+    finally {
+        clearInterval(lend);
+        for (const id of held) {
+            ctx.accounts.setBusy(id, null);
+            const w = wantedBy(id);   // the turn ended early because the accounts were asked for
+            if (w && Date.now() < ends) ctx.log(`star farming paused on this account for the rest of the turn — ${w.what} (${w.plugin})`, 'info', id);
+        }
+    }
     if (practice) { state.practiceAt = Date.now(); state.plans = { t: Date.now(), lines: lines.length ? lines : ['nothing to do right now'] }; }
     else for (const l of new Set(lines)) ctx.log(l);   // live, these are only what held something back
     halt = false;
@@ -936,7 +961,18 @@ async function check() {
 
 module.exports = {
     start(c) {
-        ctx = c;
+        // Counts this plugin's requests and open sockets per account (lending, above).
+        ctx = Object.create(c);
+        ctx.request = async (aid, ...rest) => { use(aid, 1); try { return await c.request(aid, ...rest); } finally { use(aid, -1); } };
+        ctx.socket = async (aid, ...rest) => {
+            use(aid, 1);
+            let s;
+            try { s = await c.socket(aid, ...rest); } catch (e) { use(aid, -1); throw e; }
+            const close = s.close.bind(s);
+            let shut = false;
+            s.close = (...x) => { if (!shut) { shut = true; use(aid, -1); } return close(...x); };
+            return s;
+        };
         casino = makeCasino(ctx);
         state = { last: 0, passes: {}, history: [], ...ctx.data.get() };
         today();

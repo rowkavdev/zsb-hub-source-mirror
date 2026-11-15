@@ -1,9 +1,9 @@
 {
   "id": "trader",
   "name": "Trader",
-  "version": "1.5.0",
+  "version": "1.7.0",
   "description": "Moves tokens and items between your accounts: one trade at a time, or by trade routes you set up (from which accounts, to which account, and what goes: tokens, terminals, skins over a price or by name). Both sides must be accounts in this app and clicking. Starts in practice mode.",
-  "minCore": "1.2.2",
+  "minCore": "1.2.7",
   "main": "index.js",
   "tab": "Trader",
   "defaultEnabled": false,
@@ -154,6 +154,241 @@
       "type": "accounts",
       "hidden": true
     },
+    "invSearch": {
+      "type": "text",
+      "label": "Search this inventory",
+      "default": "",
+      "placeholder": "e.g. Dragon Lore, AK-47",
+      "page": true
+    },
+    "invSort": {
+      "type": "choice",
+      "label": "Sort",
+      "select": true,
+      "default": "price",
+      "options": [
+        {
+          "value": "true",
+          "label": "Latest"
+        },
+        {
+          "value": "price",
+          "label": "Price"
+        },
+        {
+          "value": "float",
+          "label": "Float"
+        },
+        {
+          "value": "rank",
+          "label": "Float Ranks"
+        }
+      ],
+      "page": true
+    },
+    "invExterior": {
+      "type": "choice",
+      "label": "Exterior",
+      "select": true,
+      "default": "",
+      "options": [
+        {
+          "value": "",
+          "label": "Any"
+        },
+        {
+          "value": "Factory New",
+          "label": "Factory New"
+        },
+        {
+          "value": "Minimal Wear",
+          "label": "Minimal Wear"
+        },
+        {
+          "value": "Field-Tested",
+          "label": "Field-Tested"
+        },
+        {
+          "value": "Well-Worn",
+          "label": "Well-Worn"
+        },
+        {
+          "value": "Battle-Scarred",
+          "label": "Battle-Scarred"
+        }
+      ],
+      "page": true
+    },
+    "invRarity": {
+      "type": "choice",
+      "label": "Rarity",
+      "select": true,
+      "default": "",
+      "options": [
+        {
+          "value": "",
+          "label": "Any"
+        },
+        {
+          "value": "Consumer Grade",
+          "label": "Consumer Grade"
+        },
+        {
+          "value": "Industrial Grade",
+          "label": "Industrial Grade"
+        },
+        {
+          "value": "Mil-Spec Grade",
+          "label": "Mil-Spec Grade"
+        },
+        {
+          "value": "Restricted",
+          "label": "Restricted"
+        },
+        {
+          "value": "Classified",
+          "label": "Classified"
+        },
+        {
+          "value": "Covert",
+          "label": "Covert"
+        }
+      ],
+      "page": true
+    },
+    "invFavs": {
+      "type": "choice",
+      "label": "Favorites",
+      "select": true,
+      "default": "",
+      "options": [
+        {
+          "value": "",
+          "label": "Any"
+        },
+        {
+          "value": "none",
+          "label": "None"
+        },
+        {
+          "value": "only",
+          "label": "Only"
+        }
+      ],
+      "page": true
+    },
+    "invStSv": {
+      "type": "choice",
+      "label": "StatTrak/Souvenir",
+      "select": true,
+      "default": "",
+      "options": [
+        {
+          "value": "",
+          "label": "Any"
+        },
+        {
+          "value": "None",
+          "label": "None"
+        },
+        {
+          "value": "Non ST",
+          "label": "Non ST"
+        },
+        {
+          "value": "Non SV",
+          "label": "Non SV"
+        },
+        {
+          "value": "Only ST",
+          "label": "Only ST"
+        },
+        {
+          "value": "Only SV",
+          "label": "Only SV"
+        }
+      ],
+      "page": true
+    },
+    "invQuality": {
+      "type": "choice",
+      "label": "Quality",
+      "select": true,
+      "default": "",
+      "options": [
+        {
+          "value": "",
+          "label": "Any"
+        },
+        {
+          "value": "0",
+          "label": "Common"
+        },
+        {
+          "value": "1",
+          "label": "Rare"
+        },
+        {
+          "value": "2",
+          "label": "Epic"
+        },
+        {
+          "value": "3",
+          "label": "Legendary"
+        }
+      ],
+      "page": true
+    },
+    "invEvent": {
+      "type": "choice",
+      "label": "Event",
+      "select": true,
+      "dynamic": true,
+      "default": "",
+      "page": true
+    },
+    "invFloatRank": {
+      "type": "choice",
+      "label": "Float Rank",
+      "select": true,
+      "default": "",
+      "options": [
+        {
+          "value": "",
+          "label": "Any"
+        },
+        {
+          "value": "none",
+          "label": "None"
+        },
+        {
+          "value": "all",
+          "label": "Only"
+        }
+      ],
+      "page": true
+    },
+    "invPatterns": {
+      "type": "choice",
+      "label": "Patterns",
+      "select": true,
+      "default": "",
+      "options": [
+        {
+          "value": "",
+          "label": "Any"
+        },
+        {
+          "value": "none",
+          "label": "None"
+        },
+        {
+          "value": "only",
+          "label": "Only"
+        }
+      ],
+      "page": true
+    },
     "dailyCap": {
       "type": "number",
       "label": "Receiver trades to keep free each day",
@@ -171,6 +406,22 @@
       "type": "number",
       "hidden": true,
       "default": 0
+    },
+    "fanFrom": {
+      "type": "account",
+      "label": "Send from",
+      "page": true
+    },
+    "fanTokens": {
+      "type": "text",
+      "label": "Tokens each",
+      "default": "",
+      "placeholder": "e.g. 500K",
+      "page": true
+    },
+    "fanTo": {
+      "type": "accounts",
+      "hidden": true
     }
   },
   "power": true

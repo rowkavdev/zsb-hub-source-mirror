@@ -62,7 +62,8 @@ class Stop extends Error {}
 function save() { ctx.data.set(state); }
 
 function today() {
-    if (!state.today || state.today.day !== day()) state.today = { day: day(), sold: 0, skins: 0, spent: 0, opened: 0, tokens: 0, tries: 0, dlores: 0 };
+    if (!state.today || state.today.day !== day()) state.today = { day: day(), sold: 0, skins: 0, spent: 0, opened: 0, tokens: 0, tries: 0, dlores: 0, inCases: true };
+    if (!state.today.inCases) Object.assign(state.today, { opened: 0, inCases: true });   // before 1.5.0 it counted opens, not cases
     return state.today;
 }
 
@@ -210,6 +211,7 @@ async function run(aid, name) {
         if ((S('buy') || S('open')) && !cap && !dloreOn(aid)) throw new Stop(S('capsule') ? 'the chosen capsule is no longer in the shop' : 'no capsule chosen yet (Settings)');
         let me = await getJson(aid, '/api/me');
         const perCall = Math.max(1, parseInt(me.caseOpenCount) || 1), mult = Math.max(1, parseInt(me.maxCaseOpenMultiplier) || 1), perOpen = perCall * mult;
+        lane.size = rec.size = `${perCall}×${mult}`;   // the account's open size: count × multiplier (boosts included)
         let stock = cap && (S('buy') || S('open')) ? await stockOf(aid, cap._id) : 0;
 
         // 3. cash -> capsules (whole opens only)
@@ -243,12 +245,13 @@ async function run(aid, name) {
         if (S('open') && cap && stock >= perOpen) {
             lane.phase = 'opening';
             if (!practice && ctx.accounts.setBusy) ctx.accounts.setBusy(aid, 'opening cases');   // other plugins wait
-            lane.of = Math.floor(stock / perOpen);
+            lane.of = Math.floor(stock / perOpen) * perOpen;   // cases, like lane.opened
+            const opens = (n) => `${count(n)} case${n === 1 ? '' : 's'} (${count(n / perOpen)} opens of ${perCall}×${mult})`;
             const pro = (me.membership || startMe.membership) === 'pro';
             const inv = pro ? null : { size: num(me.inventorySize), used: num(me.inventoryCount) };
             const room = () => Math.floor((Math.floor(inv.size * INV_FILL) - inv.used) / perOpen);
-            if (practice) log(pro ? `would open ${count(lane.of)}× (${perCall}×${mult}) with every drop sold to tokens`
-                : `would open ${count(lane.of)}× (${perCall}×${mult}) into the inventory (${count(inv.used)} of ${count(inv.size)} used), selling the drops for tokens every ${count(Math.max(1, Math.floor(inv.size * INV_FILL / perOpen)))} opens or so`);
+            if (practice) log(pro ? `would open ${opens(lane.of)} with every drop sold to tokens`
+                : `would open ${opens(lane.of)} into the inventory (${count(inv.used)} of ${count(inv.size)} used), selling the drops for tokens every ${count(Math.max(1, Math.floor(inv.size * INV_FILL / perOpen)))} opens or so`);
             else {
                 if (pro) await ensureAutosell(aid, log);
                 else if (!inv.size) throw new Stop('the site did not say how big the inventory is — not opening');
@@ -263,7 +266,7 @@ async function run(aid, name) {
                     rec.sells = (rec.sells || 0) + 1;
                     lane.phase = 'opening';
                 };
-                let fails = 0, full = 0, left = pro ? Infinity : room();
+                let fails = 0, full = 0, done = 0, left = pro ? Infinity : room();
                 while (stock >= perOpen) {
                     if (halted()) throw new Stop(ctx.stopping ? 'turned off' : 'stopped by you');
                     if (left <= 0) {
@@ -273,9 +276,9 @@ async function run(aid, name) {
                     }
                     const r = await ctx.request(aid, '/api/open/' + (cap.type || 'capsule'), { method: 'POST', body });
                     if (r.kind === 'ok') {
-                        stock -= perOpen; lane.opened++; rec.opened++; fails = 0; full = 0;
+                        stock -= perOpen; lane.opened += perOpen; rec.opened += perOpen; done++; fails = 0; full = 0;
                         if (!pro) { inv.used += perOpen; left--; }
-                        if (lane.opened % 25 === 0) {
+                        if (done % 25 === 0) {
                             stock = await stockOf(aid, cap._id); save();
                             if (!pro) { const m = await getJson(aid, '/api/me'); inv.used = num(m.inventoryCount); left = room(); }   // drops can count more than the math says
                         }
@@ -293,7 +296,7 @@ async function run(aid, name) {
                     await ctx.sleep(OPEN_GAP_MS);
                 }
                 if (!pro && lane.opened) await sellDrops();
-                log(`opened ${count(lane.opened)}×${rec.sells ? ` · sold the drops ${rec.sells}×` : ''}`, 'ok');
+                log(`opened ${opens(lane.opened)}${rec.sells ? ` · sold the drops ${rec.sells}×` : ''}`, 'ok');
             }
         }
 
@@ -330,7 +333,7 @@ async function dlore(aid, lane, rec, practice, log) {
     if (n <= 0) { if (left <= 0) log('no upgrades left today for Dragon Lores'); return; }
     if (practice) { log(`would upgrade ${count(n)}× ${count(DLORE_STAKE)} tokens into Dragon Lores (70% each, ≈ ${count(n * 0.7)})`); return; }
     if (ctx.accounts.setBusy) ctx.accounts.setBusy(aid, 'upgrading into Dragon Lores');   // other plugins wait
-    lane.of = n; lane.opened = 0;
+    lane.of = n; lane.opened = 0; lane.unit = 'tries'; lane.size = null;
     let slow = 0;
     while (left > 0 && tokens >= DLORE_STAKE) {
         if (halted()) throw new Stop(ctx.stopping ? 'turned off' : 'stopped by you');
@@ -417,11 +420,11 @@ module.exports = {
                 ...(t.sold || t.spent || t.opened || t.tries ? [{ type: 'stats', items: [
                     { label: 'Cases sold today', value: money(t.sold) },
                     { label: 'Spent on capsules', value: money(t.spent) },
-                    { label: 'Opened today', value: count(t.opened) },
+                    { label: 'Cases opened today', value: count(t.opened) },
                     { label: 'Tokens today', value: count(t.tokens + t.skins) },
                     ...(t.tries ? [{ label: 'Dragon Lores today', value: `${count(t.dlores || 0)} of ${count(t.tries)} tries` }] : []),
                 ] }] : []),
-                ...(lanes.size ? [{ type: 'table', columns: ['Converting now', 'Step', 'Opened'], rows: [...lanes].map(([id, l]) => [(ctx.accounts.get(id) || {}).name || id, l.phase, l.of ? `${count(l.opened)} / ${count(l.of)}` : count(l.opened)]) }] : []),
+                ...(lanes.size ? [{ type: 'table', columns: ['Converting now', 'Step', 'Open size', 'Opened'], rows: [...lanes].map(([id, l]) => [(ctx.accounts.get(id) || {}).name || id, l.phase, l.size || '—', (l.of ? `${count(l.opened)} / ${count(l.of)}` : count(l.opened)) + (l.unit === 'tries' ? ' tries' : ' cases')]) }] : []),
                 { type: 'card', id: 'accounts', open: !n, title: 'Accounts', summary: n ? `${n} account${n === 1 ? '' : 's'}` : 'none yet', keys: ['accounts'], bare: true },
                 { type: 'section', title: 'A run, in order', blocks: [
                     step('s-cases', 'sellCases', 'Sell clicked cases', `for cash, when worth ≥ ${money(num(S('sellCasesMin')))}`, ['sellCasesMin']),
@@ -431,8 +434,8 @@ module.exports = {
                     step('s-dlore', 'dlore', 'Upgrade into Dragon Lores', `5M tokens a try, 70% · ${WHO[S('dloreWho')] || WHO.basic}${S('dlore') && n ? ` (${dl} of ${n})` : ''} · no Armory upgrades on these`, ['dloreWho']),
                 ] },
                 { type: 'card', id: 'schedule', open: false, title: 'Schedule', summary: `every ${every} min · ${Math.max(1, num(S('lanes')))} at a time`, keys: ['everyMin', 'lanes'] },
-                { type: 'section', title: 'Recent runs', blocks: [{ type: 'table', empty: 'No runs yet.', columns: ['When', 'Account', 'Cases sold', 'Spent', 'Opened', 'Tokens', 'Dragon Lores', 'Result'],
-                    rows: (state.runs || []).slice(0, 10).map(r => [new Date(r.t).toLocaleTimeString(), r.acct, money(r.sold), money(r.spent), count(r.opened), count(r.tokens), r.tries ? `${count(r.dlores)} / ${count(r.tries)}` : '—', r.result]) }] },
+                { type: 'section', title: 'Recent runs', blocks: [{ type: 'table', empty: 'No runs yet.', columns: ['When', 'Account', 'Cases sold', 'Spent', 'Open size', 'Opened', 'Tokens', 'Dragon Lores', 'Result'],
+                    rows: (state.runs || []).slice(0, 10).map(r => [new Date(r.t).toLocaleTimeString(), r.acct, money(r.sold), money(r.spent), r.size || '—', r.size ? count(r.opened) : `${count(r.opened)} opens`, count(r.tokens), r.tries ? `${count(r.dlores)} / ${count(r.tries)}` : '—', r.result]) }] },
             ] };
         });
         ctx.panel.badge((aid) => { const l = lanes.get(aid); return l ? 'Converting: ' + l.phase : null; });

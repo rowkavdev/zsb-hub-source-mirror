@@ -11,6 +11,9 @@
   --text-2: #a1a1aa;
   --muted: #63636b;
   --white: #ffffff;
+  --on-white: #000;            /* text and marks on the white accent (primary buttons, the picked tab, the toast) */
+  /* Card and row backgrounds follow the surface colours, so a theme's --surface reaches them too. */
+  --panel-grad: linear-gradient(180deg, color-mix(in srgb, var(--surface-2) 60%, var(--surface)), color-mix(in srgb, var(--surface) 60%, var(--bg)));
   --ok: #22c55e;
   --warn: #f59e0b;
   --bad: #ef4444;
@@ -28,18 +31,18 @@ input, textarea, [contenteditable], .log, .code, pre, .stats-json { -webkit-user
 .muted { color: var(--text-2); }
 [hidden] { display: none !important; }
 .num { font-variant-numeric: tabular-nums; }
-::selection { background: #fff; color: #000; }
+::selection { background: var(--white); color: var(--on-white); }
 ::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-thumb { background: var(--surface-3); border-radius: 5px; border: 2px solid var(--bg); }
 ::-webkit-scrollbar-track { background: transparent; }
 
 /* buttons */
 button { background: var(--surface-2); border: 1px solid var(--line-2); border-radius: 10px; padding: 7px 14px; cursor: pointer; transition: background .15s, border-color .15s, color .15s, transform .1s; }
-button:hover { background: var(--surface-3); border-color: #3a3a42; }
+button:hover { background: var(--surface-3); border-color: color-mix(in srgb, var(--line-2) 80%, var(--text)); }
 button:active { transform: scale(.98); }
 button:disabled { opacity: .35; cursor: default; transform: none; }
-button.primary { background: var(--white); border-color: var(--white); color: #000; font-weight: 600; }
-button.primary:hover { background: #e4e4e7; border-color: #e4e4e7; }
+button.primary { background: var(--white); border-color: var(--white); color: var(--on-white); font-weight: 600; }
+button.primary:hover { background: color-mix(in srgb, var(--white) 88%, var(--bg)); border-color: color-mix(in srgb, var(--white) 88%, var(--bg)); }
 button.ghost { background: transparent; border-color: transparent; color: var(--text-2); }
 button.ghost:hover { color: var(--text); background: var(--surface-2); }
 button.danger { color: var(--bad); }
@@ -81,22 +84,22 @@ button.link { background: none; border: none; padding: 0; color: var(--text); te
 .tabs { display: flex; flex-wrap: wrap; gap: 2px; margin: 18px 24px 0; padding: 4px; border: 1px solid var(--line); border-radius: 12px; background: var(--surface); width: fit-content; max-width: calc(100% - 48px); }
 .tabs button { background: none; border: none; border-radius: 9px; padding: 6px 14px; color: var(--text-2); white-space: nowrap; font-size: 13px; }
 .tabs button:hover { color: var(--text); background: var(--surface-2); }
-.tabs button[aria-selected="true"] { color: #000; background: var(--white); font-weight: 600; }
+.tabs button[aria-selected="true"] { color: var(--on-white); background: var(--white); font-weight: 600; }
 .tabs .count { font-size: 11px; background: var(--bad); color: #fff; border-radius: 9px; padding: 0 6px; margin-left: 6px; font-weight: 600; }
-.tabs button[aria-selected="true"] .count { background: #000; }
+.tabs button[aria-selected="true"] .count { background: var(--on-white); color: var(--white); }
 
 main { padding: 18px 24px 48px; }
 
 /* account cards */
 .grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(min(290px, 100%), 1fr)); gap: 14px; }
 .card { position: relative; display: flex; flex-direction: column; gap: 16px; padding: 18px; min-width: 0; border-radius: var(--radius);
-  background: linear-gradient(180deg, #0e0e10 0%, #070708 100%); border: 1px solid var(--line);
+  background: var(--panel-grad); border: 1px solid var(--line);
   box-shadow: inset 0 1px 0 rgba(255,255,255,.05), 0 10px 30px -20px rgba(0,0,0,.9);
   transition: border-color .2s; }
 .card:hover { border-color: var(--line-2); }
 .card.s-logged-out, .card.s-problem { border-color: rgba(239,68,68,.3); }
 .card.s-needs-you { border-color: rgba(245,158,11,.35); }
-.card.off { background: linear-gradient(180deg, #0a0a0b 0%, #050506 100%); }
+.card.off { background: linear-gradient(180deg, var(--surface), color-mix(in srgb, var(--surface) 50%, var(--bg))); }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 .c-head { display: flex; align-items: center; gap: 12px; }
@@ -117,7 +120,7 @@ main { padding: 18px 24px 48px; }
 
 .hero { display: flex; flex-direction: column; gap: 2px; }
 .hero-num { font-size: 32px; font-weight: 700; letter-spacing: -.03em; line-height: 1.1; font-variant-numeric: tabular-nums;
-  background: linear-gradient(180deg, #ffffff 30%, #9a9aa2); -webkit-background-clip: text; background-clip: text; color: transparent; }
+  background: linear-gradient(180deg, var(--text) 30%, color-mix(in srgb, var(--text-2) 80%, var(--text))); -webkit-background-clip: text; background-clip: text; color: transparent; }
 .hero-num.word { font-size: 22px; background: none; color: var(--text-2); -webkit-text-fill-color: var(--text-2); }
 .card.off .meters { display: none; }
 .hero-num small { font-size: 15px; font-weight: 600; letter-spacing: 0; }
@@ -127,8 +130,8 @@ main { padding: 18px 24px 48px; }
 .meter-row { display: flex; justify-content: space-between; font-size: 12px; color: var(--muted); }
 .meter-row span:last-child { color: var(--text-2); font-variant-numeric: tabular-nums; }
 .bar { position: relative; height: 5px; border-radius: 3px; background: var(--surface-3); overflow: visible; margin-bottom: 4px; }
-.bar i { display: block; height: 100%; width: 0; border-radius: 3px; background: linear-gradient(90deg, #6b6b74, #ffffff); box-shadow: 0 0 10px rgba(255,255,255,.25); }
-.bar.vault i { background: linear-gradient(90deg, #3f3f46, #d4d4d8); box-shadow: none; }
+.bar i { display: block; height: 100%; width: 0; border-radius: 3px; background: linear-gradient(90deg, var(--muted), var(--white)); box-shadow: 0 0 10px color-mix(in srgb, var(--white) 25%, transparent); }
+.bar.vault i { background: linear-gradient(90deg, color-mix(in srgb, var(--muted) 60%, var(--bg)), color-mix(in srgb, var(--text) 85%, var(--bg))); box-shadow: none; }
 .bar .mark { position: absolute; left: 50%; top: -3px; width: 2px; height: 11px; border-radius: 1px; background: var(--text-2); opacity: .7; }
 
 .kv { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px 8px; margin: 0; padding: 12px; border-radius: 12px; background: rgba(255,255,255,.025); border: 1px solid var(--line); }
@@ -165,15 +168,15 @@ main { padding: 18px 24px 48px; }
 .empty .logo::after { inset: 10px; }
 .empty h2 { margin: 0 0 8px; font-size: 26px; letter-spacing: -.02em; }
 .steps { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; margin: 28px 0; text-align: left; }
-.steps div { background: linear-gradient(180deg, #0e0e10, #070708); border: 1px solid var(--line); border-radius: 14px; padding: 16px; font-size: 13px; color: var(--text-2); }
-.steps b.n { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; background: var(--white); color: #000; margin-bottom: 10px; font-size: 13px; }
+.steps div { background: var(--panel-grad); border: 1px solid var(--line); border-radius: 14px; padding: 16px; font-size: 13px; color: var(--text-2); }
+.steps b.n { display: grid; place-items: center; width: 26px; height: 26px; border-radius: 8px; background: var(--white); color: var(--on-white); margin-bottom: 10px; font-size: 13px; }
 .steps strong { color: var(--text); }
 .empty .primary { padding: 10px 22px; font-size: 15px; }
 .empty p { color: var(--muted); font-size: 13px; }
 
 /* lists: plugins, settings */
 .rows { display: grid; gap: 10px; max-width: 780px; }
-.row { background: linear-gradient(180deg, #0e0e10, #080809); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
+.row { background: var(--panel-grad); border: 1px solid var(--line); border-radius: 14px; padding: 14px 16px; display: flex; gap: 14px; align-items: flex-start; flex-wrap: wrap; }
 .row .main { flex: 1; min-width: 220px; }
 .row .title { font-weight: 600; }
 .row .desc { color: var(--text-2); font-size: 13px; }
@@ -199,13 +202,13 @@ input:focus { outline: none; border-color: var(--text-2); }
 .switch i { position: absolute; inset: 0; background: var(--surface-3); border: 1px solid var(--line-2); border-radius: 12px; transition: background .15s; }
 .switch i::after { content: ""; position: absolute; top: 2px; left: 2px; width: 17px; height: 17px; border-radius: 50%; background: var(--muted); transition: transform .18s, background .18s; }
 .switch input:checked + i { background: var(--white); border-color: var(--white); }
-.switch input:checked + i::after { transform: translateX(17px); background: #000; }
+.switch input:checked + i::after { transform: translateX(17px); background: var(--on-white); }
 .switch input:disabled { cursor: not-allowed; }
 .switch input:disabled + i { opacity: .4; }
 
 /* plugin tab content */
 .statrow { display: flex; gap: 12px; flex-wrap: wrap; margin-bottom: 14px; }
-.stat { background: linear-gradient(180deg, #0e0e10, #080809); border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px; min-width: 160px; }
+.stat { background: var(--panel-grad); border: 1px solid var(--line); border-radius: 14px; padding: 12px 16px; min-width: 160px; }
 .stat span { display: block; color: var(--muted); font-size: 12px; }
 .stat b { font-size: 22px; letter-spacing: -.02em; font-variant-numeric: tabular-nums; }
 /* Plugin tabs: tiles in even columns instead of each sized to its own text. */
@@ -283,7 +286,7 @@ tr:last-child td { border-bottom: none; }
 .whatsnew { display: grid; gap: 6px; max-height: 50vh; overflow-x: hidden; overflow-y: auto; }
 .whatsnew .wn-version { color: var(--muted); font-size: 12px; text-transform: uppercase; letter-spacing: .06em; }
 .whatsnew ul { margin: 0 0 6px; padding-left: 18px; display: grid; gap: 6px; line-height: 1.45; }
-.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--white); color: #000; font-weight: 500; border-radius: 12px; padding: 10px 16px; z-index: 30; max-width: calc(100% - 32px); box-shadow: 0 12px 40px rgba(0,0,0,.6); animation: rise .2s ease-out; }
+.toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--white); color: var(--on-white); font-weight: 500; border-radius: 12px; padding: 10px 16px; z-index: 30; max-width: calc(100% - 32px); box-shadow: 0 12px 40px rgba(0,0,0,.6); animation: rise .2s ease-out; }
 
 /* walkthrough */
 .tour-veil { position: fixed; inset: 0; z-index: 40; }
@@ -402,12 +405,25 @@ body.dragging-card, body.dragging-folder { user-select: none; cursor: grabbing; 
 /* A dropdown (long names, e.g. capsules) gets a row to itself. */
 .ptab .pset:has(> select) { grid-column: 1 / -1; }
 .ptab .pset:has(> select) select { max-width: 460px; }
+/* So does a row of choice buttons: in a narrow column each label wrapped word by word. On a phone the buttons wrap, not their words. */
+.ptab .pset:has(> .seg) { grid-column: 1 / -1; }
+.pset .seg { flex-wrap: wrap; }
+.pset .seg button { white-space: nowrap; }
 .pset-help { overflow-wrap: anywhere; }
 .pnotice { border: 1px solid var(--line-2); border-radius: 10px; padding: 10px 12px; font-size: 13px; }
 .pnotice.warn { border-color: rgba(245,158,11,.35); box-shadow: inset 3px 0 0 var(--warn); }
 .pnotice.bad { border-color: rgba(239,68,68,.35); box-shadow: inset 3px 0 0 var(--bad); }
 .pnotice.ok { border-color: rgba(34,197,94,.3); box-shadow: inset 3px 0 0 var(--ok); }
 .pbtns { display: flex; gap: 8px; flex-wrap: wrap; }
+/* table cells from plugins: coloured text, a progress bar with its text, a small row button */
+.pcell-ok { color: var(--ok); }
+.pcell-warn { color: var(--warn); }
+.pcell-bad { color: var(--bad); }
+.pcell-muted { color: var(--muted); }
+.pcell-bar { display: flex; align-items: center; gap: 10px; min-width: 150px; }
+.pbar { flex: 1 1 80px; height: 6px; border-radius: 999px; background: var(--surface-3); overflow: hidden; }
+.pbar i { display: block; height: 100%; border-radius: inherit; background: var(--text-2); }
+td.pcell-btn { text-align: right; width: 1%; }
 
 /* guided plugin tabs: status header, flow, numbered step cards that fold, checklist, tips, folding rows */
 .phero { display: flex; gap: 16px; align-items: center; justify-content: space-between; flex-wrap: wrap; border: 1px solid var(--line-2); border-radius: 16px; padding: 16px 18px; background: var(--surface); }
@@ -431,10 +447,10 @@ body.dragging-card, body.dragging-folder { user-select: none; cursor: grabbing; 
 .pcheck { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
 .pcheck li { display: flex; gap: 10px; align-items: flex-start; font-size: 13px; }
 .pcheck-mark { flex: none; width: 18px; height: 18px; border-radius: 50%; border: 1px solid var(--line-2); display: grid; place-items: center; font-size: 11px; margin-top: 1px; }
-.pcheck li.done .pcheck-mark { background: var(--white); color: #000; border-color: var(--white); }
+.pcheck li.done .pcheck-mark { background: var(--white); color: var(--on-white); border-color: var(--white); }
 .pcheck li.done > div { color: var(--text-2); }
 .pstep { flex: none; width: 24px; height: 24px; border-radius: 50%; border: 1px solid var(--line-2); display: grid; place-items: center; font-size: 12px; font-weight: 600; color: var(--text-2); }
-.pcard.done .pstep { background: var(--white); color: #000; border-color: var(--white); }
+.pcard.done .pstep { background: var(--white); color: var(--on-white); border-color: var(--white); }
 .pcard-titles { flex: 1; min-width: 0; }
 .pcard.folds > .pcard-head { cursor: pointer; }
 .pcard.folds:not(.open) > .pcard-body { display: none; }
@@ -498,7 +514,7 @@ table.wrap td:first-child, table.wrap td:last-child { white-space: nowrap; }
 .ppick.on { border-color: var(--white); background: var(--surface-3); }
 .ppick-head { display: flex; align-items: center; gap: 8px; width: 100%; }
 .ppick-head .title { flex: 1; font-weight: 600; }
-.ppick-tag { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--white); color: #000; font-weight: 600; }
+.ppick-tag { font-size: 11px; padding: 1px 8px; border-radius: 999px; background: var(--white); color: var(--on-white); font-weight: 600; }
 .ppick .desc { font-size: 12.5px; }
 .ppick-meta { font-size: 12px; color: var(--muted); font-variant-numeric: tabular-nums; }
 .pset textarea { width: 100%; min-height: 110px; resize: vertical; background: var(--bg); border: 1px solid var(--line-2); border-radius: 8px; padding: 8px 10px; color: var(--text); font: 12.5px var(--mono); }
@@ -614,3 +630,50 @@ table.wrap td:first-child, table.wrap td:last-child { white-space: nowrap; }
 .ppick-more { align-self: flex-start; margin-top: 2px; font-size: 12px; color: var(--text-2); text-decoration: underline; text-underline-offset: 2px; cursor: pointer; border-radius: 4px; }
 .ppick-more:hover { color: var(--text); }
 .ppick-more:focus-visible { outline: 1px solid var(--text-2); outline-offset: 2px; }
+
+/* A plugin tab's modal (e.g. the Trader's inventory): wide, its own scroll; the head stays on top. */
+.pmodal-box { max-width: 980px; padding-top: 0; }
+.pmodal-head { position: sticky; top: 0; z-index: 1; display: flex; align-items: center; justify-content: space-between; gap: 12px; padding: 16px 0 10px; background: var(--surface-2); border-bottom: 1px solid var(--line); }
+.pmodal-head h3 { min-width: 0; overflow-wrap: anywhere; }
+/* Items like the game's inventory: a grid of cards with the picture, name, wear and price, the rarity as a stripe. */
+.pitems { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+.pitem { position: relative; display: flex; padding: 0; border: 1px solid var(--line); border-bottom: 3px solid var(--rc, var(--line-2)); border-radius: 10px; background: var(--surface); color: var(--text); min-width: 0; font-weight: 400; }
+.pitem:hover { background: var(--surface-3); }
+.pitem.on { border-color: var(--text); border-bottom-color: var(--rc, var(--text)); background: var(--surface-3); }
+.pitem.locked { opacity: .45; }
+/* The card's own button fills it; a stack's − + All sit beside it (over the foot). */
+.pitem-main { flex: 1; min-width: 0; display: grid; gap: 2px; align-content: start; text-align: left; padding: 6px 8px 8px; margin: 0; height: auto; min-height: 0; border: 0; border-radius: inherit; background: none; color: inherit; font: inherit; font-weight: 400; cursor: pointer; box-shadow: none; }
+.pitem-main:hover { background: none; }
+.pitem-main[disabled] { cursor: not-allowed; opacity: 1; }
+.pitem-foot .pitem-qty { color: var(--text); font-weight: 600; }
+.pitem-ctl { position: absolute; left: 6px; right: 6px; bottom: 6px; display: flex; gap: 4px; opacity: 0; pointer-events: none; }
+.pitem-ctl { align-items: center; gap: 2px; background: var(--surface-3); border-radius: 8px; padding: 2px; }
+.pitem-ctl button { flex: 0 0 auto; min-width: 22px; padding: 2px 4px; }
+.pitem-ctl-n { flex: 1; min-width: 0; text-align: center; font-size: 12px; font-variant-numeric: tabular-nums; white-space: nowrap; }
+.pitem.on:hover .pitem-ctl, .pitem.on:focus-within .pitem-ctl { opacity: 1; pointer-events: auto; }
+@media (hover: none) { .pitem.on .pitem-ctl { opacity: 1; pointer-events: auto; } .pitem.stack.on .pitem-main { padding-bottom: 36px; } }
+/* A toolbar row: a search box that takes the room, then buttons. */
+.ptoolbar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; }
+.ptoolbar > .psets { flex: 1 1 220px; min-width: 0; margin: 0; }
+.ptoolbar > .pbtns { margin: 0; flex-wrap: wrap; }
+.ptoolbar-text { flex-basis: 100%; }
+.pitem.locked:hover { background: var(--surface); }
+.pitem-img { display: block; aspect-ratio: 4 / 3; margin: 0 6px 2px; }
+.pitem-img img { width: 100%; height: 100%; object-fit: contain; display: block; }
+.pitem-title { font-size: 11px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+/* The name over two lines like in the game, then cut; every card keeps two lines so the rows line up. */
+.pitem-sub { font-size: 12px; font-weight: 600; line-height: 1.25; min-height: 2.5em; overflow: hidden; overflow-wrap: anywhere; display: -webkit-box; -webkit-box-orient: vertical; -webkit-line-clamp: 2; }
+.pitem-foot { display: flex; justify-content: space-between; align-items: baseline; gap: 6px; margin-top: 4px; font-size: 12px; font-variant-numeric: tabular-nums; }
+.pitem-foot span { color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.pitem-tags { position: absolute; top: 6px; left: 6px; display: flex; gap: 4px; }
+.pitem-tags span { font-size: 10px; padding: 1px 5px; border-radius: 5px; background: var(--surface-3); color: var(--text-2); }
+.pitem-check { position: absolute; top: 6px; right: 6px; width: 20px; height: 20px; border-radius: 50%; display: grid; place-items: center; font-size: 12px; background: var(--text); color: var(--surface); }
+/* Wear and the whole float: readable ink, wraps rather than cut off. */
+.pitem-detail { font-size: 11px; color: var(--text); font-variant-numeric: tabular-nums; overflow-wrap: anywhere; }
+.pitem-tags { align-items: center; }
+.pitem-star { width: 14px; height: 14px; fill: #f5c542; display: block; }
+@media (max-width: 480px) { .pitems { grid-template-columns: repeat(3, minmax(0, 1fr)); } }
+@media (max-width: 380px) { .pitems { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* A row of filters (the Trader's inventory): narrow drop-downs side by side, like the game's. */
+.ptab .psets.pfilters { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px 10px; }
+.ptab .psets.pfilters .pset { grid-column: auto; }

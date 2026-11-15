@@ -13,6 +13,7 @@ const { Errors } = require('./errors');
 const { Log, buildReport } = require('./log');
 const { Site } = require('./site');
 const { Engine } = require('./engine');
+const { importZip } = require('../plugins/zipimport');
 const { PluginHost } = require('../plugins/host');
 const { Catalog } = require('../plugins/catalog');
 const { PUBLIC_KEY } = require('../plugins/keys');
@@ -259,6 +260,7 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
                 folders: store.folders.map(f => ({ ...f })),
                 settings: publicSettings(), plugins: plugins.list(), tabs: plugins.tabs(), catalog: catalog.view(),
                 whatsNew: whatsNew.unseen().length > 0, stats: stats.info(false),
+                themes: plugins.themes(), theme: (t => t && { id: t.id, stamp: t.stamp })(plugins.theme()),
                 platform: process.platform, now: Date.now(),   // the panel's clock offset (a phone's clock may differ)
             };
         },
@@ -365,6 +367,14 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
         pluginRescan: () => { plugins.scan(); engine.emit('change'); return { ok: true }; },
         pluginCatalog: () => catalog.refresh(),
         pluginInstall: (id) => catalog.install(id),
+        // The picked panel theme in full ({ id, name, vars, css, stamp } or null): fetched when state's theme.stamp changes.
+        theme: () => plugins.theme(),
+        // A plugin from a zip the user picked (base64): src/plugins/zipimport.js.
+        pluginImportZip: (b64) => {
+            const buf = Buffer.from(String(b64 || ''), 'base64');
+            if (!buf.length) return { ok: false, code: 'format', error: 'empty file' };
+            return importZip(buf, { host: plugins, catalog, log });
+        },
         pluginRemove: (id) => catalog.remove(id),
         pluginAction: (id, name, arg) => plugins.runAction(id, name, arg),
     };

@@ -25,6 +25,7 @@ const SETTINGS_DEFAULTS = {
     closeToTray: true,           // closing the window keeps clicking in the tray; false = closing quits
     trayHintShown: false,        // the "still running in the tray" notice was shown once
     allowUnverifiedPlugins: false,
+    theme: null,                 // the plugin id whose panel theme is shown (Settings > Theme); null = default
     tourDone: false,             // the first-open walkthrough was seen (or skipped)
     lastVersion: null,           // the newest version whose What's new was shown
     shareStats: true,            // anonymous usage stats (src/core/stats.js); Settings shows exactly what
@@ -210,6 +211,7 @@ class Store {
         if (patch.startWithSystem != null) s.startWithSystem = !!patch.startWithSystem;
         if (patch.closeToTray != null) s.closeToTray = !!patch.closeToTray;
         if (patch.allowUnverifiedPlugins != null) s.allowUnverifiedPlugins = !!patch.allowUnverifiedPlugins;
+        if (patch.theme !== undefined) s.theme = typeof patch.theme === 'string' && /^[a-z0-9-]+$/.test(patch.theme) ? patch.theme : null;
         if (patch.tourDone != null) s.tourDone = !!patch.tourDone;
         if (patch.shareStats != null) s.shareStats = !!patch.shareStats;
         if (patch.cleanOldSignIns != null) s.cleanOldSignIns = !!patch.cleanOldSignIns;

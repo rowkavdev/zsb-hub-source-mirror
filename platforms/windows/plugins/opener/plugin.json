@@ -1,9 +1,9 @@
 {
   "id": "opener",
   "name": "Opener",
-  "version": "1.6.0",
-  "description": "A tool for opening cases, capsules or collections on the accounts you choose: Preview shows what it would do, Open now buys with the cash above your keep amounts (or uses what is in stock), opens it all and keeps or sells the drops. Tracks XP and rank-ups.",
-  "minCore": "1.2.3",
+  "version": "1.9.0",
+  "description": "A tool for opening cases, capsules or collections on the accounts you choose: Preview shows what it would do, Open now buys a set amount (or what the spare cash covers, or uses what is in stock), opens it all and keeps or sells the drops. Tracks XP and rank-ups.",
+  "minCore": "1.2.7",
   "main": "index.js",
   "tab": "Opener",
   "defaultEnabled": false,
@@ -24,14 +24,29 @@
       "default": "buy",
       "options": [
         {
+          "value": "amount",
+          "label": "Buy a set amount"
+        },
+        {
+          "value": "stockAmount",
+          "label": "Stock first, then buy"
+        },
+        {
           "value": "buy",
-          "label": "Buy"
+          "label": "Buy with spare cash"
         },
         {
           "value": "owned",
           "label": "From stock"
         }
       ]
+    },
+    "buyAmount": {
+      "type": "number",
+      "label": "Cases to buy on each account",
+      "help": "Short on cash: buys what it can. With Stock first, bought once the stock is open.",
+      "default": 100,
+      "min": 1
     },
     "maxPrice": {
       "type": "number",
@@ -41,7 +56,7 @@
     },
     "keepMoney": {
       "type": "number",
-      "label": "Keep cash ($)",
+      "label": "Keep cash ($, never spend below this)",
       "default": 0,
       "min": 0
     },
@@ -57,6 +72,88 @@
       "label": "Most to spend per Open now ($, 0 = no limit)",
       "default": 0,
       "min": 0
+    },
+    "sets": {
+      "type": "list",
+      "label": "Sets",
+      "itemLabel": "set",
+      "help": "A set opens something else on its own accounts. Accounts on a set open its item even when they are not ticked under Which accounts; everyone else opens the item above.",
+      "fields": {
+        "name": {
+          "type": "text",
+          "label": "Name",
+          "default": "",
+          "placeholder": "e.g. Big cases"
+        },
+        "item": {
+          "type": "choice",
+          "label": "Item",
+          "dynamic": true,
+          "default": ""
+        },
+        "accounts": {
+          "type": "accounts",
+          "label": "Accounts on this set"
+        },
+        "h1": {
+          "type": "heading",
+          "label": "Buying"
+        },
+        "source": {
+          "type": "choice",
+          "label": "Source",
+          "default": "buy",
+          "options": [
+            {
+              "value": "amount",
+              "label": "Buy a set amount"
+            },
+            {
+              "value": "stockAmount",
+              "label": "Stock first, then buy"
+            },
+            {
+              "value": "buy",
+              "label": "Buy with spare cash"
+            },
+            {
+              "value": "owned",
+              "label": "From stock"
+            }
+          ]
+        },
+        "buyAmount": {
+          "type": "number",
+          "label": "Cases to buy on each (a set amount)",
+          "default": 100,
+          "min": 1
+        },
+        "maxPrice": {
+          "type": "number",
+          "label": "Max price each ($, 0 = no limit)",
+          "default": 0,
+          "min": 0
+        },
+        "keepMoney": {
+          "type": "number",
+          "label": "Keep cash ($)",
+          "default": 0,
+          "min": 0
+        },
+        "keepPct": {
+          "type": "number",
+          "label": "Keep % of cash (spare cash)",
+          "default": 0,
+          "min": 0,
+          "max": 100
+        },
+        "spendPerRun": {
+          "type": "number",
+          "label": "Most to spend per Open now ($, spare cash)",
+          "default": 0,
+          "min": 0
+        }
+      }
     },
     "drops": {
       "type": "choice",
@@ -86,9 +183,10 @@
     "lanes": {
       "type": "number",
       "label": "Accounts opening at once",
+      "help": "At most 3 per IP: the site gets touchy from 4 at once on one connection. Above 3 needs accounts on proxies (Proxies plugin).",
       "default": 1,
       "min": 1,
-      "max": 5
+      "max": 10
     },
     "exclusive": {
       "type": "boolean",
@@ -109,7 +207,7 @@
     "lowFloat": {
       "type": "number",
       "label": "Low floats: under",
-      "default": 0.0000001,
+      "default": 1e-7,
       "min": 0,
       "max": 0.1
     },
@@ -146,6 +244,52 @@
       "label": "Never favourite these patterns",
       "placeholder": "e.g. Blue Gem, then Enter",
       "help": "Pattern names as the site writes them."
+    },
+    "boostCount": {
+      "type": "boolean",
+      "label": "Keep an open-count boost running",
+      "help": "More cases per open: the biggest one in stock first.",
+      "default": false
+    },
+    "boostMult": {
+      "type": "boolean",
+      "label": "Keep a multiplier boost running",
+      "help": "+1 open multiplier (each open costs and opens that much more).",
+      "default": false
+    },
+    "boostCashback": {
+      "type": "boolean",
+      "label": "Keep case-open cashback running",
+      "default": false
+    },
+    "boostBuy": {
+      "type": "boolean",
+      "label": "Buy them with ammo when there are none",
+      "help": "Buys the one that gives the most per ammo. Ammo only, never real money.",
+      "default": false
+    },
+    "boostKeepAmmo": {
+      "type": "number",
+      "label": "Keep ammo (never spend below this)",
+      "default": 0,
+      "min": 0
+    },
+    "boostEveryMs": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "hookPaste": {
+      "type": "text",
+      "label": "Discord webhook URL",
+      "default": "",
+      "placeholder": "https://discord.com/api/webhooks/…"
+    },
+    "hookMin": {
+      "type": "number",
+      "label": "Only post drops worth at least ($, 0 = all)",
+      "default": 0,
+      "min": 0
     },
     "turnMs": {
       "type": "number",

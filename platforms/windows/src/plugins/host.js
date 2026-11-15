@@ -12,7 +12,8 @@
  * other types, e.g. trade routes; a list starts empty and holds up to 50 rows.
  * manifest.tab: the title of the plugin's own tab (ctx.panel.tab) — its setup lives there, and the
  * Plugins tab shows "Open" instead of a settings dialog. manifest.group (optional): the tab bar drop-down its
- * tabs go in ('farming', 'trading', or a name of its own); without one the panel picks, or "More".
+ * tabs go in ('farming', 'trading', or a name of its own); without one the panel picks, or "More". A tab's content
+ * may return pin: 'a few words' (e.g. 'running'): while set, the tab sits on the bar by itself with those words.
  * Any setting may have help (a line under it) and when: '<boolean key>' (shown only while that's on).
  * A choice with dynamic: true gets its options from the plugin (ctx.settings.setOptions), e.g. a
  * list read from the site; until then any value is kept.
@@ -28,6 +29,7 @@
 const fs = require('fs');
 const path = require('path');
 const crypto = require('crypto');
+const themeKit = require('./theme');
 const { PUBLIC_KEY } = require('./keys');
 
 const SIG_FILE = 'plugin.sig';
@@ -98,6 +100,7 @@ class PluginHost {
         this.gates = new Map();     // exit-IP group -> { busy, last, q: [start fns], t }
         this.plugins = new Map();   // id -> { manifest, dir, bundled, verified, state, error, mod, res }
         this.busy = new Map();      // account id -> Map(plugin id -> { plugin, what, at }): plugins that have the account tied up
+        this.wants = new Map();     // account id -> Map(plugin id -> { plugin, what, at }): plugins asking another to hand the account over
         this.shared = new Map();    // 'plugin/key' -> value a plugin publishes for the others (cleared when it stops)
         for (const d of [userDir, dataDir]) fs.mkdirSync(d, { recursive: true });
     }
@@ -275,7 +278,7 @@ class PluginHost {
         const main = path.join(p.dir, p.manifest.main || 'index.js');
         // Drop every cached module from this plugin's folder so a reload runs the new code.
         for (const k of Object.keys(require.cache)) if (k.startsWith(p.dir + path.sep)) delete require.cache[k];
-        p.res = { listeners: [], timers: [], perAccount: [], tabs: [], badges: [], codes: [], settingsListeners: [], sockets: new Set(), sleeps: new Set(), stopping: false, actions: {} };
+        p.res = { listeners: [], timers: [], perAccount: [], tabs: [], badges: [], codes: [], settingsListeners: [], sockets: new Set(), sleeps: new Set(), stopping: false, actions: {}, theme: null, assets: new Set(), assetUrls: new Map(), assetBudget: { used: 0 } };
         try {
             p.mod = require(main);
             const ctx = this.makeCtx(id, p);
@@ -296,6 +299,7 @@ class PluginHost {
         if (!p || p.state !== 'running') { if (p && p.state === 'error') { p.state = 'off'; p.error = null; this.errors.clearAccount('plugin:' + id); } return; }
         try { if (p.mod && p.mod.stop) p.mod.stop(); } catch (e) { this.log.add(null, `Plugin ${id} stop(): ${e.message}`, 'warn'); }
         for (const [aid, m] of this.busy) { m.delete(id); if (!m.size) this.busy.delete(aid); }
+        for (const [aid, m] of this.wants) { m.delete(id); if (!m.size) this.wants.delete(aid); }
         for (const k of this.shared.keys()) if (k.startsWith(id + '/')) this.shared.delete(k);
         if (this.routesOwner === id) { this.routesOwner = null; this.engine.setRoutes([]); }   // its proxies go with it
         this.cleanup(p);
@@ -371,6 +375,19 @@ class PluginHost {
                 // don't count (plugins built to work alongside each other on the same account).
                 busy: (aid, { ignore = [] } = {}) => {
                     for (const b of (host.busy.get(aid) || new Map()).values()) if (b.plugin !== id && !ignore.includes(b.plugin)) return { ...b };
+                    return null;
+                },
+                // Asking for an account another plugin holds (the Trader's routes): want(aid, what) until done, then
+                // want(aid, null). A plugin that holds accounts for long stretches (the Armory) checks wanted(aid), starts
+                // nothing new on it and clears its busy mark once what it has going there is finished.
+                want: (aid, what) => {
+                    const m = host.wants.get(aid) || new Map();
+                    if (what) { m.set(id, { plugin: id, what: String(what), at: Date.now() }); host.wants.set(aid, m); }
+                    else { m.delete(id); if (!m.size) host.wants.delete(aid); }
+                },
+                // Another plugin asking for the account: { plugin, what, at } or null.
+                wanted: (aid) => {
+                    for (const w of (host.wants.get(aid) || new Map()).values()) if (w.plugin !== id) return { ...w };
                     return null;
                 },
                 // The player's main account (Settings), when it's one of the hub's accounts: its id, else null. Plugins
@@ -485,6 +502,23 @@ class PluginHost {
                 action: (name, fn) => { r.actions[name] = fn; },
                 // fn(accountId) -> short text shown on that account's card, or null
                 badge: (fn) => r.badges.push(host.guard(id, p, fn)),
+                // A theme for the whole panel (src/plugins/theme.js): theme({ vars, css }) or theme(null) to take it back.
+                // Returns { ok, dropped: [why each left-out variable] } or { ok: false, error }. Shown when picked in Settings.
+                theme: (spec) => {
+                    if (!spec) { r.theme = null; host.engine.emit('change'); return { ok: true }; }
+                    const v = themeKit.checkVars(spec.vars), c = themeKit.checkCss(spec.css, r.assets);
+                    if (c.error) { host.log.add(null, `${p.manifest.name || id}: theme not used — ${c.error}`, 'warn'); return { ok: false, error: c.error }; }
+                    r.theme = { vars: v.vars, css: c.css };
+                    r.theme.stamp = themeKit.stamp(r.theme);
+                    host.engine.emit('change');
+                    return { ok: true, dropped: v.dropped };
+                },
+                // A picture from the plugin's folder, as a URL that works in the app window and the browser panel.
+                asset: (file) => {
+                    const key = String(file);
+                    if (!r.assetUrls.has(key)) { const u = themeKit.readAsset(p.dir, key, r.assetBudget); r.assetUrls.set(key, u); r.assets.add(u); }
+                    return r.assetUrls.get(key);
+                },
             },
         };
         return ctx;
@@ -519,6 +553,18 @@ class PluginHost {
             for (const t of p.res.tabs) { let content = null; try { content = t.render(); } catch (_) {} out.push({ plugin: id, title: t.title, group: p.manifest.group || null, content }); }
         }
         return out;
+    }
+
+    // Themes from running plugins, and the one picked in Settings (null = the default look).
+    themes() {
+        const out = [];
+        for (const [id, p] of this.plugins) if (p.res && p.res.theme) out.push({ id, name: p.manifest.name || id });
+        return out;
+    }
+    theme() {
+        const id = this.store.settings.theme, p = id && this.plugins.get(id);
+        const t = p && p.res && p.res.theme;
+        return t ? { id, name: p.manifest.name || id, ...t } : null;
     }
 
     badges(acctId) {
