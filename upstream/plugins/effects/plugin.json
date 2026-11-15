@@ -1,0 +1,59 @@
+{
+  "id": "effects",
+  "name": "Effects",
+  "version": "1.0.0",
+  "description": "Manages the site's special effects with ammo: pick effects, then buy, sell, start or queue them on all accounts at once or one account. The queue starts each effect as soon as nothing of its kind is running, and can buy it with ammo first.",
+  "minCore": "1.2.5",
+  "main": "index.js",
+  "tab": "Effects",
+  "defaultEnabled": false,
+  "power": true,
+  "settings": {
+    "scope": {
+      "type": "choice",
+      "label": "Work on",
+      "default": "all",
+      "options": [
+        {
+          "value": "all",
+          "label": "All accounts"
+        },
+        {
+          "value": "one",
+          "label": "One account"
+        }
+      ]
+    },
+    "account": {
+      "type": "account",
+      "label": "The account (with One account)"
+    },
+    "qty": {
+      "type": "number",
+      "label": "How many of each, per account",
+      "default": 1,
+      "min": 1
+    },
+    "keepAmmo": {
+      "type": "number",
+      "label": "Keep ammo (never spend below this)",
+      "default": 0,
+      "min": 0
+    },
+    "buyToUse": {
+      "type": "boolean",
+      "label": "Use now buys one with ammo when there's none",
+      "default": false
+    },
+    "buyForQueue": {
+      "type": "boolean",
+      "label": "The queue buys with ammo when there's none",
+      "default": false
+    },
+    "everyMs": {
+      "type": "number",
+      "hidden": true,
+      "default": 0
+    }
+  }
+}

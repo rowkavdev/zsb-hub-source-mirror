@@ -184,7 +184,9 @@
     function drawTabs() {
         const bad = S.accounts.filter(a => a.status === 'logged-out' || a.status === 'problem' || a.status === 'needs-you').length;
         const plugBad = S.plugins.filter(p => p.state === 'error').length;
-        const ptabs = S.tabs.map(t => ({ id: 'plugin:' + t.plugin + ':' + t.title, label: t.title, group: t.group || TAB_GROUPS[t.plugin] || 'more' }));
+        // A tab whose content has pin (a few words, e.g. 'running') comes out of its drop-down onto the bar, with that word.
+        const ptabs = S.tabs.map(t => { const id = 'plugin:' + t.plugin + ':' + t.title, pin = t.content && typeof t.content.pin === 'string' && t.content.pin.slice(0, 20);
+            return { id, label: t.title, pin, group: pin ? 'pin:' + id : t.group || TAB_GROUPS[t.plugin] || 'more' }; });
         const all = [['accounts', T('tabs.accounts'), bad], ['overview', T('tabs.overview'), 0], ['plugins', T('tabs.plugins'), plugBad], ...ptabs.map(t => [t.id, t.label, 0]), ['log', T('tabs.log'), 0], ['settings', T('tabs.settings'), 0]];
         if (tab.startsWith('plugin:') && !all.some(t => t[0] === tab)) tab = 'accounts';
         const one = ([id, label, n]) => `<button role="tab" data-act="tab" data-tab="${esc(id)}" aria-selected="${id === tab}">${esc(label)}${n ? `<span class="count">${n}</span>` : ''}</button>`;
@@ -192,7 +194,7 @@
         for (const t of ptabs) groups.set(t.group, [...(groups.get(t.group) || []), t]);
         if (openGroup && !(groups.get(openGroup) || []).length) openGroup = null;
         const groupHtml = [...groups].map(([g, list]) => {
-            if (list.length === 1) return one([list[0].id, list[0].label, 0]);
+            if (list.length === 1) return list[0].pin ? `<button role="tab" data-act="tab" data-tab="${esc(list[0].id)}" aria-selected="${list[0].id === tab}">${esc(list[0].label)}<span class="tg-cur">· ${esc(list[0].pin)}</span></button>` : one([list[0].id, list[0].label, 0]);
             const cur = list.find(t => t.id === tab);
             const name = T('tabs.group.' + g) !== 'tabs.group.' + g ? T('tabs.group.' + g) : g;
             return `<span class="tab-group">
@@ -782,7 +784,15 @@
             <button class="small" data-act="pluginCatalog">${H('plugins.catalog.check')}</button></p>`;
         setHtml('#tab-plugins', (S.plugins.length ? section(H('plugins.section.on'), on) + section(H('plugins.section.available'), off) : `<div class="muted">${H('plugins.none')}</div>`)
             + (more.length ? `<h4 class="plug-head">${H('plugins.section.more')}</h4><div class="rows">${more.map(moreCard).join('')}</div>` : '')
-            + status + `<p class="muted">${H('plugins.note')}</p>`);
+            + status
+            + `<h4 class="plug-head">${H('plugins.section.custom')}</h4>
+            <div class="rows"><div class="row plug custom-import">
+              <div class="main"><div class="title">${H('plugins.import.title')}</div>
+                <div class="desc">${H('plugins.import.desc')}</div>
+                ${S.settings.allowUnverifiedPlugins ? '' : `<div class="desc muted">${H('plugins.import.unverified')}</div>`}</div>
+              <div class="plug-btns"><button class="small primary" data-act="pluginZip">${H('plugins.import.button')}</button></div>
+            </div></div>`
+            + `<p class="muted">${H('plugins.note')}</p>`);
     }
 
     // A plugin's settings window. Every change is saved as it's made; "Done" just closes it.
@@ -872,7 +882,7 @@
         const key = esc(s.key), label = s.label === '' ? '' : `<div class="pset-label">${esc(s.label || s.key)}</div>`;
         if (s.type === 'list') return `<div class="pset" data-key="${key}" data-type="list">${label}<div class="prows">${listHtml(s)}</div></div>`;
         if (s.type === 'account') return `<div class="pset" data-key="${key}" data-type="account">${label}${accountSelect(s.value, 'data-pset')}</div>`;
-        if (s.type === 'choice' && (s.dynamic || (s.options || []).length > 4)) return `<div class="pset" data-key="${key}" data-type="choice">${label}${choiceSelect(s.options, s.value, 'data-pset')}</div>`;
+        if (s.type === 'choice' && (s.dynamic || s.select || (s.options || []).length > 4)) return `<div class="pset" data-key="${key}" data-type="choice">${label}${choiceSelect(s.options, s.value, 'data-pset')}</div>`;
         if (s.type === 'accounts') {
             const v = s.value || {}, ids = new Set(v.ids || []);
             const row = (a) => `
@@ -902,7 +912,7 @@
         if (s.type === 'tags') return `<div class="pset pset-wide" data-key="${key}" data-type="tags">${label}<div class="ptags">${tagsHtml(s.value)}<input data-tag-input spellcheck="false" autocomplete="off" placeholder="${esc(tagList(s.value).length ? T('tags.more') : s.placeholder || '')}"></div></div>`;
         // textarea: several lines (a pasted list); saved when the field loses focus.
         if (s.type === 'textarea') return `<div class="pset pset-wide" data-key="${key}" data-type="text">${label}<textarea data-pset rows="6" spellcheck="false" autocomplete="off"${s.placeholder ? ` placeholder="${esc(s.placeholder)}"` : ''}>${esc(s.value || '')}</textarea></div>`;
-        return `<div class="pset" data-key="${key}" data-type="${s.type === 'number' ? 'number' : 'text'}">${label}<input type="${s.type === 'number' ? 'number' : 'text'}"${s.type === 'number' ? ' step="any"' : ''} data-pset value="${esc(s.type === 'number' ? plainNum(s.value) : s.value)}"></div>`;
+        return `<div class="pset" data-key="${key}" data-type="${s.type === 'number' ? 'number' : 'text'}">${label}<input type="${s.type === 'number' ? 'number' : 'text'}"${s.type === 'number' ? ' step="any"' : ''}${s.placeholder ? ` placeholder="${esc(s.placeholder)}"` : ''} data-pset value="${esc(s.type === 'number' ? plainNum(s.value) : s.value)}"></div>`;
     }
 
     function pluginModal(id) {
@@ -1040,6 +1050,12 @@
         root._tagOut = (e) => { if (e.target.hasAttribute && e.target.hasAttribute('data-tag-input')) addTag(e.target); };
         root.addEventListener('focusout', root._tagOut);
         root.onclick = (e) => {
+            // A click on a plugin modal's backdrop (outside its box) closes it, as its × does.
+            if (e.target.classList && e.target.classList.contains('pmodal')) {
+                const x = e.target.querySelector('.pmodal-head [data-paction]');
+                if (x) pluginAction(id, x);
+                return;
+            }
             const more = e.target.closest('[data-plines]');
             if (more) {
                 const k = more.dataset.plines;
@@ -1186,9 +1202,19 @@
     const btnsHtml = (items) => `<div class="pbtns">${(items || []).map(i => `<button class="${i.primary ? 'primary' : ''} ${i.danger ? 'danger' : ''}" data-paction="${esc(i.action)}" ${i.arg != null ? `data-arg="${esc(i.arg)}"` : ''} ${i.confirm ? `data-confirm="${esc(i.confirm)}"` : ''}>${esc(i.label)}</button>`).join('')}</div>`;
     // A shop row's button: "Buy 30 for 3 credits" (items come in packs; a pack costs price).
     const shopLabel = (qty, pack, price, unit) => { const packs = Math.max(1, Math.round(Number(qty) / pack) || 1); const cost = packs * Number(price); return T('block.shop.buy', { count: packs * pack, cost: `${cost}${unit ? ' ' + unit + (cost === 1 ? '' : 's') : ''}` }); };
+    // A table cell: text, or { text, level: ok|warn|bad|muted } (coloured text), { bar: 0..1, text } (a progress bar
+    // with its text) or { label, action, arg, danger, confirm } (a small button, e.g. a per-row Stop).
+    const cellHtml = (v) => {
+        if (!v || typeof v !== 'object') return esc(v ?? '');
+        if (v.action) return `<button class="small${v.primary ? ' primary' : ''}${v.danger ? ' danger' : ''}" data-paction="${esc(v.action)}"${v.arg != null ? ` data-arg="${esc(v.arg)}"` : ''}${v.confirm ? ` data-confirm="${esc(v.confirm)}"` : ''}>${esc(v.label || '')}</button>`;
+        const text = `<span${v.level ? ` class="pcell-${esc(v.level)}"` : ''}>${esc(v.text ?? '')}</span>`;
+        if (v.bar == null) return text;
+        const pct = Math.max(0, Math.min(100, Number(v.bar) * 100 || 0));
+        return `<div class="pcell-bar"><div class="pbar"><i data-w="${pct.toFixed(1)}"></i></div>${text}</div>`;
+    };
     function pluginBlocks(blocks, p) {
         const setting = (k) => p.settings.find(x => x.key === k);
-        const settingsHtml = (keys, bare) => `<div class="psets">${(keys || []).map(setting).filter(Boolean).map(x => (bare ? { ...x, label: '', help: '' } : x)).map(pluginSettingHtml).join('')}</div>`;
+        const settingsHtml = (keys, bare, filters) => `<div class="psets${filters ? ' pfilters' : ''}">${(keys || []).map(setting).filter(Boolean).map(x => (bare ? { ...x, label: '', help: '' } : x)).map(pluginSettingHtml).join('')}</div>`;
         return (blocks || []).map(b => {
             if (b.type === 'hero') return `<div class="phero ${esc(b.level || '')}"><div class="phero-main">${b.pill ? `<span class="ppill ${esc(b.level || '')}">${esc(b.pill)}</span>` : ''}
                 <div class="phero-title">${esc(b.title || '')}</div>${b.text ? `<div class="phero-text">${esc(b.text)}</div>` : ''}</div>${b.buttons ? btnsHtml(b.buttons) : ''}</div>`;
@@ -1197,11 +1223,11 @@
             if (b.type === 'checklist') return `<ul class="pcheck">${b.items.map(i => `<li class="${i.done ? 'done' : ''}"><span class="pcheck-mark">${i.done ? '✓' : ''}</span><div><div>${esc(i.label)}</div>${!i.done && i.hint ? `<div class="muted">${esc(i.hint)}</div>` : ''}</div></li>`).join('')}</ul>`;
             if (b.type === 'list') { const sp = setting(b.key); return sp ? `<div class="psets">${pluginSettingHtml({ ...sp, label: '', help: '', summaries: b.summaries || [] })}</div>` : ''; }
             if (b.type === 'stats') return `<div class="statrow">${b.items.map(i => `<div class="stat"><span>${esc(i.label)}</span><b>${esc(i.value)}</b></div>`).join('')}</div>`;
-            if (b.type === 'table') return b.rows.length ? `<div class="table-wrap"><table${b.wrap ? ' class="wrap"' : ''}><thead><tr>${b.columns.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${b.rows.map(r => `<tr>${r.map(v => `<td>${esc(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`
+            if (b.type === 'table') return b.rows.length ? `<div class="table-wrap"><table${b.wrap ? ' class="wrap"' : ''}><thead><tr>${b.columns.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${b.rows.map(r => `<tr>${r.map(v => `<td${v && typeof v === 'object' && v.action ? ' class="pcell-btn"' : ''}>${cellHtml(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`
                 : (b.empty ? `<p class="muted">${esc(b.empty)}</p>` : '');
             if (b.type === 'notice') return `<div class="pnotice ${esc(b.level || '')}">${esc(b.text)}</div>`;
             if (b.type === 'buttons') return `<div class="pbtns">${b.items.map(i => `<button class="${i.primary ? 'primary' : ''} ${i.danger ? 'danger' : ''}" data-paction="${esc(i.action)}" ${i.arg != null ? `data-arg="${esc(i.arg)}"` : ''} ${i.confirm ? `data-confirm="${esc(i.confirm)}"` : ''}>${esc(i.label)}</button>`).join('')}</div>`;
-            if (b.type === 'settings') return settingsHtml(b.keys, b.bare);
+            if (b.type === 'settings') return settingsHtml(b.keys, b.bare, b.filters);
             if (b.type === 'skillmap') {
                 // Like the site's skill map page: a tab per map, the map picture with the skills on it, and the picked
                 // skill's details beside it (with the button that adds it to the plan or takes it out). The shown map
@@ -1238,6 +1264,20 @@
                 <div class="pshop-name"><div class="title">${esc(i.name)}</div>${i.sub ? `<div class="desc">${esc(i.sub)}</div>` : ''}</div>
                 <input type="number" min="${n}" step="${n}" value="${n}" data-shop-qty data-pack="${n}" data-price="${esc(i.price)}" data-unit="${esc(b.unit || '')}"${i.max != null ? ` max="${esc(i.max * n)}"` : ''}>
                 <button class="small" data-paction="${esc(b.action)}" data-shop="${esc(i.id)}"${i.max === 0 ? ' disabled' : ''}>${esc(shopLabel(n, n, i.price, b.unit))}</button></div>`; }).join('')}</div>`;
+            // A toolbar: settings without their labels (a search box), then buttons, on one row that wraps.
+            if (b.type === 'bar') return `<div class="ptoolbar">${(b.keys || []).length ? settingsHtml(b.keys, true) : ''}${(b.items || []).length ? pluginBlocks([{ type: 'buttons', items: b.items }], p) : ''}${b.text ? `<span class="muted ptoolbar-text">${esc(b.text)}</span>` : ''}</div>`;
+            // Items like the game's inventory: picture, name, wear/float, price, a rarity stripe; click to pick.
+            // A stack (qty: { n picked, of, action }) shows ×of, or n/of once picked with − + All on hover; those
+            // buttons sit beside the card's own button (a button can't hold buttons), over its foot.
+            const qtyBtn = (i, d, l, t) => `<button class="small" data-paction="${esc(i.qty.action)}" data-arg="${esc(i.id + '|' + d)}" title="${H(t)}">${l}</button>`;
+            const qtyCtl = (i) => i.qty && i.on && !i.locked ? `<span class="pitem-ctl">${qtyBtn(i, '-1', '−', 'items.less')}<b class="pitem-ctl-n">${esc(String(i.qty.n))}/${esc(String(i.qty.of) + (i.qty.more ? "+" : ""))}</b>${qtyBtn(i, '+1', '+', 'items.more')}${qtyBtn(i, 'all', H('items.all'), 'items.all')}</span>` : '';
+            if (b.type === 'items') return (b.items || []).length ? `<div class="pitems">${b.items.map(i => `<div class="pitem${i.on ? ' on' : ''}${i.locked ? ' locked' : ''}${i.qty ? ' stack' : ''}" data-arg="${esc(i.id)}"${/^[0-9a-f]{6}$/i.test(i.color || '') ? ` data-color="${esc(i.color)}"` : ''}><button class="pitem-main" data-paction="${esc(b.action)}" data-arg="${esc(i.id)}"${i.locked ? ' disabled' : ''} title="${esc(i.hint || i.title || '')}">
+                <span class="pitem-img">${/^https:\/\//.test(i.image || '') ? `<img src="${esc(i.image)}" alt="" loading="lazy">` : ''}</span>
+                ${(i.tags || []).length || i.fav ? `<span class="pitem-tags">${i.fav ? `<svg class="pitem-star" viewBox="0 0 24 24" role="img" aria-label="${H('items.fav')}"><path d="M12 2.6l2.85 6.05 6.6.8-4.87 4.56 1.27 6.54L12 17.3l-5.85 3.25 1.27-6.54L2.55 9.45l6.6-.8z"/></svg>` : ''}${(i.tags || []).map(t => `<span>${esc(t)}</span>`).join('')}</span>` : ''}
+                <span class="pitem-title">${esc(i.title || '')}</span>${i.sub ? `<span class="pitem-sub">${esc(i.sub)}</span>` : ''}${i.detail ? `<span class="pitem-detail">${esc(i.detail)}</span>` : ''}
+                <span class="pitem-foot"><b>${esc(i.price || '')}</b>${i.qty ? `<span class="pitem-qty">${i.on ? `${esc(String(i.qty.n))}/${esc(String(i.qty.of) + (i.qty.more ? "+" : ""))}` : `×${esc(String(i.qty.of) + (i.qty.more ? "+" : ""))}`}</span>` : i.meta ? `<span>${esc(i.meta)}</span>` : ''}</span>
+                ${i.on ? '<span class="pitem-check" aria-hidden="true">✓</span>' : ''}</button>${qtyCtl(i)}</div>`).join('')}</div>`
+                : `<div class="muted">${esc(b.empty || '')}</div>`;
             if (b.type === 'section') return `<section class="psection"><h4 class="plug-head">${esc(b.title || '')}</h4>${b.text ? `<p class="muted">${esc(b.text)}</p>` : ''}${pluginBlocks(b.blocks, p)}</section>`;
             if (b.type === 'card') {
                 const tg = b.toggle && setting(b.toggle), on = !tg || (b.toggleInvert ? !tg.value : !!tg.value), body = (b.keys || []).length || (b.blocks || []).length;
@@ -1262,6 +1302,25 @@
     // between press and release would swallow the click. Drawn on release instead.
     document.addEventListener('pointerdown', (e) => { tabPressed = !!e.target.closest('#tab-plugin'); }, true);
     document.addEventListener('pointerup', () => { if (!tabPressed) return; tabPressed = false; if (tabDrawLater) { tabDrawLater = false; setTimeout(drawPluginTab, 0); } }, true);
+    // Make `live`'s children match `next`'s (a parsed copy), changing only what differs. Inline styles are left alone:
+    // they're set from data attributes after each draw (the page's rules don't allow style attributes).
+    function morph(live, next) {
+        const want = [...next.childNodes];
+        want.forEach((n, i) => {
+            const cur = live.childNodes[i];
+            if (!cur) return live.appendChild(n);
+            if (cur.nodeType !== n.nodeType || cur.nodeName !== n.nodeName || (cur.nodeType === 1 && (cur.dataset.key || cur.dataset.arg || '') !== (n.dataset.key || n.dataset.arg || ''))) return live.replaceChild(n, cur);
+            if (cur.nodeType !== 1) { if (cur.nodeValue !== n.nodeValue) cur.nodeValue = n.nodeValue; return; }
+            for (const a of [...cur.attributes]) if (a.name !== 'style' && !n.hasAttribute(a.name)) cur.removeAttribute(a.name);
+            for (const a of [...n.attributes]) if (a.name !== 'style' && cur.getAttribute(a.name) !== a.value) cur.setAttribute(a.name, a.value);
+            morph(cur, n);
+            if (cur.tagName === 'INPUT') { if (cur.value !== n.value) cur.value = n.value; cur.checked = n.checked; }
+            else if (cur.tagName === 'TEXTAREA') { if (cur.value !== n.value) cur.value = n.value; }
+            else if (cur.tagName === 'SELECT') cur.selectedIndex = [...n.options].findIndex(x => x.selected);
+        });
+        while (live.childNodes.length > want.length) live.lastChild.remove();
+    }
+
     function drawPluginTab() {
         if (tabPressed) { tabDrawLater = true; return; }
         const t = S.tabs.find(x => 'plugin:' + x.plugin + ':' + x.title === tab);
@@ -1269,13 +1328,21 @@
         const el = $('#tab-plugin');
         // Don't redraw under someone typing in one of its fields.
         const a = document.activeElement;
-        if (a && el.contains(a) && /^(INPUT|SELECT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox') return;
-        const html = !c || !p ? `<div class="muted">${H('plugintab.empty')}</div>` : `<div class="ptab">${pluginBlocks(c.blocks, p)}</div>`;
+        // A drop-down is patched in place, so it may redraw once its own save is through.
+        if (a && el.contains(a) && (/^(INPUT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox' || a.tagName === 'SELECT' && pendingSaves.size)) return;
+        // A modal the tab asks for (modal: { title, blocks, close: action }): over the page, closed by its × (the action).
+        const md = c && p && c.modal && Array.isArray(c.modal.blocks) ? c.modal : null;
+        const mdHtml = md ? `<div class="modal pmodal" role="dialog" aria-modal="true"><div class="modal-box pmodal-box"><div class="pmodal-head"><h3>${esc(md.title || '')}</h3>${md.close ? `<button class="small ghost close-x" data-paction="${esc(md.close)}" aria-label="${H('banner.close')}" title="${H('banner.close')}">×</button>` : ''}</div>${pluginBlocks(md.blocks, p)}</div></div>` : '';
+        const html = !c || !p ? `<div class="muted">${H('plugintab.empty')}</div>` : `<div class="ptab">${pluginBlocks(c.blocks, p)}${mdHtml}</div>`;
         if (html === tabHtml && el.innerHTML) return;
         tabHtml = html;
-        el.innerHTML = html;
+        const tpl = document.createElement('template');
+        tpl.innerHTML = html;
+        morph(el, tpl.content);
+        el.querySelectorAll('[data-color]').forEach(i => i.style.setProperty('--rc', '#' + i.dataset.color));   // rarity, through CSSOM
         // Skill map nodes: placed from here (the page's rules don't allow inline style attributes).
         el.querySelectorAll('.psmap-node').forEach(n => { n.style.left = n.dataset.x + '%'; n.style.top = n.dataset.y + '%'; });
+        el.querySelectorAll('[data-w]').forEach(i => { i.style.width = i.dataset.w + '%'; });   // table progress bars, the same way
         if (p) bindSettings(el, p.id);
     }
 
@@ -1326,6 +1393,13 @@
           ${sw('cleanOldSignIns', s.cleanOldSignIns !== false)}
           ${S.stats && S.stats.available ? sw('shareStats', s.shareStats)
               + row('statsPreview', `<button class="small" data-act="statsPreview">${H('settings.statsPreview.button')}</button>`) : ''}
+
+          <div class="row"><div class="main"><div class="title">${H('settings.theme.title')}</div><div class="desc">${H((S.themes || []).length ? 'settings.theme.desc' : 'settings.theme.none')}</div></div>
+            <select data-act="setting" data-key="theme">
+              <option value="">${H('settings.theme.default')}</option>
+              ${(S.themes || []).map(t => `<option value="${esc(t.id)}" ${s.theme === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}
+              ${s.theme && !(S.themes || []).some(t => t.id === s.theme) ? `<option value="${esc(s.theme)}" selected>${H('settings.theme.off', { id: esc(s.theme) })}</option>` : ''}
+            </select></div>
 
           <div class="section-title">${H('settings.section.web')}</div>
           <div class="row">
@@ -1493,12 +1567,40 @@
         if (first) first.focus({ preventScroll: true });
     }
 
+    // --- plugin theme ----------------------------------------------------
+    // The theme picked in Settings (a plugin's ctx.panel.theme): its colour variables and CSS go in one constructed
+    // stylesheet (the page's CSP allows no <style> tags, and needs none for this). Fetched only when its stamp
+    // changes; the last one is remembered here so a reopened window starts in it instead of flashing the default.
+    let themeSheet = null, themeStamp = null;
+    function applyTheme(t) {
+        if (!('adoptedStyleSheets' in document)) return;
+        if (!themeSheet) { themeSheet = new CSSStyleSheet(); document.adoptedStyleSheets = [...document.adoptedStyleSheets, themeSheet]; }
+        const vars = t ? Object.entries(t.vars || {}).map(([k, v]) => `--${k}: ${v};`).join(' ') : '';
+        try { themeSheet.replaceSync(t ? `:root { ${vars} }
+${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
+        themeStamp = t ? t.stamp : null;
+        document.documentElement.dataset.theme = t ? t.id : '';
+    }
+    try { const saved = JSON.parse(localStorage.getItem('zsb.theme') || 'null'); if (saved && saved.stamp) applyTheme(saved); } catch (_) {}
+    async function syncTheme() {
+        const want = S.theme ? S.theme.stamp : null;
+        if (want === themeStamp) return;
+        let t = null;
+        if (want) { try { t = await call('theme'); } catch (_) { return; } }
+        applyTheme(t);
+        try { if (t && JSON.stringify(t).length < 4e6) localStorage.setItem('zsb.theme', JSON.stringify(t)); else localStorage.removeItem('zsb.theme'); } catch (_) {}
+    }
+
     // --- refresh loop ----------------------------------------------------
-    let settingsDrawn = false, tourOffered = false, whatsNewShown = false;
+    let settingsDrawn = false, tourOffered = false, whatsNewShown = false, themesSeen = '';
     async function refresh() {
         try { S = await call('state'); clockOffset = S.now - Date.now(); }
         catch (e) { $('#summary').textContent = T('header.unreachable'); return; }
         if (studio) studioAdjust(S);
+        syncTheme();
+        // A theme plugin turned on or off: the Settings picker lists it.
+        const th = JSON.stringify([S.themes || [], S.settings.theme]);
+        if (th !== themesSeen) { themesSeen = th; settingsDrawn = false; }
         drawHeader(); drawBanners(); drawTabs();
         if (!S.settings.tourDone && !tourOffered && !studio) { tourOffered = true; setTimeout(startTour, 300); }
         else if (S.whatsNew && S.settings.tourDone && !whatsNewShown && !studio) { whatsNewShown = true; setTimeout(() => showWhatsNew(false), 300); }
@@ -1625,6 +1727,23 @@
                 break;
             }
             case 'pluginCatalog': await call('pluginCatalog'); break;
+            case 'pluginZip': {
+                // A file input made here, not in the tab: the tab redraws while the file window is open.
+                const f = await new Promise((res) => {
+                    const inp = document.createElement('input');
+                    inp.type = 'file'; inp.accept = '.zip,application/zip';
+                    inp.addEventListener('change', () => res(inp.files && inp.files[0]), { once: true });
+                    inp.addEventListener('cancel', () => res(null), { once: true });
+                    inp.click();
+                });
+                if (!f) return;
+                if (f.size > 20 * 1024 * 1024) { toast(T('plugins.import.tooBig')); return; }
+                const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = rej; r.readAsDataURL(f); });
+                toast(T('plugins.import.working'));
+                const r = await call('pluginImportZip', b64);
+                toast(r && r.ok ? T(r.verified ? 'plugins.import.done' : 'plugins.import.doneUnverified', { name: r.name, version: r.version }) : T('plugins.import.failed', { why: (r && r.error) || '?' }));
+                break;
+            }
             case 'setting': {
                 if (e.type !== 'change') return;
                 const v = el.type === 'checkbox' ? el.checked : el.value;
@@ -1954,7 +2073,7 @@
         if (!el || el.tagName === 'INPUT') return;
         act(el, e);
     });
-    document.addEventListener('change', (e) => { const el = e.target.closest('[data-act]'); if (el && el.tagName === 'INPUT') act(el, e); });
+    document.addEventListener('change', (e) => { const el = e.target.closest('[data-act]'); if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT')) act(el, e); });
     $('#add').addEventListener('click', () => act({ dataset: { act: 'add' } }, {}));
     $('#import').addEventListener('click', () => importModal());
 

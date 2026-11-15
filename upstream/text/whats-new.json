@@ -1,5 +1,23 @@
 {
   "_how": "One entry per released version, newest first. Each line is one bullet; **bold** works. Shown once after an update, and used as the release notes on GitHub. npm run release refuses a version with no entry here.",
+  "1.2.8": [
+    "**Trader: pick items from the inventory** — in a single trade, **View inventory** opens the account's inventory laid out like the site, with its search, sorting and filters (events included). Click items to put them in the trade; favourited items stay locked unless you include them.",
+    "**Stacks** — stickers, terminals and other items without a float show as one card with a count (×48). Once picked, hover it for − / + / **All** (up to the trade limit). Big stacks load more pages on their own, and **All** fetches what it needs to fill the trade.",
+    "**Trader: Open trades** — a card lists the trades still running on your accounts, so you can finish or delete one that got stuck.",
+    "**Opener: sets** — a set gives some accounts their own item and buying rules while the rest open the main item. **Stock first, then buy** opens what's already in stock before buying more. At most 3 accounts open at once per IP.",
+    "**Opener: a fairer \"drops worth\"** — the % now compares the drops with what the opened cases cost, including cases that were already in stock. It used to count stock opens as free, which pushed it past 100%.",
+    "**Converter: counts cases** — \"Cases opened today\" and the Opened columns count cases (open size × multiplier) instead of open requests, and a new Open size column shows each account's size (e.g. 19×2).",
+    "**Smoother plugin pages** — clicking around a plugin page updates only what changed instead of redrawing the whole page, and pop-ups close when you click outside them."
+  ],
+  "1.2.7": [
+    "**Trade routes come first** — a route waiting on accounts the Armory is star farming asks for them, and the Armory hands them over as soon as their current battle ends (instead of after the whole turn).",
+    "**New plugin: Effects** — buy, sell, use or queue special effects in bulk, on all accounts or one. The queue starts the next effect of a kind when the last one ends, and can buy with ammo above the amount you keep.",
+    "**Opener boosts** — the Opener can keep an open-count, multiplier and cashback boost running while it opens, buying the best value for ammo above your keep amount.",
+    "**Opener: Discord posts** — favourited drops can post to a Discord channel through a webhook. The URL is stored sealed and never shown again.",
+    "**Trader: Send to many** — one account sends the same number of tokens to each account you pick, one trade after another.",
+    "**Themes** — theme plugins can restyle the panel (colours, extra CSS and their own pictures). Pick one in Settings → Theme; it applies in the app window and the browser panel, and changes live with the theme's settings.",
+    "**Import plugins from a .zip** — Plugins → Custom plugins → Import .zip. Signed zips run like listed plugins; unsigned ones need Allow unverified plugins."
+  ],
   "1.2.6": [
     "**No false \"falling behind\" during Cloudflare checks** — clicks held back while a Cloudflare check waits no longer count as missed, so the card doesn't show \"Falling behind\" or suggest a Busy test when nothing else is using the account. Open the check and tick the box as usual."
   ],

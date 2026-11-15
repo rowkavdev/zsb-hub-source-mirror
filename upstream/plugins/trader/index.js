@@ -15,6 +15,11 @@
  * Both accounts must be in this app and clicking (the receiver has to accept on its own socket).
  * Receivers keep `dailyCap` of the site's 100 received trades a day (/api/me dailyTradesLeft).
  * One trade at a time per sender; a receiver takes them one after another.
+ *
+ * Open trades (for a trade left stuck or unconfirmed): GET /api/trading on each account lists the running trades it is
+ * in (activeUserTrades: host, guest, who accepted); watchTrade from an account IN the trade gives its contents
+ * (tradeInfo: offeredSkins, hostTokens, guestTokens). A trade between two hub accounts can be finished (each side that
+ * hasn't accepted accepts, the host confirms); one hosted by a hub account can be deleted (only the host can).
  */
 
 const PAGES_MAX = 60;
@@ -23,6 +28,11 @@ const WAIT_RETRY_MS = 60000;   // a pair skipped because another plugin had an a
 let ctx = null;
 let state = null;            // saved: { history: [...], today: { day, trades, tokens, items } }
 const busy = new Set();      // accounts in a trade right now
+// Routes come first (a tester, 2026-11-14): a pair another plugin has tied up asks that plugin for the accounts
+// (ctx.accounts.want) and checks again every WANT_RETRY_MS; the Armory hands them over once what it has going ends.
+const WANT_RETRY_MS = 5000;
+const wanting = new Map();   // account id -> what it's wanted for
+const said = new Set();      // pairs whose wait was logged (said once until the trade happens)
 let running = false, lastRun = 0, rerun = false;
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
@@ -235,6 +245,120 @@ function amount(v, emptyIsAll) {
     return Math.floor(Number(m[1]) * ({ '': 1, k: 1e3, m: 1e6, b: 1e9 })[m[2]]);
 }
 
+// --- Pick from the inventory --------------------------------------------
+// "View inventory" opens a sender's inventory like the game shows it (dearest first, with a search); the items clicked
+// there go in its single trade, on top of anything the item names find. Favourited ones are locked unless "Include
+// favourited items" is on. Not saved: a restart forgets the picks.
+let inv = null;   // { aid, open, items: [], page, pages, count, search, loading, error, sel: Map(id -> skin) }
+const PICKED = '\u0000picked';
+const tradeCap = (aid) => { if (inv && inv.aid === aid && inv.cap) return inv.cap; const me = ctx.accounts.stats(aid) || {}; return num(me.tradeItems) || (me.membership === 'pro' ? 200 : 50); };
+const picksFor = (aid) => (inv && inv.aid === aid ? [...inv.sel.values()] : []);
+// The game's inventory filters (same names and values as its own inventory page), as the query they make.
+const INV_FILTERS = [['invExterior', 'exterior'], ['invRarity', 'rarity'], ['invFavs', 'favoriteSkinsFilter'], ['invStSv', 'statTrakSouvenir'],
+    ['invQuality', 'quality'], ['invEvent', 'eventName'], ['invFloatRank', 'filterFloatRanks'], ['invPatterns', 'patterns']];
+const INV_KEYS = ['invSearch', 'invSort', ...INV_FILTERS.map(x => x[0])];
+const invQuery = () => {
+    const q = [['sort', String(S('invSort') || 'price')], ['search', String(S('invSearch') || '').trim()], ...INV_FILTERS.map(([k, p]) => [p, String(S(k) || '')])];
+    return q.filter(([, v]) => v).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join('');
+};
+const invFiltered = () => !!String(S('invSearch') || '').trim() || INV_FILTERS.some(([k]) => S(k));
+// The Event filter's choices are the site's own list (/api/events: Any, None, Only, then each event), fetched once.
+const EVENTS_BASE = [{ value: '', label: 'Any' }, { value: 'None', label: 'None' }, { value: 'All', label: 'Only' }];
+let eventsLoaded = false;
+async function invEvents(aid) {
+    if (eventsLoaded) return;
+    eventsLoaded = true;
+    try {
+        const j = await getJson(aid, '/api/events');
+        const list = (Array.isArray(j) ? j : []).map(x => (typeof x === 'string' ? { value: x, label: x } : x)).filter(x => x && typeof x.value === 'string');
+        if (list.length) ctx.settings.setOptions('invEvent', list.some(x => x.value === '') ? list : [...EVENTS_BASE, ...list]);
+    } catch { eventsLoaded = false; }
+}
+async function invLoad(more) {
+    const me = inv;
+    if (!me) return;
+    if (me.loading) { if (!more) me.again = true; return; }   // a filter changed mid-load: load again once this one's in
+    if (!more) { me.items = []; me.page = 0; me.pages = 1; me.count = 0; me.search = String(S('invSearch') || '').trim(); me.query = invQuery(); }
+    if (me.page >= me.pages) return;
+    me.loading = true; me.error = '';
+    try {
+        const page = me.page + 1;
+        const j = await getJson(me.aid, `/api/inventory?page=${page}${me.query}&showStickers=true&showUpgradedSkins=true`);
+        if (inv !== me) return;
+        me.page = page; me.pages = num(j && j.pages); me.count = num(j && j.count);
+        const seen = new Set(me.items.map(x => x._id));
+        for (const s of (j && j.skins) || []) if (s && s._id && !seen.has(s._id)) { seen.add(s._id); me.items.push(s); }
+        // Sorted by price, copies of a stack are side by side: a page that ends on a stackable item likely cuts that
+        // stack, so the next page comes on its own (up to AUTO_PAGES pages, so a huge inventory isn't read whole).
+        const last = me.items[me.items.length - 1];
+        me.chain = me.query.includes('sort=price&') || me.query.endsWith('sort=price') ? !!(last && stackKey(last) && me.page < me.pages && me.page < AUTO_PAGES) : false;
+    } catch (e) { me.error = e.message; me.chain = false; }
+    finally {
+        me.loading = false;
+        if (inv !== me) return;
+        if (me.again) { me.again = false; invLoad(false); }
+        else if (me.chain) { me.chain = false; invLoad(true); }
+    }
+}
+const AUTO_PAGES = 10;
+// Load pages until want() holds, there are no more, or `max` more were read; waits out a load already running.
+async function invLoadUntil(want, max) {
+    const me = inv;
+    for (let n = 0; me && inv === me && !want() && n < max; ) {
+        if (me.loading) { await ctx.sleep(50); continue; }
+        if (me.page >= me.pages) break;
+        await invLoad(true); n++;
+    }
+}
+// Can a stack have more copies on pages not loaded yet? Sorted by price only the last one can; otherwise any can.
+const stackMayGrow = (g) => !!(inv && inv.page < inv.pages && (!/(^|&)sort=price(&|$)/.test(inv.query.slice(1)) || g.items.includes(inv.items[inv.items.length - 1])));
+// The site's picture rule: "-…" is a Steam economy image, "/…" and https are as they are, else under /pictures/skins/.
+function iconUrl(icon) {
+    const s = String(icon || '');
+    if (!s) return '';
+    if (s.startsWith('-')) return 'https://steamcommunity-a.akamaihd.net/economy/image/' + s;
+    if (/^https:\/\//.test(s)) return s;
+    if (s.startsWith('/')) return 'https://case-clicker.com' + s;
+    return 'https://case-clicker.com/pictures/skins/' + s;
+}
+const WEAR = { 'Factory New': 'FN', 'Minimal Wear': 'MW', 'Field-Tested': 'FT', 'Well-Worn': 'WW', 'Battle-Scarred': 'BS' };
+// One item as a card: "★ Flip Knife | Slaughter (Minimal Wear)" → "★ Flip Knife" over "Slaughter", MW · float, price.
+// Stacks, like the game: items with no float (stickers, terminals, cases…) of the same name, price and kind are one
+// card ×N; picking takes N of them in list order.
+const stackKey = (s) => (s.float == null && !s.hasPattern ? [s.name, num(s.price), favorite(s) ? 'f' : '', s.statTrak ? 'st' : '', s.souvenir ? 'sv' : ''].join('|') : '');
+function invStacks() {
+    const out = [], by = new Map();
+    for (const s of (inv ? inv.items : [])) {
+        const k = stackKey(s);
+        if (k && by.has(k)) { by.get(k).items.push(s); continue; }
+        const g = { s, items: [s] };
+        if (k) by.set(k, g);
+        out.push(g);
+    }
+    return out;
+}
+const stackOf = (id) => invStacks().find(g => g.items.some(x => x._id === id)) || null;
+// Pick n of a stack (the first n), replacing what of it was picked.
+const stackSet = (g, n) => { for (const x of g.items) inv.sel.delete(x._id); for (const x of g.items.slice(0, n)) inv.sel.set(x._id, x); };
+function invCard(g, locked) {
+    const s = g.s, picked = g.items.filter(x => inv.sel.has(x._id)).length;
+    const more = stackMayGrow(g) && !!stackKey(s);
+    return { ...invCard1(s, locked), on: picked > 0, ...(g.items.length > 1 || more ? { qty: { n: picked, of: g.items.length, more, action: 'invQty' } } : {}) };
+}
+function invCard1(s, locked) {
+    const full = String(s.name || 'Item'), m = /^(.*?)\s*\(([^()]+)\)\s*$/.exec(full), base = m ? m[1] : full, ext = s.exterior || (m && WEAR[m[2]] ? m[2] : '');
+    const [title, sub] = base.includes(' | ') ? [base.slice(0, base.indexOf(' | ')), base.slice(base.indexOf(' | ') + 3)] : ['', base];
+    const fl = Number(s.float);
+    return {
+        id: s._id, title: title || s.type || '', sub, image: iconUrl(s.iconUrl || s.image), color: String(s.rarityColor || '').replace(/^#/, ''),
+        price: '$' + num(s.price).toLocaleString('en-US', { maximumFractionDigits: 2 }),
+        detail: [WEAR[ext] || '', Number.isFinite(fl) && s.float != null ? String(fl) : ''].filter(Boolean).join(' · '),
+        tags: [s.statTrak ? 'ST' : '', s.souvenir ? 'SV' : ''].filter(Boolean), fav: favorite(s),
+        on: !!(inv && inv.sel.has(s._id)), locked,
+        hint: full + (locked ? ' — favourited: switch on "Include favourited items" to trade it' : ''),
+    };
+}
+
 // The picked senders (an older single pick is a plain id), without the receiver.
 function senderIds() {
     const v = S('oneFrom'), to = S('oneTo');
@@ -282,7 +406,7 @@ function oneProblem() {
     if (!to || !byId.has(to)) return 'Pick who receives.';
     if (Number.isNaN(tokens)) return 'Tokens: type a number like 500K or 2.5M, or "all".';
     if (Number.isNaN(want)) return 'How many: type a number, or leave it empty for all.';
-    if (!terms.length && !tokens) return 'Pick what to send: a preset, or item names or tokens.';
+    if (!terms.length && !tokens && !ids.some(id => picksFor(id).length)) return 'Pick what to send: a preset, item names or tokens, or items from View inventory.';
     if (!ids.length) return 'Pick who sends: click one or more accounts in the list, or All.';
     if (!byId.get(to).healthy) return `${byId.get(to).name} isn't clicking — start it first.`;
     if (ids.length === 1 && !byId.get(ids[0]).healthy) return `${byId.get(ids[0]).name} isn't clicking — start it first.`;
@@ -307,13 +431,15 @@ async function sendFrom(from, to, accts, terms, want, tokens, withFavs) {
         else if (tokens > held) { if (!terms.length) return { ok: false, skip: true, text: `${fromName} has only ${count(held)} tokens.` }; notes.push(`no tokens: it has only ${count(held)}`); }
         else tk = tokens;
     }
-    let items = [];
-    const parts = [];   // [name, how many of it go]
+    const picks = picksFor(from);
+    let items = picks.slice();
+    const parts = picks.length ? [[PICKED, picks.slice()]] : [];   // [name, the items of it that go]
     if (terms.length) {
         const found = await findAll(from, terms);
         let favsLeft = 0;
         for (const f of found) {
-            const pool = withFavs ? [...f.items, ...f.favItems].sort((a, b) => num(b.price) - num(a.price)) : f.items;
+            const inIt = new Set(items.map(x => x._id));
+            const pool = (withFavs ? [...f.items, ...f.favItems].sort((a, b) => num(b.price) - num(a.price)) : f.items).filter(x => !inIt.has(x._id));
             if (!withFavs) favsLeft += f.favItems.length;
             const take = pool.slice(0, want === 'all' ? pool.length : want);
             if (want !== 'all' && want > pool.length && pool.length) notes.push(`only ${pool.length} × ${f.term}`);
@@ -327,14 +453,21 @@ async function sendFrom(from, to, accts, terms, want, tokens, withFavs) {
         }
         if (!items.length && !tk) return { ok: false, skip: true, text: `${fromName} has no ${terms.map(t => `"${t}"`).join(' or ')} to send${favsLeft ? ` — ${favsLeft} favourited (switch on "Include favourited items" to send those)` : ''}.` };
     }
+    if (items.length > cap) {   // picked by hand, more than one trade holds
+        notes.push(`${cap} is the most per trade`);
+        items = items.slice(0, cap);
+        const kept = new Set(items.map(x => x._id));
+        for (const p of parts) p[1] = p[1].filter(x => kept.has(x._id));
+    }
     if (!items.length && !tk) return { ok: false, skip: true, text: `${fromName} has no tokens to send.` };
-    const what = [...parts.filter(p => p[1].length).map(([t, l]) => `${l.length} × ${t}`), tk ? `${count(tk)} tokens` : ''].filter(Boolean).join(' + ');
+    const what = [...parts.filter(p => p[1].length).map(([t, l]) => t === PICKED ? `${l.length} picked item${l.length === 1 ? '' : 's'}` : `${l.length} × ${t}`), tk ? `${count(tk)} tokens` : ''].filter(Boolean).join(' + ');
     const note = notes.length ? ` (${notes.join(', ')})` : '';
     if (ctx.power.practice()) { ctx.log(`${fromName} → ${toName}: practice — would send ${what}`, 'info', from); return { ok: true, what, note }; }
     const mark = (on) => { if (ctx.accounts.setBusy) for (const id of [from, to]) ctx.accounts.setBusy(id, on ? 'trading' : null); };
     mark(true);
     try {
         const rec = await execute(from, to, items, tk, sMe, fromName, toName);
+        if (rec.ok && inv && inv.aid === from) { for (const x of items) inv.sel.delete(x._id); inv.items = inv.items.filter(x => !items.some(y => y._id === x._id)); }
         return rec.ok ? { ok: true, what, note } : { ok: false, text: `${fromName}: the trade didn't go through — ${rec.why}` };
     } finally { mark(false); }
 }
@@ -375,10 +508,58 @@ async function sendOne() {
     }
 }
 
+// Send to many: one source sends the same number of tokens to each picked receiver, one trade after another.
+let fan = null;      // the last run: { t, running, done, total, ok, text, results }
+function fanIds() {
+    const v = S('fanTo'), from = S('fanFrom');
+    const ids = v && Array.isArray(v.ids) ? v.ids : [];
+    const known = new Set(ctx.accounts.list().map(a => a.id));
+    return [...new Set(ids)].filter(id => id !== from && known.has(id));
+}
+function fanProblem() {
+    const from = S('fanFrom'), byId = new Map(ctx.accounts.list().map(a => [a.id, a])), ids = fanIds(), tk = amount(S('fanTokens'), false);
+    if (!from || !byId.has(from)) return 'Pick the account that sends.';
+    if (Number.isNaN(tk) || tk === 'all') return 'Tokens each: type a number like 500K or 2.5M.';
+    if (!tk) return 'Type how many tokens each receiver gets.';
+    if (!ids.length) return 'Pick who receives: click one or more accounts, or All.';
+    if (!byId.get(from).healthy) return `${byId.get(from).name} isn't clicking — start it first.`;
+    const me = ctx.accounts.stats(from);
+    if (me && me.membership && me.membership !== 'pro') return `${byId.get(from).name} isn't Pro — only Pro accounts can trade tokens.`;
+    if ((fan && fan.running) || (one && one.running)) return 'A trade is going already.';
+    return null;
+}
+async function sendFan() {
+    const accts = new Map(ctx.accounts.list().map(a => [a.id, a]));
+    const from = S('fanFrom'), ids = fanIds(), tk = amount(S('fanTokens'), false), fromName = accts.get(from).name;
+    const practice = ctx.power.practice();
+    const me = fan = { t: Date.now(), running: true, done: 0, total: ids.length, results: [], text: `Getting it ready… 0/${ids.length}` };
+    let left = null;
+    try { left = Math.floor(num((await getJson(from, '/api/me')).tokens)); } catch (_) {}
+    for (const id of ids) {
+        if (ctx.stopping) break;
+        const name = accts.get(id).name;
+        let r;
+        if (left != null && left < tk) r = { ok: false, skip: true, text: `not sent: ${fromName} has ${count(left)} tokens left` };
+        else {
+            try { r = await sendFrom(from, id, accts, [], 'all', tk, false); } catch (e) { r = { ok: false, text: e.message }; }
+            if (r.ok && left != null) left -= tk;
+        }
+        me.results.push({ name, ok: r.ok, skip: r.skip, text: r.ok ? `${practice ? 'would get' : 'got'} ${count(tk)} tokens${r.note || ''}` : String(r.text || '').replace(fromName + ': ', '') });
+        me.done++;
+        me.text = `${practice ? 'Working it out' : 'Sending'}… ${me.done}/${ids.length}`;
+    }
+    const ok = me.results.filter(r => r.ok), failed = me.results.filter(r => !r.ok);
+    me.text = practice ? `Practice — ${ok.length} of ${ids.length} would get ${count(tk)} tokens from ${fromName} (${count(ok.length * tk)} in all)${failed.length ? ` · ${failed.length} wouldn't` : ''}. Set the mode to Live to send.`
+        : `${ok.length} of ${ids.length} got ${count(tk)} tokens from ${fromName} (${count(ok.length * tk)} in all)${failed.length ? ` · ${failed.length} not sent` : ''}.`;
+    me.ok = ok.length > 0 && !failed.length;
+    me.running = false;
+}
+
 async function check() {
     if (running) { rerun = true; return; }
     running = true; lastRun = Date.now();
     let waited = false;
+    const wantNow = new Map();
     try {
         const accts = ctx.accounts.list(), byId = new Map(accts.map(a => [a.id, a]));
         const done = new Set();
@@ -393,7 +574,14 @@ async function check() {
                 // Another plugin has either side tied up (opening cases, playing games): this pair waits for the
                 // next check. While trading, both are marked so they wait for the trade in turn.
                 const other = !ctx.power.practice() && ctx.accounts.busy && (ctx.accounts.busy(a.id) || ctx.accounts.busy(to.id));
-                if (other) { waited = true; ctx.log(`${a.name} → ${to.name}: waiting — ${other.what} (${other.plugin})`, 'info', a.id); continue; }
+                if (other) {
+                    waited = true;
+                    const why = `trade route ${a.name} → ${to.name}`;
+                    if (ctx.accounts.want) for (const id of [a.id, to.id]) if (ctx.accounts.busy(id)) { ctx.accounts.want(id, why); wantNow.set(id, why); }
+                    if (!said.has(a.id + '>' + to.id)) { said.add(a.id + '>' + to.id); ctx.log(`${a.name} → ${to.name}: waiting — ${other.what} (${other.plugin}); asked it to hand the accounts over`, 'info', a.id); }
+                    continue;
+                }
+                said.delete(a.id + '>' + to.id);
                 const mark = (on) => { if (!ctx.power.practice() && ctx.accounts.setBusy) for (const id of [a.id, to.id]) ctx.accounts.setBusy(id, on ? 'trading' : null); };
                 mark(true);
                 try { if (await trade(a.id, to.id, route, a.name, to.name) || ctx.power.practice()) done.add(a.id); }
@@ -405,7 +593,109 @@ async function check() {
         if (ctx.power.practice()) { state.practiceAt = Date.now(); ctx.data.set(state); }
         running = false;
         if (rerun) { rerun = false; setTimeout(() => { if (!ctx.stopping && ctx.power.live()) check(); }, 1000); }
-        else if (waited) setTimeout(() => { if (!ctx.stopping && ctx.power.live()) check(); }, WAIT_RETRY_MS);   // a busy account: try again soon
+        else if (waited) setTimeout(() => { if (!ctx.stopping && ctx.power.live()) check(); }, wantNow.size ? WANT_RETRY_MS : WAIT_RETRY_MS);   // a busy account: try again soon
+        // Asks for accounts no pair waits on any more are taken back.
+        for (const id of wanting.keys()) if (!wantNow.has(id) && ctx.accounts.want) ctx.accounts.want(id, null);
+        wanting.clear(); for (const [id, w] of wantNow) wanting.set(id, w);
+    }
+}
+
+// --- Open trades -----------------------------------------------------------
+// Never watched from an account outside the trade: a watch from anyone else would join it as the guest.
+let open = null;   // { running, done, total, at, trades: [{ id, at, host, guest, items, value, hostTokens, guestTokens, note }], errors }
+const tradeWhat = (x) => [x.items ? `${count(x.items)} item${x.items === 1 ? '' : 's'}${x.value ? ` ($${count(x.value)})` : ''}` : '',
+    x.hostTokens ? `${count(x.hostTokens)} tokens` : '', x.guestTokens ? `${count(x.guestTokens)} tokens back` : ''].filter(Boolean).join(' + ') || 'nothing in it';
+
+async function watch(aid, tradeId) {
+    const sock = await ctx.socket(aid);
+    sock.emit('watchTrade', tradeId);
+    const r = await sock.wait(['tradeInfo', 'tradeWatchError', 'tradeError'], 8000);
+    if (!r || r.ev !== 'tradeInfo') { sock.close(); throw new Error(r ? `the site said ${JSON.stringify(r.data).slice(0, 80)}` : 'no answer from the trade'); }
+    return { sock, info: r.data || {} };
+}
+
+async function checkTrades() {
+    const accts = ctx.accounts.list().filter(a => a.healthy);
+    open = { running: true, done: 0, total: accts.length, at: Date.now(), trades: [], errors: [] };
+    const byUid = new Map(), found = new Map();
+    for (const a of accts) {
+        if (ctx.stopping) break;
+        try {
+            byUid.set(await userId(a.id), a);
+            const j = await getJson(a.id, '/api/trading');
+            for (const x of (j && j.activeUserTrades) || []) if (x && x._id && !found.has(x._id)) found.set(x._id, x);
+        } catch (e) { open.errors.push(`${a.name}: ${e.message}`); }
+        open.done++;
+        await sleep(150);
+    }
+    const side = (s) => { const u = (s && s.user) || {}; return { uid: u.userId || null, name: u.name || '', acct: (u.userId && byUid.get(u.userId)) || null, accepted: !!(s && s.hasAccepted) }; };
+    for (const x of found.values()) {
+        const rec = { id: x._id, at: Date.parse(x.createdAt) || 0, host: side(x.host), guest: side(x.guest), items: 0, value: 0, hostTokens: 0, guestTokens: 0, note: '' };
+        const ours = rec.host.acct || rec.guest.acct;
+        if (ours && (busy.has(rec.host.acct && rec.host.acct.id) || busy.has(rec.guest.acct && rec.guest.acct.id))) rec.note = 'the Trader is using it right now';
+        else if (ours) {
+            try {
+                const { sock, info } = await watch(ours.id, x._id);
+                sock.close();
+                const sk = Array.isArray(info.offeredSkins) ? info.offeredSkins : [];
+                rec.items = sk.length; rec.value = sk.reduce((s, k) => s + num(k && k.price), 0);
+                rec.hostTokens = num(info.hostTokens); rec.guestTokens = num(info.guestTokens);
+                if (info.host && info.host.user) rec.host = side(info.host);
+                if (info.guest && info.guest.user) rec.guest = side(info.guest);
+            } catch (e) { rec.note = "couldn't look inside: " + e.message; }
+        }
+        open.trades.push(rec);
+    }
+    open.trades.sort((a, b) => a.at - b.at);
+    open.running = false; open.at = Date.now();
+    if (open.trades.length) ctx.log(`open trades: ${open.trades.length} running — ${open.trades.map(x => `${x.host.acct ? x.host.acct.name : x.host.name || '?'} → ${x.guest.acct ? x.guest.acct.name : x.guest.name || 'nobody'}`).join(', ')}`);
+}
+
+// Both sides accept (each only if it hasn't) and the host confirms; or the host deletes it.
+async function settleTrade(id, how) {
+    const x = open && open.trades.find(r => r.id === id);
+    if (!x) throw new Error('that trade isn\'t in the list any more — check again');
+    const h = x.host.acct, g = x.guest.acct;
+    if (how === 'finish' && !(h && g)) throw new Error('both sides have to be hub accounts to finish it here');
+    if (how === 'delete' && !h) throw new Error('only the host can delete a trade, and the host isn\'t a hub account');
+    const ids = [h, g].filter(Boolean).map(a => a.id);
+    if (ids.some(i => busy.has(i))) throw new Error('the Trader is using one of the accounts right now');
+    for (const i of ids) busy.add(i);
+    const mark = (on) => { if (ctx.accounts.setBusy) for (const i of ids) ctx.accounts.setBusy(i, on ? 'trading' : null); };
+    mark(true);
+    const socks = [];
+    const log = (msg, level) => ctx.log(`trade ${h ? h.name : x.host.name} → ${g ? g.name : x.guest.name || 'nobody'}: ${msg}`, level, h ? h.id : g.id);
+    try {
+        const hUid = await userId(h.id);
+        const hw = await watch(h.id, id); socks.push(hw.sock);
+        if (how === 'delete') {
+            hw.sock.emit('tradeDelete', { userId: hUid, tradeId: id });
+            const r = await hw.sock.wait(['tradeDeleted', 'tradeError'], 8000);
+            if (!r || r.ev !== 'tradeDeleted') throw new Error('not deleted: ' + (r ? JSON.stringify(r.data).slice(0, 100) : 'no answer'));
+            log('deleted — nothing moved', 'ok');
+            return 'Deleted — nothing moved.';
+        }
+        const gUid = await userId(g.id);
+        const gw = await watch(g.id, id); socks.push(gw.sock);
+        const acc = (s) => !!(s && s.hasAccepted);
+        if (!acc(hw.info.host)) { hw.sock.emit('tradeAccept', { userId: hUid, tradeId: id }); await sleep(1500); }
+        if (!acc(gw.info.guest)) { gw.sock.emit('tradeAccept', { userId: gUid, tradeId: id }); await sleep(800); }
+        hw.sock.emit('tradeConfirm', { userId: hUid, tradeId: id });
+        const done = await hw.sock.wait(['tradeConfirmed', 'tradeError', 'tradeDeleted'], 12000);
+        if (!done || done.ev !== 'tradeConfirmed') throw new Error('not confirmed: ' + (done ? (done.ev === 'tradeError' ? JSON.stringify(done.data).slice(0, 100) : done.ev) : 'no answer'));
+        const what = tradeWhat(x);
+        state.history = [{ t: Date.now(), from: h.name, to: g.name, items: x.items, tokens: x.hostTokens, ok: true, why: '' }, ...(state.history || [])].slice(0, 50);
+        const td = today(); td.trades++; td.items += x.items; td.tokens += x.hostTokens;
+        ctx.data.set(state);
+        log(`finished — ${what}`, 'ok');
+        return `Finished — ${what} went to ${g.name}.`;
+    } catch (e) {
+        log((how === 'delete' ? 'delete' : 'finish') + ' failed: ' + e.message, 'warn');
+        throw e;
+    } finally {
+        for (const s of socks) s.close();
+        for (const i of ids) busy.delete(i);
+        mark(false);
     }
 }
 
@@ -430,6 +720,21 @@ module.exports = {
             lastRun = 0; check(true);
             return { message: running ? 'Already checking — it goes again right after.' : ctx.power.practice() ? 'Checking routes — the plan shows up here in a moment.' : 'Checking routes now.' };
         });
+        ctx.panel.action('tradesCheck', () => {
+            if (open && open.running) return { message: 'Already checking.' };
+            checkTrades().catch(e => { open = { ...(open || {}), running: false, trades: (open && open.trades) || [], errors: [...((open && open.errors) || []), e.message] }; });
+            return { message: 'Checking every clicking account for running trades…' };
+        });
+        const settle = (how) => async (id) => {
+            if (ctx.power.practice()) return { ok: false, error: 'Practice mode — set the mode to Live (top card) to finish or delete trades.' };
+            try {
+                const msg = await settleTrade(String(id || ''), how);
+                if (open) open.trades = open.trades.filter(r => r.id !== String(id));
+                return { message: msg };
+            } catch (e) { return { ok: false, error: e.message }; }
+        };
+        ctx.panel.action('tradeFinish', settle('finish'));
+        ctx.panel.action('tradeDelete', settle('delete'));
         ctx.panel.action('oneLookup', () => {
             const terms = oneTerms();
             if (!terms.length) return { ok: false, error: 'Type an item name first.' };
@@ -475,6 +780,65 @@ module.exports = {
             const r = ctx.settings.set('routes', [...routes, { to: m, from: { all: true, ids: [] }, tokens: false, keepTokens: 0, minTokens: 1000000, terminals: 'none', skins: false, skinsOver: 0, names: '', skipFavorites: true, minItems: 1 }]);
             return r && r.ok === false ? r : { message: 'Route to your main added (from all accounts) — switch on what it sends.' };
         });
+        const setFan = (ids) => { ctx.settings.set('fanTo', { ids }); return { ok: true }; };
+        ctx.panel.action('fanPick', (aid) => { const ids = fanIds(); return setFan(ids.includes(aid) ? ids.filter(x => x !== aid) : [...ids, String(aid)]); });
+        ctx.panel.action('fanAll', () => setFan(ctx.accounts.list().filter(a => a.id !== S('fanFrom')).map(a => a.id)));
+        ctx.panel.action('fanNone', () => setFan([]));
+        ctx.panel.action('fanSend', () => {
+            const why = fanProblem();
+            if (why) return { ok: false, error: why };
+            sendFan().catch(() => { if (fan) { fan.running = false; fan.ok = false; fan.text = 'Stopped by an error.'; } });
+            return { message: ctx.power.practice() ? 'Practice — working out what it would send…' : 'Sending the trades…' };
+        });
+        // View inventory: the one picked sender's (or the account given), in a modal; clicks pick items for the trade.
+        ctx.settings.setOptions('invEvent', EVENTS_BASE);
+        ctx.panel.action('invOpen', (arg) => {
+            const ids = senderIds(), aid = String(arg || '') || (ids.length === 1 ? ids[0] : '');
+            const a = ctx.accounts.get(aid);
+            if (!a) return { ok: false, error: ids.length > 1 ? 'Pick just one sender to view its inventory.' : 'Pick who sends first (3. Send from).' };
+            if (!a.healthy) return { ok: false, error: `${a.name} isn't clicking — start it first.` };
+            if (!inv || inv.aid !== aid) inv = { aid, open: true, items: [], page: 0, pages: 1, count: 0, search: '', loading: false, error: '', sel: new Map() };
+            inv.open = true;
+            invEvents(aid);
+            if (!inv.cap) getJson(aid, '/api/me').then(m => { if (inv && inv.aid === aid && m) inv.cap = num(m.tradeItems) || (m.membership === 'pro' ? 200 : 50); }).catch(() => {});   // this account's own per-trade limit
+            if (!inv.items.length || inv.query !== invQuery()) invLoad(false);
+            return {};
+        });
+        ctx.panel.action('invClose', () => { if (inv) inv.open = false; return {}; });
+        ctx.panel.action('invMore', () => { if (inv) invLoad(true); return {}; });
+        ctx.panel.action('invClear', () => { if (inv) inv.sel.clear(); return {}; });
+        // Reset: every filter back to Any and the search cleared (the sort stays), as the game's Reset does.
+        ctx.panel.action('invReset', () => { for (const k of ['invSearch', ...INV_FILTERS.map(x => x[0])]) ctx.settings.set(k, ''); if (inv && inv.open) invLoad(false); return {}; });
+        // A click picks the item (one of a stack), or unpicks it (all of the stack).
+        ctx.panel.action('invToggle', (id) => {
+            const g = inv && stackOf(String(id || ''));
+            if (!g) return { ok: false, error: 'That item isn\'t in the list any more.' };
+            if (g.items.some(x => inv.sel.has(x._id))) { stackSet(g, 0); return {}; }
+            if (favorite(g.s) && !S('oneFavs')) return { ok: false, error: 'Favourited — switch on "Include favourited items" to trade it.' };
+            const cap = tradeCap(inv.aid);
+            if (inv.sel.size >= cap) return { ok: false, error: `${cap} items is the most one trade holds.` };
+            stackSet(g, 1);
+            return {};
+        });
+        // A picked stack's − + All ("<id>|-1", "<id>|+1", "<id>|all"); All stops at what the trade still holds.
+        ctx.panel.action('invQty', async (arg) => {
+            const [id, d] = String(arg || '').split('|');
+            let g = inv && stackOf(id);
+            if (!g) return { ok: false, error: 'That item isn\'t in the list any more.' };
+            if (favorite(g.s) && !S('oneFavs')) return { ok: false, error: 'Favourited — switch on "Include favourited items" to trade it.' };
+            const cap = tradeCap(inv.aid), free = () => cap - (inv.sel.size - g.items.filter(x => inv.sel.has(x._id)).length);
+            // All (or + at the end of what's loaded): read more pages until the stack fills what the trade holds.
+            if ((d === 'all' || d === '+1') && g.items.length < free() && stackMayGrow(g)) {
+                const want = d === 'all' ? free() : g.items.filter(x => inv.sel.has(x._id)).length + 1;
+                await invLoadUntil(() => { g = stackOf(id) || g; return g.items.length >= want || !stackMayGrow(g); }, 20);
+                g = stackOf(id) || g;
+            }
+            const n = g.items.filter(x => inv.sel.has(x._id)).length, room = Math.min(g.items.length, free());
+            if (d === '+1' && n >= room) return { ok: false, error: n >= free() ? `${cap} items is the most one trade holds.` : `That's all ${g.items.length} of them.` };
+            stackSet(g, Math.max(0, Math.min(room, d === 'all' ? room : d === '-1' ? n - 1 : n + 1)));
+            return {};
+        });
+        ctx.settings.onChange((k) => { if (INV_KEYS.includes(k) && inv && inv.open && inv.query !== invQuery()) invLoad(false); });
         ctx.panel.action('oneSend', () => {
             const why = oneProblem();
             if (why) return { ok: false, error: why };
@@ -535,9 +899,34 @@ module.exports = {
             const fromIds = senderIds(), toA = accts.get(oneTo), mainA = accts.get(mainId());
             const fromTxt = !fromIds.length ? '?' : fromIds.length === 1 ? accts.get(fromIds[0]).name : `${fromIds.length} accounts`;
             const tokTxt = oneTokens === 'all' ? 'all tokens' : oneTokens > 0 ? `${count(oneTokens)} tokens` : '';
-            const oneWhat = [term ? `${oneCount === 'all' ? 'all' : Number.isNaN(oneCount) ? '?' : count(oneCount)}${terms.length > 1 ? ' of each' : ''} × ${term}` : '', tokTxt].filter(Boolean).join(' + ');
+            const pickN = fromIds.reduce((s, id) => s + picksFor(id).length, 0);
+            const oneWhat = [pickN ? `${pickN} picked item${pickN === 1 ? '' : 's'}` : '', term ? `${oneCount === 'all' ? 'all' : Number.isNaN(oneCount) ? '?' : count(oneCount)}${terms.length > 1 ? ' of each' : ''} × ${term}` : '', tokTxt].filter(Boolean).join(' + ');
             const each = fromIds.length > 1 ? ' each' : '';
             const oneWhy = oneProblem(), preset = presetNow();
+            // Picking by hand: the one sender's inventory in a modal; what's picked shows here.
+            const invA = inv && accts.get(inv.aid), invPicked = inv ? [...inv.sel.values()] : [];
+            const invValue = invPicked.reduce((s, x) => s + num(x.price), 0);
+            const soleA = fromIds.length === 1 ? accts.get(fromIds[0]) : null;
+            const invBlocks = [{ type: 'text', text: 'Or pick items by hand from the inventory.' },
+                ...(invPicked.length && invA ? [{ type: 'text', text: `Picked from ${invA.name}: ${count(invPicked.length)} item${invPicked.length === 1 ? '' : 's'} worth $${short(invValue)}${fromIds.includes(inv.aid) ? '' : ` — ${invA.name} isn't a sender now, so they don't go`}.` }] : []),
+                soleA ? { type: 'buttons', items: [{ label: `View ${soleA.name}'s inventory`, action: 'invOpen', arg: soleA.id, primary: !term && !oneTokens },
+                    ...(invPicked.length ? [{ label: 'Clear picked', action: 'invClear' }] : [])] }
+                    : { type: 'text', text: fromIds.length > 1 ? 'View inventory works with one sender: pick just one below.' : 'Pick a sender below (3. Send from), then View inventory to click the items like in the game.' }];
+            const invModal = inv && inv.open && invA ? (() => {
+                const cap = tradeCap(inv.aid), lockFavs = !withFavs;
+                return { title: `${invA.name}'s inventory`, close: 'invClose', blocks: [
+                    // One bar: the search, then Done / Clear picked / Reset filters; under it the game's filters.
+                    { type: 'bar', keys: ['invSearch'], items: [{ label: 'Done', action: 'invClose', primary: true }, ...(invPicked.length ? [{ label: 'Clear picked', action: 'invClear' }] : []), ...(invFiltered() ? [{ label: 'Reset filters', action: 'invReset' }] : [])],
+                        text: [`${count(invPicked.length)} picked${invValue ? ` · $${short(invValue)}` : ''}`, `up to ${cap} in one trade`,
+                            inv.count ? `${count(inv.count)} item${inv.count === 1 ? '' : 's'}${invFiltered() ? ' match' : ''}` : '',
+                            lockFavs ? 'favourited ones locked' : ''].filter(Boolean).join(' · ') },
+                    { type: 'settings', keys: INV_KEYS.slice(1), filters: true },
+                    ...(inv.error ? [{ type: 'notice', level: 'warn', text: "Couldn't load the inventory: " + inv.error }] : []),
+                    { type: 'items', action: 'invToggle', items: invStacks().map(g => invCard(g, lockFavs && favorite(g.s))),
+                        empty: inv.loading ? 'Loading…' : invFiltered() ? 'Nothing matches these filters.' : 'Nothing in this inventory.' },
+                    ...(inv.page < inv.pages ? [{ type: 'buttons', items: [{ label: inv.loading ? 'Loading…' : `Load more (${count(inv.items.length)} of ${count(inv.count)})`, action: 'invMore' }] }] : []),
+                ] };
+            })() : null;
             const oneCard = { type: 'card', id: 'one', open: true, title: 'Single trade',
                 summary: fromIds.length && toA && oneWhat ? `${oneWhat}${each} · ${fromTxt} → ${toA.name}` : 'send by hand, from one account or many',
                 blocks: [
@@ -550,6 +939,7 @@ module.exports = {
                             { type: 'settings', keys: ['oneItem', 'oneCount', 'oneFavs', 'oneTokens'] },
                             { type: 'text', text: 'Items: type a name and press Enter (or click away), then the next. Click a name to take it out.' },
                             { type: 'text', text: 'Tokens take 500K, 2.5M, 1B or "all", and only go from Pro senders (a basic sender still sends the item).' },
+                            ...invBlocks,
                         ] },
                     { type: 'section', title: '3. Send from', text: term ? `Pick one or more. Look up shows how many of ${terms.length > 1 ? 'the items' : 'the item'} each account has.` : "Pick one or more. Each account's tokens are shown.",
                         blocks: [
@@ -574,7 +964,55 @@ module.exports = {
                         ...(one && one.results && one.results.length ? [{ type: 'table', wrap: true, columns: ['Sender', practice ? 'Would' : 'Result'], rows: one.results.map(r => [r.name, r.text]) }] : []),
                     ] },
                 ] };
-            return { blocks: [
+            // Send to many: source, tokens each, receivers.
+            const fanFrom = S('fanFrom'), fanA = accts.get(fanFrom), fanTk = amount(S('fanTokens'), false), fanTo = fanIds(), fanSet = new Set(fanTo);
+            const fanWhy = fanProblem(), fanTotal = Number.isFinite(fanTk) ? fanTk * fanTo.length : 0;
+            const fanHas = fanA ? num((ctx.accounts.stats(fanFrom) || {}).tokens) : 0;
+            const fanCard = { type: 'card', id: 'fan', open: false, title: 'Send to many',
+                summary: fanA && fanTo.length && fanTk > 0 ? `${count(fanTk)} tokens each · ${fanA.name} → ${fanTo.length} account${fanTo.length === 1 ? '' : 's'}` : 'one account sends tokens to several',
+                blocks: [
+                    { type: 'section', title: '1. Send from', blocks: [{ type: 'settings', keys: ['fanFrom'], bare: true },
+                        ...(fanA ? [{ type: 'text', text: meta(fanA) || ' ' }] : [])] },
+                    { type: 'section', title: '2. Tokens each', text: 'Every receiver gets this many: 500K, 2.5M, 1B. Only Pro accounts can send tokens.', blocks: [{ type: 'settings', keys: ['fanTokens'], bare: true }] },
+                    { type: 'section', title: '3. Send to', blocks: [
+                        { type: 'buttons', items: [{ label: `All (${[...accts.values()].filter(a => a.id !== fanFrom).length})`, action: 'fanAll' }, ...(fanTo.length ? [{ label: 'None', action: 'fanNone' }] : [])] },
+                        ...(fanTo.length ? [{ type: 'text', text: `${fanTo.length} picked.` }] : []),
+                        { type: 'picker', action: 'fanPick', tag: 'Receiver', grid: true, multi: true, items: [...accts.values()].filter(a => a.id !== fanFrom).map(a => ({ id: a.id, on: fanSet.has(a.id), title: a.name, meta: meta(a) })) },
+                    ] },
+                    { type: 'section', title: '4. Send', blocks: [
+                        ...(fanWhy && !(fan && fan.running) ? [{ type: 'notice', text: fanWhy }]
+                            : [{ type: 'text', text: `${count(fanTk)} tokens to each of ${fanTo.length} account${fanTo.length === 1 ? '' : 's'} from ${fanA ? fanA.name : '?'} — ${count(fanTotal)} in all, ${fanTo.length} trade${fanTo.length === 1 ? '' : 's'} one after another.` },
+                               ...(fanA && fanHas && fanTotal > fanHas ? [{ type: 'notice', level: 'warn', text: `${fanA.name} has ${count(fanHas)} tokens: enough for ${Math.floor(fanHas / fanTk)} of them. The rest are skipped.` }] : [])]),
+                        { type: 'buttons', items: [{ label: practice ? 'Practice send' : fanTo.length > 1 ? `Send ${fanTo.length} trades` : 'Send trade', action: 'fanSend', primary: true,
+                            ...(practice ? {} : { confirm: `Send ${count(fanTk)} tokens to each of ${fanTo.length} account${fanTo.length === 1 ? '' : 's'} (${count(fanTotal)} in all)? Trades can't be undone.` }) }] },
+                        ...(fan ? [{ type: 'notice', level: fan.running ? '' : fan.ok ? 'ok' : 'warn', text: fan.text }] : []),
+                        ...(fan && fan.results.length ? [{ type: 'table', wrap: true, columns: ['Receiver', practice ? 'Would' : 'Result'], rows: fan.results.map(r => [r.name, r.text]) }] : []),
+                    ] },
+                ] };
+            // Open trades: what's running on the hub's accounts, to finish or delete one that's stuck.
+            const ago = (ms) => { const s = Math.max(0, Math.round((Date.now() - ms) / 1000)); return s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)} min` : s < 172800 ? `${Math.round(s / 3600)} h` : `${Math.round(s / 86400)} days`; };
+            const who = (s) => (s.acct ? s.acct.name : s.uid ? { text: `${s.name || 'someone'} (not in the hub)`, level: 'warn' } : { text: 'nobody joined', level: 'muted' });
+            const openRows = open ? open.trades.map(x => [
+                x.at ? ago(x.at) + ' ago' : '—', who(x.host), who(x.guest),
+                x.note ? { text: x.note, level: 'muted' } : tradeWhat(x),
+                `host ${x.host.accepted ? '✓' : '–'} · guest ${x.guest.uid ? (x.guest.accepted ? '✓' : '–') : '·'}`,
+                x.host.acct && x.guest.acct ? { label: 'Accept & confirm', action: 'tradeFinish', arg: x.id, primary: true,
+                    confirm: `Finish this trade? ${tradeWhat(x)} goes from ${x.host.acct.name} to ${x.guest.acct.name}. A trade can't be undone.` }
+                    : { text: !x.guest.uid ? 'nobody to finish with' : 'other side not in the hub', level: 'muted' },
+                x.host.acct ? { label: 'Delete', action: 'tradeDelete', arg: x.id, danger: true, confirm: `Delete this trade hosted by ${x.host.acct.name}? Nothing in it moves.` }
+                    : { text: 'only the host can delete', level: 'muted' },
+            ]) : [];
+            const openCard = { type: 'card', id: 'open', open: !!(open && (open.running || open.trades.length)), title: 'Open trades',
+                summary: !open ? 'find trades left stuck or unconfirmed' : open.running ? `checking… ${open.done}/${open.total}` : open.trades.length ? `${open.trades.length} running · checked ${ago(open.at)} ago` : `none running · checked ${ago(open.at)} ago`,
+                blocks: [
+                    { type: 'text', text: 'Lists the trades the hub\'s accounts are in right now. Finish one between two hub accounts (both accept, the host confirms), or delete one a hub account hosts — nothing in a deleted trade moves.' },
+                    { type: 'buttons', items: [{ label: open && open.running ? `Checking… ${open.done}/${open.total}` : open ? 'Check again' : 'Check trades', action: 'tradesCheck', primary: !open }] },
+                    ...(open && open.errors.length ? [{ type: 'notice', level: 'warn', text: `Couldn't check ${open.errors.length} account${open.errors.length === 1 ? '' : 's'}: ${open.errors.slice(0, 3).join('; ')}${open.errors.length > 3 ? ' …' : ''}` }] : []),
+                    ...(open && !open.running && !open.trades.length ? [{ type: 'notice', level: 'ok', text: `No running trades on ${open.total} account${open.total === 1 ? '' : 's'} — nothing stuck.` }] : []),
+                    ...(openRows.length ? [{ type: 'table', columns: ['Started', 'Host', 'Guest', 'In it', 'Accepted', '', ''], rows: openRows }] : []),
+                    ...(practice && openRows.length ? [{ type: 'text', text: 'Practice mode: finishing and deleting need Live (top card).' }] : []),
+                ] };
+            return { modal: invModal, blocks: [
                 { type: 'card', id: 'power', toggle: 'on', toggleDisabled: practice ? 'Set the mode to Live first' : null, bodyWhenOff: true, open: !live,
                     title: live ? (busy.size ? 'Trader — on, trading now' : 'Trader — on') : 'Trader — off',
                     summary: !routes.length ? 'add a route first' : practice ? 'practice: nothing is sent unless you press Check' : `live · ${routes.length} route${routes.length === 1 ? '' : 's'}, every ${every} min`,
@@ -587,6 +1025,8 @@ module.exports = {
                     { label: 'Tokens sent today', value: count(t.tokens) },
                 ] }] : []),
                 oneCard,
+                fanCard,
+                openCard,
                 { type: 'card', id: 'routes', open: !routes.length, title: 'Trade routes', summary: routes.length ? `${routes.length} route${routes.length === 1 ? '' : 's'}` : 'none yet',
                     blocks: [
                         ...(mainA && !routes.some(r => r.to === mainA.id) ? [{ type: 'buttons', items: [{ label: `Add a route to your main (${mainA.name})`, action: 'routeToMain' }] }] : []),
@@ -598,5 +1038,5 @@ module.exports = {
         });
         ctx.panel.badge((aid) => (busy.has(aid) ? 'Trading' : null));
     },
-    stop() { busy.clear(); },
+    stop() { busy.clear(); wanting.clear(); said.clear(); },
 };

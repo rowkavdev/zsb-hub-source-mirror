@@ -84,7 +84,7 @@ function startWebPanel({ port, password, rpc, panelDir, log }) {
 
         if (req.method === 'POST' && req.url === '/rpc') {
             let body = '';
-            req.on('data', (c) => { body += c; if (body.length > 1e6) req.destroy(); });
+            req.on('data', (c) => { body += c; if (body.length > 30e6) req.destroy(); });   // a plugin zip (20 MB as base64) is the biggest call
             req.on('end', async () => {
                 let out;
                 try {
