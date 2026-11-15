@@ -30,6 +30,9 @@ const SETTINGS_DEFAULTS = {
     tourDone: false,             // the first-open walkthrough was seen (or skipped)
     lastVersion: null,           // the newest version whose What's new was shown
     shareStats: true,            // anonymous usage stats (src/core/stats.js); Settings shows exactly what
+    shareMore: { system: false, health: false, clicking: false, plugins: false, log: false },   // extra diagnostics (stats.js), each its own switch
+    shareName: '',               // optional name sent with the stats ('' = anonymous)
+    shareAsked: false,           // the sharing walkthrough (new in 1.2.11) was answered
     installId: null,             // random, made on the first stats report; not tied to anything
     cleanOldSignIns: true,       // remove the hub's own superseded sign-ins from the site's session list
     testBuilds: false,           // also update to test builds (GitHub pre-releases, versions like 1.0.4-beta.1)
@@ -40,6 +43,14 @@ const SETTINGS_DEFAULTS = {
 };
 
 const HARD_MAX_PER_IP = 20;
+
+// The extra diagnostics a user can share (Settings and the sharing walkthrough), and the optional name.
+const SHARE_KEYS = ['system', 'health', 'clicking', 'plugins', 'log'];
+const NAME_OK = /^[\p{L}\p{N} _.'-]{1,32}$/u;
+function cleanName(v) {
+    const s = String(v || '').replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim().slice(0, 32).trim();
+    return NAME_OK.test(s) ? s : '';
+}
 
 function readJson(file, fallback) {
     try { return JSON.parse(fs.readFileSync(file, 'utf8')); }
@@ -75,7 +86,8 @@ class Store {
             return { ...a, token, login };
         });
         const s = readJson(this.settingsFile, {});
-        this.settings = { ...SETTINGS_DEFAULTS, ...s, panelWeb: { ...SETTINGS_DEFAULTS.panelWeb, ...(s.panelWeb || {}) }, plugins: s.plugins || {}, folders: Array.isArray(s.folders) ? s.folders : [] };
+        this.settings = { ...SETTINGS_DEFAULTS, ...s, panelWeb: { ...SETTINGS_DEFAULTS.panelWeb, ...(s.panelWeb || {}) },
+            shareMore: { ...SETTINGS_DEFAULTS.shareMore, ...(s.shareMore || {}) }, plugins: s.plugins || {}, folders: Array.isArray(s.folders) ? s.folders : [] };
         this.settings.maxPerIp = Math.min(HARD_MAX_PER_IP, Math.max(1, Number(this.settings.maxPerIp) || HARD_MAX_PER_IP));
         this._saveTimer = null;
     }
@@ -215,6 +227,11 @@ class Store {
         if (patch.theme !== undefined) s.theme = typeof patch.theme === 'string' && /^[a-z0-9-]+$/.test(patch.theme) ? patch.theme : null;
         if (patch.tourDone != null) s.tourDone = !!patch.tourDone;
         if (patch.shareStats != null) s.shareStats = !!patch.shareStats;
+        if (patch.shareMore && typeof patch.shareMore === 'object') {
+            for (const k of SHARE_KEYS) if (patch.shareMore[k] != null) s.shareMore = { ...s.shareMore, [k]: !!patch.shareMore[k] };
+        }
+        if (patch.shareName != null) s.shareName = cleanName(patch.shareName);
+        if (patch.shareAsked != null) s.shareAsked = !!patch.shareAsked;
         if (patch.cleanOldSignIns != null) s.cleanOldSignIns = !!patch.cleanOldSignIns;
         if (patch.testBuilds != null) s.testBuilds = !!patch.testBuilds;
         if (typeof patch.lastVersion === 'string') s.lastVersion = patch.lastVersion;
@@ -230,4 +247,4 @@ class Store {
     }
 }
 
-module.exports = { Store, SETTINGS_DEFAULTS, HARD_MAX_PER_IP };
+module.exports = { Store, SETTINGS_DEFAULTS, HARD_MAX_PER_IP, SHARE_KEYS, cleanName };

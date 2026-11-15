@@ -677,3 +677,24 @@ table.wrap td:first-child, table.wrap td:last-child { white-space: nowrap; }
 /* A row of filters (the Trader's inventory): narrow drop-downs side by side, like the game's. */
 .ptab .psets.pfilters { grid-template-columns: repeat(auto-fill, minmax(140px, 1fr)); gap: 8px 10px; }
 .ptab .psets.pfilters .pset { grid-column: auto; }
+
+/* Sharing walkthrough (1.2.11) and Settings > Sharing */
+.share-choices { display: grid; gap: 8px; }
+.share-choice { display: grid; gap: 3px; text-align: left; padding: 12px 14px; border-radius: 12px; }
+.share-choice b { font-weight: 600; }
+.share-choice span { font-size: 13px; color: var(--text-2); line-height: 1.4; }
+.share-choice.primary span { color: color-mix(in srgb, var(--on-white) 75%, transparent); }
+.share-hint { font-size: 12.5px; }
+.share-hint.bad { color: var(--bad); }
+.share-list { display: grid; }
+.share-row { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--line); cursor: pointer; }
+.share-row:first-child { border-top: 0; padding-top: 0; }
+.share-row .switch { margin-top: 1px; }
+.share-text { display: grid; gap: 2px; min-width: 0; }
+.share-text b { font-weight: 600; }
+.share-text span { font-size: 13px; color: var(--text-2); line-height: 1.4; }
+.share-row.off .share-text, .row.sub.off .main { opacity: .5; }
+.share-all { margin: 0; padding-left: 18px; display: grid; gap: 6px; line-height: 1.4; font-size: 13.5px; }
+.row.sub { margin-left: 22px; }
+#shareNameInput { flex: 1 1 180px; min-width: 0; max-width: 260px; }
+@media (max-width: 520px) { .row.sub { margin-left: 10px; } }

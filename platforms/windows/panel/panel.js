@@ -106,6 +106,105 @@
         await modal({ title: T('modal.stats.title'), html: `<div class="muted">${status}</div><pre class="stats-json">${esc(JSON.stringify(s.report, null, 2))}</pre>`,
             ok: T('modal.stats.ok'), cancel: false });
     }
+    // Sharing walkthrough (new in 1.2.11): asked once after the tour or the update, and from Settings > Sharing.
+    // Step 1 offers Stay anonymous, Choose what to share, or Take it all (which needs a name).
+    // Closing it (Esc, outside) keeps whatever was set before.
+    const SHARE_CATS = ['system', 'health', 'clicking', 'plugins', 'log'];
+    const NAME_RE = /^[\p{L}\p{N} _.'-]{1,32}$/u;
+    const tidyName = (v) => String(v || '').replace(/[\u0000-\u001f\u007f]/g, '').replace(/\s+/g, ' ').trim();
+    let shareOpen = false, shareKey = null;
+    function shareWalkthrough(step = 'start') {
+        const m = $('#modal'), box = m.querySelector('.modal-box'), s = S.settings;
+        const pick = { usage: s.shareStats !== false, more: { ...(s.shareMore || {}) }, name: s.shareName || '' };
+        const catRow = (cat, on, disabled) => `<label class="share-row${disabled ? ' off' : ''}"><span class="switch"><input type="checkbox" data-cat="${cat}" ${on ? 'checked' : ''} ${disabled ? 'disabled' : ''}><i></i></span>
+            <span class="share-text"><b>${H(`share.cat.${cat}.title`)}</b><span>${H(`share.cat.${cat}.desc`)}</span></span></label>`;
+        const nameField = (required) => `<label class="mfield"><span>${H(required ? 'share.name.labelRequired' : 'share.name.label')}</span>
+            <input id="shareName" maxlength="32" autocomplete="off" spellcheck="false" placeholder="${H(required ? 'share.name.placeholderRequired' : 'share.name.placeholder')}" value="${esc(pick.name)}"></label>
+            <div class="muted share-hint" id="shareHint"></div>`;
+        const steps = {
+            start: () => `<h3>${H('share.start.title')}</h3><div class="muted">${H('share.start.text')}</div>
+                <div class="share-choices">
+                  <button class="share-choice primary" data-share="anon"><b>${H('share.anon.title')}</b><span>${H('share.anon.desc')}</span></button>
+                  <button class="share-choice" data-share="choose"><b>${H('share.choose.title')}</b><span>${H('share.choose.desc')}</span></button>
+                  <button class="share-choice" data-share="all"><b>${H('share.all.title')}</b><span>${H('share.all.desc')}</span></button>
+                </div>
+                <div class="muted share-hint">${H('share.later')}</div>`,
+            choose: () => `<h3>${H('share.choose.title')}</h3><div class="muted">${H('share.choose.text')}</div>
+                <div class="share-list">${catRow('usage', pick.usage, false)}${SHARE_CATS.map(c => catRow(c, pick.more[c], !pick.usage)).join('')}</div>
+                <div class="muted share-hint" id="shareOff"${pick.usage ? ' hidden' : ''}>${H('share.offNote')}</div>
+                ${nameField(false)}
+                <div class="btns"><button data-share="back">${H('share.back')}</button><button class="primary" data-share="save">${H('share.save')}</button></div>`,
+            all: () => `<h3>${H('share.all.title')}</h3><div class="muted">${H('share.all.text')}</div>
+                <ul class="share-all">${['usage', ...SHARE_CATS].map(c => `<li><b>${H(`share.cat.${c}.title`)}</b> <span class="muted">${H(`share.cat.${c}.desc`)}</span></li>`).join('')}</ul>
+                ${nameField(true)}
+                <div class="btns"><button data-share="back">${H('share.back')}</button><button class="primary" data-share="saveAll">${H('share.saveAll')}</button></div>`,
+        };
+        const nameOk = () => { const v = tidyName(pick.name); return !v || NAME_RE.test(v); };
+        const syncName = () => {
+            const hint = box.querySelector('#shareHint'), v = tidyName(pick.name);
+            if (hint) hint.textContent = !nameOk() ? T('settings.shareName.bad') : v ? T('share.name.named') : T('share.name.hint');
+            if (hint) hint.classList.toggle('bad', !nameOk());
+            const all = box.querySelector('[data-share="saveAll"]');
+            if (all) all.disabled = !v || !nameOk();
+            const save = box.querySelector('[data-share="save"]');
+            if (save) save.disabled = !nameOk();
+        };
+        const draw = (to) => {
+            step = to;
+            box.classList.toggle('wide', step !== 'start');
+            box.innerHTML = steps[step]();
+            syncName();
+            const first = box.querySelector(step === 'start' ? '[data-share="anon"]' : step === 'all' ? '#shareName' : 'input[data-cat]');
+            if (first) first.focus();
+        };
+        const done = (patch, toastKey, vars) => {
+            m.hidden = true; box.innerHTML = ''; box.classList.remove('wide');
+            box.onclick = box.oninput = box.onchange = null; m.onclick = null;
+            document.removeEventListener('keydown', key);
+            shareOpen = false; shareKey = null;
+            if (studio) return;
+            call('setSettings', { ...patch, shareAsked: true }).then(r => { if (r) S.settings = r; settingsDrawn = false; refresh(); });
+            if (toastKey) toast(T(toastKey, vars));
+        };
+        const save = (all) => {
+            const name = tidyName(pick.name);
+            if (!nameOk() || (all && !name)) { syncName(); const i = box.querySelector('#shareName'); if (i) i.focus(); return; }
+            if (all) done({ shareStats: true, shareMore: Object.fromEntries(SHARE_CATS.map(c => [c, true])), shareName: name }, 'share.toast.all', { name });
+            else done({ shareStats: pick.usage, shareMore: Object.fromEntries(SHARE_CATS.map(c => [c, !!pick.more[c]])), shareName: name }, 'share.toast.saved');
+        };
+        const key = (e) => {
+            if (e.key === 'Escape') done({});
+            else if (e.key === 'Enter' && e.target.id === 'shareName') save(step === 'all');
+        };
+        box.onclick = (e) => {
+            const b = e.target.closest('[data-share]');
+            if (!b) return;
+            const a = b.dataset.share;
+            if (a === 'anon') done({ shareMore: Object.fromEntries(SHARE_CATS.map(c => [c, false])), shareName: '' }, 'share.toast.anon');
+            else if (a === 'choose' || a === 'all') draw(a);
+            else if (a === 'back') draw('start');
+            else if (a === 'save') save(false);
+            else if (a === 'saveAll') save(true);
+        };
+        box.oninput = (e) => { if (e.target.id === 'shareName') { pick.name = e.target.value; syncName(); } };
+        box.onchange = (e) => {
+            const c = e.target.dataset && e.target.dataset.cat;
+            if (!c) return;
+            if (c === 'usage') {
+                pick.usage = e.target.checked;
+                box.querySelectorAll('input[data-cat]:not([data-cat="usage"])').forEach(i => { i.disabled = !pick.usage; i.closest('.share-row').classList.toggle('off', !pick.usage); });
+                box.querySelector('#shareOff').hidden = pick.usage;
+            } else pick.more[c] = e.target.checked;
+        };
+        m.onclick = (e) => { if (e.target === m) done({}); };
+        if (shareKey) document.removeEventListener('keydown', shareKey);   // opened again over itself (text studio)
+        shareKey = key;
+        document.addEventListener('keydown', key);
+        shareOpen = true;
+        m.hidden = false;
+        draw(steps[step] ? step : 'start');
+    }
+
     async function showWhatsNew(all) {
         const entries = await call('whatsNew', !!all);
         await MODALS.whatsnew(entries);
@@ -1391,8 +1490,6 @@
           ${S.platform === 'win32' ? sw('startWithSystem', s.startWithSystem) : ''}
           ${sw('closeToTray', s.closeToTray)}
           ${sw('cleanOldSignIns', s.cleanOldSignIns !== false)}
-          ${S.stats && S.stats.available ? sw('shareStats', s.shareStats)
-              + row('statsPreview', `<button class="small" data-act="statsPreview">${H('settings.statsPreview.button')}</button>`) : ''}
 
           <div class="row"><div class="main"><div class="title">${H('settings.theme.title')}</div><div class="desc">${H((S.themes || []).length ? 'settings.theme.desc' : 'settings.theme.none')}</div></div>
             <select data-act="setting" data-key="theme">
@@ -1400,6 +1497,15 @@
               ${(S.themes || []).map(t => `<option value="${esc(t.id)}" ${s.theme === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}
               ${s.theme && !(S.themes || []).some(t => t.id === s.theme) ? `<option value="${esc(s.theme)}" selected>${H('settings.theme.off', { id: esc(s.theme) })}</option>` : ''}
             </select></div>
+
+          ${S.stats && S.stats.available ? `<div class="section-title">${H('settings.section.sharing')}</div>
+          ${sw('shareStats', s.shareStats)}
+          ${SHARE_CATS.map(c => `<div class="row sub${s.shareStats ? '' : ' off'}"><label class="switch"><input type="checkbox" data-act="shareMore" data-key="${c}" ${(s.shareMore || {})[c] ? 'checked' : ''} ${s.shareStats ? '' : 'disabled'}><i></i></label>
+            <div class="main"><div class="title">${H(`share.cat.${c}.title`)}</div><div class="desc">${H(`share.cat.${c}.desc`)}</div></div></div>`).join('')}
+          ${row('shareName', `<input id="shareNameInput" maxlength="32" autocomplete="off" spellcheck="false" placeholder="${H('share.name.placeholder')}" value="${esc(s.shareName || '')}">
+            <button class="small" data-act="shareNameSave">${H('settings.shareName.save')}</button>`)}
+          ${row('statsPreview', `<button class="small" data-act="statsPreview">${H('settings.statsPreview.button')}</button>`)}
+          ${row('shareWalk', `<button class="small" data-act="shareWalk">${H('settings.shareWalk.button')}</button>`)}` : ''}
 
           <div class="section-title">${H('settings.section.web')}</div>
           <div class="row">
@@ -1592,7 +1698,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
     }
 
     // --- refresh loop ----------------------------------------------------
-    let settingsDrawn = false, tourOffered = false, whatsNewShown = false, themesSeen = '';
+    let settingsDrawn = false, tourOffered = false, whatsNewShown = false, shareOffered = false, themesSeen = '';
     async function refresh() {
         try { S = await call('state'); clockOffset = S.now - Date.now(); }
         catch (e) { $('#summary').textContent = T('header.unreachable'); return; }
@@ -1602,8 +1708,12 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         const th = JSON.stringify([S.themes || [], S.settings.theme]);
         if (th !== themesSeen) { themesSeen = th; settingsDrawn = false; }
         drawHeader(); drawBanners(); drawTabs();
+        // First open: the tour, then the sharing question; after an update: the sharing question (once), then What's new.
+        const askShare = !!(S.stats && S.stats.available && !S.settings.shareAsked);
+        const idle = tourAt < 0 && !shareOpen && $('#modal').hidden;
         if (!S.settings.tourDone && !tourOffered && !studio) { tourOffered = true; setTimeout(startTour, 300); }
-        else if (S.whatsNew && S.settings.tourDone && !whatsNewShown && !studio) { whatsNewShown = true; setTimeout(() => showWhatsNew(false), 300); }
+        else if (askShare && S.settings.tourDone && !shareOffered && !studio && idle) { shareOffered = true; setTimeout(() => shareWalkthrough(), 300); }
+        else if (S.whatsNew && S.settings.tourDone && !askShare && !whatsNewShown && !studio && idle) { whatsNewShown = true; setTimeout(() => showWhatsNew(false), 300); }
         if (tab === 'accounts') drawAccounts();
         else if (tab === 'overview') drawOverview();
         else if (tab === 'plugins') drawPlugins();
@@ -1749,8 +1859,23 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
                 const v = el.type === 'checkbox' ? el.checked : el.value;
                 S.settings = await call('setSettings', { [el.dataset.key]: v });
                 if (el.dataset.key === 'maxPerIp') el.value = S.settings.maxPerIp;
+                if (el.dataset.key === 'shareStats') settingsDrawn = false;   // the extras follow it
                 break;
             }
+            case 'shareMore': {
+                if (e.type !== 'change') return;
+                S.settings = await call('setSettings', { shareMore: { [el.dataset.key]: el.checked } });
+                break;
+            }
+            case 'shareNameSave': {
+                const inp = $('#shareNameInput'), v = tidyName(inp && inp.value);
+                if (v && !NAME_RE.test(v)) { toast(T('settings.shareName.bad')); return; }
+                S.settings = await call('setSettings', { shareName: v });
+                if (inp) inp.value = S.settings.shareName || '';
+                toast(T(v ? 'settings.shareName.saved' : 'settings.shareName.cleared'));
+                return;
+            }
+            case 'shareWalk': shareWalkthrough(); return;
             case 'web': if (e.type === 'change') { await saveWeb({ enabled: el.checked }); } break;
             case 'webSave': await saveWeb({ enabled: true }); break;
             case 'openDataFolder': await call('openDataFolder'); break;
@@ -2060,6 +2185,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
                 else if (kind === 'modal' && arg === 'plugin') { const p = S.plugins.find(x => x.settings.some(s => s.type === 'accounts')) || S.plugins[0]; if (p) pluginModal(p.id); }
                 else if (kind === 'modal') MODALS[arg] && MODALS[arg](S && S.accounts[0] && S.accounts[0].name);
                 if (kind === 'tour') startTour(Math.max(0, Number(arg) - 1));
+                if (kind === 'share') shareWalkthrough(arg || 'start');
                 if (kind === 'trouble') openTrouble(arg || 'report');
             },
             toast: (key) => toast(T(key)),
