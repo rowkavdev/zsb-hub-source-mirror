@@ -1,5 +1,8 @@
 {
   "_how": "One entry per released version, newest first. Each line is one bullet; **bold** works. Shown once after an update, and used as the release notes on GitHub. npm run release refuses a version with no entry here.",
+  "1.2.9": [
+    "**Trades go out right away** — a single trade or Send to many no longer fails with \"waiting — star farming\" when the Armory, Games or the Opener is using an account. It asks them to start nothing new on those accounts and sends at once; if the site says an account is busy for a moment, it tries again for up to a minute."
+  ],
   "1.2.8": [
     "**Trader: pick items from the inventory** — in a single trade, **View inventory** opens the account's inventory laid out like the site, with its search, sorting and filters (events included). Click items to put them in the trade; favourited items stay locked unless you include them.",
     "**Stacks** — stickers, terminals and other items without a float show as one card with a count (×48). Once picked, hover it for − / + / **All** (up to the trade limit). Big stacks load more pages on their own, and **All** fetches what it needs to fill the trade.",
