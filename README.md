@@ -1,6 +1,6 @@
 # ZSB Hub Source Mirror
 
-Private, versioned snapshots of the application files shipped in the stable ZSB Hub Linux releases. Browse the desktop code, inspect bundled plugins, or compare how the Hub changes between releases.
+Versioned snapshots of the application files shipped in the stable ZSB Hub Linux releases. Browse the desktop code, inspect bundled plugins, or compare how the Hub changes between releases.
 
 [Browse the source](upstream/) · [Current snapshot metadata](upstream-release.json) · [Release tags](https://github.com/rowkavdev/zsb-hub-source-mirror/tags) · [Sync history](https://github.com/rowkavdev/zsb-hub-source-mirror/actions/workflows/sync.yml)
 
@@ -32,4 +32,4 @@ GitHub Actions checks hourly at **23 minutes past the hour (UTC)**. To check now
 
 Each import verifies the archive's published SHA-256, extracts regular application files from the packaged Electron app, and records the source in the metadata. Installer binaries and vendored dependencies are excluded. The sync inspects the files without running the application.
 
-The snapshots reflect the shipped application and are kept here for private inspection. Ownership of the upstream files remains with their original authors. [Upstream releases](https://github.com/GothGirlZSB/zsb-hub-releases/releases)
+This independent mirror archives the shipped application for reference. Ownership of the upstream files remains with their original authors. [Upstream releases](https://github.com/GothGirlZSB/zsb-hub-releases/releases)
