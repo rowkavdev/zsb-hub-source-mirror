@@ -1,0 +1,124 @@
+name: Build community macOS app
+
+on:
+  workflow_dispatch:
+  workflow_run:
+    workflows: [Sync ZSB Hub release source]
+    types: [completed]
+    branches: [main]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: zsb-macos-package
+  cancel-in-progress: false
+
+jobs:
+  prepare:
+    if: github.event_name == 'workflow_dispatch' || github.event.workflow_run.conclusion == 'success'
+    runs-on: ubuntu-24.04
+    outputs:
+      build: ${{ steps.release.outputs.build }}
+      tag: ${{ steps.release.outputs.tag }}
+      checkout: ${{ steps.release.outputs.checkout }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: main
+          fetch-depth: 0
+          persist-credentials: false
+      - name: Select a source snapshot with no publisher macOS build
+        id: release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          tag=$(jq -r '.tag' upstream-release.json)
+          [[ "$tag" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]]
+          if [[ -f platforms/macos-release.json ]] && [[ "$(jq -r '.tag' platforms/macos-release.json)" == "$tag" ]]; then
+            exit 0
+          fi
+          if gh release view "macos-$tag" --repo "$GITHUB_REPOSITORY" --json tagName >/dev/null 2>&1; then
+            exit 0
+          fi
+          git rev-parse --verify "refs/tags/upstream-$tag^{commit}"
+          {
+            echo "build=true"
+            echo "tag=$tag"
+            echo "checkout=$(git rev-parse HEAD)"
+          } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    if: needs.prepare.outputs.build == 'true'
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-15
+            arch: arm64
+          - runner: macos-15-intel
+            arch: x64
+    runs-on: ${{ matrix.runner }}
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: ${{ needs.prepare.outputs.checkout }}
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: '24'
+      - run: npm ci --ignore-scripts
+      - name: Build and launch the native Mac app
+        env:
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          BUILD_ARCH: ${{ matrix.arch }}
+        run: |
+          set -euo pipefail
+          node packaging/macos/build.mjs "$RELEASE_TAG" dist
+          node packaging/macos/smoke.mjs "dist/ZSB-Hub-Community-${RELEASE_TAG#v}-macos-$BUILD_ARCH.zip" "$RELEASE_TAG"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7
+        with:
+          name: macos-${{ matrix.arch }}
+          path: dist/*.zip
+          if-no-files-found: error
+
+  publish:
+    needs: [prepare, build]
+    if: needs.build.result == 'success'
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8
+        with:
+          pattern: macos-*
+          merge-multiple: true
+          path: dist
+      - name: Publish both native builds with checksums
+        env:
+          GH_TOKEN: ${{ github.token }}
+          RELEASE_TAG: ${{ needs.prepare.outputs.tag }}
+          CHECKOUT: ${{ needs.prepare.outputs.checkout }}
+        working-directory: dist
+        run: |
+          set -euo pipefail
+          version="${RELEASE_TAG#v}"
+          binaries=("ZSB-Hub-Community-$version-macos-arm64.zip" "ZSB-Hub-Community-$version-macos-x64.zip")
+          sha256sum "${binaries[@]}" > SHA256SUMS
+          cat > release.md <<NOTES
+          Community macOS packages built from the mirrored [ZSB Hub $RELEASE_TAG](https://github.com/GothGirlZSB/zsb-hub-releases/releases/tag/$RELEASE_TAG) application files.
+
+          - **Apple Silicon** uses the arm64 ZIP.
+          - **Intel** uses the x64 ZIP.
+
+          Extract the ZIP and move **ZSB Hub Community.app** to Applications. These builds use an ad hoc signature and are distributed without Apple notarization. GitHub Actions starts the packaged app on both Mac architectures before publishing.
+
+          See the [mirror README](https://github.com/$GITHUB_REPOSITORY#macos-community-builds) for launch instructions and build details.
+          NOTES
+          gh release create "macos-$RELEASE_TAG" "${binaries[@]}" SHA256SUMS \
+            --repo "$GITHUB_REPOSITORY" --target "$CHECKOUT" --latest=false \
+            --title "ZSB Hub $version for macOS (Community)" --notes-file release.md
