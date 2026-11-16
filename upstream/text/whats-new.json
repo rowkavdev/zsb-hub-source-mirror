@@ -1,5 +1,8 @@
 {
   "_how": "One entry per released version, newest first. Each line is one bullet; **bold** works. Shown once after an update, and used as the release notes on GitHub. npm run release refuses a version with no entry here.",
+  "1.2.12": [
+    "**Proxies on one gateway get their own IP** — two or more proxies with the same address and port but different usernames (Oxylabs, Bright Data and the like) each sign in with their own login now, so each gets its own exit IP. Nothing to re-enter: after the update each one reconnects with the right login (a Cloudflare check may show once)."
+  ],
   "1.2.11": [
     "**Choose what you share** — a short pop-up asks once. **Stay anonymous** keeps things as they were: only the anonymous usage numbers. **Choose what to share** lets you switch on extra diagnostics one by one (system, hub health, clicking detail, plugins, recent warnings) and add a name if you like. **Take it all** shares everything with your name on it, which helps most when something breaks.",
     "**Settings > Sharing** — the same switches and the name, any time. **See what's sent** shows the exact report, extras included. Names, tokens and addresses never go out."

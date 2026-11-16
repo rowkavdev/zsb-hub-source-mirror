@@ -74,14 +74,27 @@ function createTransport({ log, onShow, onHide }) {
     let quitting = false;
 
     // A proxy asking for its username and password (check windows, login windows and in-page fetches): answered
-    // from the route with that host and port.
-    const proxyLogin = (authInfo) => {
-        if (!authInfo || !authInfo.isProxy) return null;
-        for (const r of routes.values()) if (r.proxy && r.proxy.host === authInfo.host && Number(r.proxy.port) === Number(authInfo.port) && r.proxy.user) return r.proxy;
-        return null;
+    // with the credentials of the route the request belongs to. Several proxies can share one gateway host and port
+    // and differ only in the username (Oxylabs, Bright Data, ...), so host and port alone can't tell them apart:
+    // answering by host and port sent every such route out on the first one's account and exit IP.
+    const loginRoutes = new Map();   // an account's login partition -> the route it uses (applyRoute)
+    const sameSes = (a, b) => !!a && !!b && (a === b || (!!a.storagePath && a.storagePath === b.storagePath));
+    const fits = (r, authInfo) => !!(r && r.proxy && r.proxy.user && r.proxy.host === authInfo.host && Number(r.proxy.port) === Number(authInfo.port));
+    const routeOfSes = (ses) => {
+        for (const r of routes.values()) if (sameSes(r.ses, ses)) return r;
+        for (const [part, id] of loginRoutes) if (sameSes(session.fromPartition(part), ses)) return routes.get(id) || null;
+        return undefined;
     };
-    app.on('login', (event, _wc, _details, authInfo, callback) => {
-        const p = proxyLogin(authInfo);
+    const proxyLogin = (authInfo, ses) => {
+        if (!authInfo || !authInfo.isProxy) return null;
+        const own = ses ? routeOfSes(ses) : undefined;
+        if (own !== undefined) return fits(own, authInfo) ? own.proxy : null;
+        // No session to go by: only answer when exactly one route uses that host and port.
+        const all = [...routes.values()].filter(r => fits(r, authInfo));
+        return all.length === 1 ? all[0].proxy : null;
+    };
+    app.on('login', (event, wc, _details, authInfo, callback) => {
+        const p = proxyLogin(authInfo, wc && !wc.isDestroyed() ? wc.session : null);
         if (p) { event.preventDefault(); callback(p.user, p.pass || ''); }
     });
 
@@ -93,26 +106,41 @@ function createTransport({ log, onShow, onHide }) {
             if (r.w.win && !r.w.win.isDestroyed()) { r.w.quitting = true; r.w.win.destroy(); }
             routes.delete(id);
         }
+        // Every route is registered at once (the engine uses them as soon as it hands them over, without waiting);
+        // requests on a route wait for its proxy to be set (r.ready). Registering them one by one after each other's
+        // setProxy left the later ones unknown for a moment, and an unknown route used to fall back to this PC's
+        // connection: their first requests (the exit-IP test, clicks) went out on the user's own IP.
+        const pending = [];
         for (const [id, x] of want) {
             const cur = routes.get(id);
             if (cur && JSON.stringify(cur.proxy) === JSON.stringify(x.proxy)) continue;
             const r = cur || add(id, x.proxy);
             r.proxy = x.proxy;
             r.w.cleared = false;
-            await r.ses.setProxy({ proxyRules: rulesOf(x.proxy), proxyBypassRules: BYPASS }).catch((e) => log.add(null, `Proxy ${id}: ${e.message}`, 'warn'));
-            await r.ses.closeAllConnections().catch(() => {});
+            r.ready = (async () => {
+                await r.ses.setProxy({ proxyRules: rulesOf(x.proxy), proxyBypassRules: BYPASS }).catch((e) => log.add(null, `Proxy ${id}: ${e.message}`, 'warn'));
+                await r.ses.closeAllConnections().catch(() => {});
+            })();
+            pending.push(r.ready);
         }
+        await Promise.all(pending);
     }
+    // A route for traffic: 'direct' (or none) is this PC's connection; a proxy route that isn't here gives null, never
+    // this PC's connection in its place.
+    const routeOf = (id) => (!id || id === 'direct' ? routes.get('direct') : routes.get(id) || null);
 
     // For logins: the same proxy on an account's own login session.
     async function applyRoute(partition, routeId) {
         const r = routes.get(routeId);
         const ses = session.fromPartition(partition);
+        if (r && r.proxy) loginRoutes.set(partition, routeId); else loginRoutes.delete(partition);
         await ses.setProxy(r && r.proxy ? { proxyRules: rulesOf(r.proxy), proxyBypassRules: BYPASS } : { mode: 'direct' }).catch(() => {});
     }
 
-    function request({ method = 'GET', path, token, body, timeoutMs = 45000, route, url, headers }) {
-        const r = get(route);
+    async function request({ method = 'GET', path, token, body, timeoutMs = 45000, route, url, headers }) {
+        const r = routeOf(route);
+        if (!r) return { status: 0, error: 'proxy route not set up' };
+        if (r.ready) await r.ready;
         return new Promise((resolve) => {
             let req;
             try { req = net.request({ method, url: url || ORIGIN + path, session: r.ses, useSessionCookies: true }); }
@@ -126,7 +154,7 @@ function createTransport({ log, onShow, onHide }) {
             const timer = setTimeout(() => { try { req.abort(); } catch (_) {} finish({ status: 0, error: 'timeout' }); }, timeoutMs);
             // A proxy that wants a password: answered once; asked again means it refused it (407).
             let asked = false;
-            req.on('login', (authInfo, cb) => { const p = proxyLogin(authInfo); if (p && !asked) { asked = true; cb(p.user, p.pass || ''); } else cb(); });
+            req.on('login', (authInfo, cb) => { const p = authInfo && authInfo.isProxy && fits(r, authInfo) ? r.proxy : null; if (p && !asked) { asked = true; cb(p.user, p.pass || ''); } else cb(); });
             req.on('response', (res) => {
                 res.on('data', (c) => { data += c; });
                 res.on('error', (e) => finish({ status: 0, error: (e && e.message) || 'stream error' }));
@@ -165,7 +193,9 @@ function createTransport({ log, onShow, onHide }) {
 
     // In-page fetch from the route's check window: it has cf_clearance and a real browser's fingerprint.
     async function viaWindow({ method = 'GET', path, token, body, route, headers }) {
-        const w = get(route).w;
+        const r = routeOf(route);
+        if (!r) return { status: 0, notReady: true };
+        const w = r.w;
         if (!w.win || w.win.isDestroyed() || !w.cleared) return { status: 0, notReady: true };
         const init = { method, credentials: 'include', headers: { accept: '*/*', 'content-type': 'application/json', ...clientHeaders(headers), ...(token ? { Authorization: 'Bearer ' + token } : {}) } };
         if (body != null) init.body = JSON.stringify(body);
@@ -181,7 +211,9 @@ function createTransport({ log, onShow, onHide }) {
     // Run a script in the route's check window page (the site socket's fallback, and the only way for proxied
     // routes). { notReady: true } until it passed Cloudflare.
     async function evalInWindow(js, route) {
-        const w = get(route).w;
+        const r = routeOf(route);
+        if (!r) return { notReady: true };
+        const w = r.w;
         if (!w.win || w.win.isDestroyed() || !w.cleared) return { notReady: true };
         return w.win.webContents.executeJavaScript(js);
     }
@@ -189,6 +221,7 @@ function createTransport({ log, onShow, onHide }) {
     // Load the site in the window and wait until Cloudflare lets it through. Shown to the user only
     // if the check doesn't pass by itself within a few seconds.
     async function solve(r) {
+        if (r.ready) await r.ready;   // the window's first page load goes through the proxy, not around it
         const w = r.w, win = ensureWindow(r);
         // Don't reload a window the user can see once it has a page: they may be mid-check.
         if (!(win.isVisible() || w.shown) || !w.loaded) {
@@ -224,7 +257,9 @@ function createTransport({ log, onShow, onHide }) {
     }
 
     function challenge(route) {
-        const r = get(route), w = r.w;
+        const r = routeOf(route);
+        if (!r) return;
+        const w = r.w;
         // Already on it, or it was cleared a moment ago and the next request will tell.
         if (w.solving || (w.cleared && Date.now() - w.clearedAt < 60000)) return;
         w.solving = true; w.cleared = false;
@@ -249,7 +284,9 @@ function createTransport({ log, onShow, onHide }) {
 
     // Get a route's check window through Cloudflare (hidden unless a real check needs the user), within ms.
     async function ready(ms = 30000, route) {
-        const w = get(route).w;
+        const r = routeOf(route);
+        if (!r) return false;
+        const w = r.w;
         if (w.cleared && w.win && !w.win.isDestroyed()) return true;
         challenge(route);
         const until = Date.now() + ms;
