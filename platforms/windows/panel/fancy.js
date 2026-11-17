@@ -33,10 +33,13 @@
 
     // --- colours -------------------------------------------------------------
     const prop = (k) => getComputedStyle(doc.documentElement).getPropertyValue(k).trim();
+    // Any CSS colour (hex, rgb(), hsl() from a theme) as [r, g, b], through a canvas, which normalises it.
+    const swatch = doc.createElement('canvas').getContext('2d');
     function rgb(c) {
-        const m = /^#([0-9a-f]{6})$/i.exec(c);
+        swatch.fillStyle = '#ffffff'; swatch.fillStyle = String(c || '');
+        const v = swatch.fillStyle, m = /^#([0-9a-f]{6})$/i.exec(v);
         if (m) return [0, 2, 4].map(i => parseInt(m[1].slice(i, i + 2), 16));
-        const n = /rgba?\(([^)]+)\)/.exec(c);
+        const n = /rgba?\(([^)]+)\)/.exec(v);
         return n ? n[1].split(',').slice(0, 3).map(Number) : [255, 255, 255];
     }
     // The accent turned round the colour wheel by `deg` (a grey accent gets violet and teal instead).
@@ -51,9 +54,13 @@
         return [k(0), k(8), k(4)].map(v => Math.round(v * 255));
     }
     function readColors() {
-        const accent = rgb(prop('--white') || '#ffffff');
-        const light = doc.documentElement.dataset.look === 'light';
-        C = { accent, a2: turn(accent, 50), a3: turn(accent, -60), text: rgb(prop('--text') || '#f4f4f5'), light, k: light ? 0.55 : 1 };
+        // --scene: a theme's colour for the scenes when its accent is too pale to show (else the accent)
+        const accent = rgb(prop('--scene') || prop('--white') || '#ffffff');
+        // light: Settings > Look > Light, or a light theme (its background)
+        const bg = rgb(prop('--bg') || '#000000'), lum = (0.2126 * bg[0] + 0.7152 * bg[1] + 0.0722 * bg[2]) / 255;
+        const light = doc.documentElement.dataset.look === 'light' || lum > 0.6;
+        const two = prop('--scene-2');   // a theme's second scene colour, else the accent's neighbour
+        C = { accent, a2: two ? rgb(two) : turn(accent, 50), a3: turn(accent, -60), text: rgb(prop('--text') || '#f4f4f5'), light, k: light ? 0.55 : 1 };
         // the border glow's colours (panel.css)
         const st = doc.documentElement.style;
         [accent, C.a2, C.a3].forEach((c, i) => st.setProperty('--glow-' + (i + 1), `rgb(${c.join(' ')})`));
@@ -76,7 +83,8 @@
                 this.fx = A.create(canvas, this.options(), () => broken('shards'));
                 return !!this.fx;
             },
-            options() { return { shardColor: rgbOf(C.accent), accentColor: rgbOf(C.a2), lightMode: C.light, dpr: 1.5 }; },
+            // one hue, as in their own colours (#896ABD shards, #A855F7 accent): the shards a muted accent, the edges the accent
+            options() { const muted = C.accent.map(v => Math.round(v * 0.6 + 118 * 0.4)); return { shardColor: rgbOf(muted), accentColor: rgbOf(C.accent), lightMode: C.light, dpr: 1.5 }; },
             draw() {
                 const key = rgbOf(C.accent) + C.light;
                 if (key !== this.key) { this.key = key; this.fx.set(this.options()); }
@@ -275,5 +283,7 @@
         }
     }
 
-    root.ZSBFancy = { set, SCENES: Object.keys(SCENES), get on() { return on; }, get noGpu() { return noGpu(); }, get scene() { return sceneId; } };
+    // The colours changed (a theme came in or changed): read them again and redraw.
+    function recolor() { if (on) set(true, sceneId); }
+    root.ZSBFancy = { set, recolor, SCENES: Object.keys(SCENES), get on() { return on; }, get noGpu() { return noGpu(); }, get scene() { return sceneId; } };
 })(typeof window !== 'undefined' ? window : this);

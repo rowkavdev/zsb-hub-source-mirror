@@ -64,6 +64,8 @@ class Engine extends EventEmitter {
 
     running() { return [...this.run.keys()]; }
     isRunning(id) { return this.run.has(id); }
+    // The account's last numbers from /api/me (while clicking, or the last ones seen), or null.
+    meOf(id) { return (this.run.get(id) || {}).me || this.lastMe.get(id) || null; }
 
     // Plugins only act on accounts that are clicking normally (not logged out, not behind a check).
     isHealthy(id) {
@@ -428,6 +430,8 @@ class Engine extends EventEmitter {
     }
 
     async report(r) {
+        // The account's profile picture: an https address, or a path on the site; anything else is left out.
+        const imageOf = (u) => (typeof u !== 'string' || u.length > 500 ? null : /^https:\/\//.test(u) ? u : /^\/[^/]/.test(u) ? 'https://case-clicker.com' + u : null);
         const res = await this.call(r, '/api/me', { tries: 3 });
         if (res.kind !== 'ok') { if (res.kind !== 'gone' && res.kind !== 'auth') this.reportFailed(r, res.kind); return; }
         if (!res.json || typeof res.json !== 'object') { this.errors.raise(r.id, 'CC-API-01', '/api/me gave no data'); this.reportFailed(r, 'no data'); return; }
@@ -441,7 +445,8 @@ class Engine extends EventEmitter {
             moneyPerClick: me.moneyPerClick ?? null, casesPerClick: me.casesPerClick ?? null, casesPerClickMaxPrice: me.casesPerClickMaxPrice ?? null,
             membership: me.membership || null, vaultLastCollected: Date.parse(me.vaultLastCollected) || null,
             rank: me.rank && me.rank.id != null ? { id: me.rank.id, name: me.rank.name || null, xpNeededForRankup: me.rank.xpNeededForRankup ?? null } : null,
-            xp: me.xp ?? null, skillPoints: me.skillPoints ?? null, premier: Number.isFinite(me.premierRating) ? me.premierRating : null, at: Date.now(),
+            xp: me.xp ?? null, skillPoints: me.skillPoints ?? null, premier: Number.isFinite(me.premierRating) ? me.premierRating : null, image: imageOf(me.image),
+            openCount: me.caseOpenCount ?? null, openMult: me.maxCaseOpenMultiplier ?? null, at: Date.now(),
         };
         if (acct && acct.type === 'auto') {
             const now = this.clickType(acct);

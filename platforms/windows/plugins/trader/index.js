@@ -974,13 +974,19 @@ module.exports = {
                     ...(inv.page < inv.pages ? [{ type: 'buttons', items: [{ label: inv.loading ? 'Loading…' : `Load more (${count(inv.items.length)} of ${count(inv.count)})`, action: 'invMore' }] }] : []),
                 ] };
             })() : null;
-            const oneCard = { type: 'card', id: 'one', open: true, title: 'Single trade',
-                summary: fromIds.length && toA && oneWhat ? `${oneWhat}${each} · ${fromTxt} → ${toA.name}` : 'send by hand, from one account or many',
-                blocks: [
-                    { type: 'section', title: '1. Send to', blocks: [{ type: 'settings', keys: ['oneTo'], bare: true },
-                        ...(mainA && oneTo !== mainA.id ? [{ type: 'buttons', items: [{ label: `Your main: ${mainA.name}`, action: 'oneToMain' }] }] : []),
-                        ...(mainA && oneTo === mainA.id ? [{ type: 'text', text: 'Your main account.' }] : [])] },
-                    { type: 'section', title: '2. What to send', text: 'Pick a preset, or Custom and type it. Each sender sends its own.',
+            const oneSendBtns = one && one.running && !practice && one.total > 1
+                ? [{ label: one.halt ? 'Stopping…' : 'Stop', action: 'oneStop', danger: true, disabled: !!one.halt }]
+                : [{ label: practice ? 'Practice send' : fromIds.length > 1 ? `Send ${fromIds.length} trades` : 'Send trade', action: 'oneSend', primary: true, disabled: !!oneWhy,
+                    ...(practice ? {} : { confirm: fromIds.length > 1 ? `Send ${fromIds.length} trades now? Trades can't be undone.` : "Send this trade now? A trade can't be undone." }) }];
+            const oneCard = { type: 'section', title: 'Single trade', blocks: [
+                { type: 'wizard', id: 'one', steps: [
+                    { id: 'to', title: 'Send to', done: !!toA, warn: toA ? null : 'pick who receives',
+                        summary: toA ? `${toA.name}${mainA && toA.id === mainA.id ? ' (your main)' : ''}` : '',
+                        keys: ['oneTo'], blocks: [
+                            ...(mainA && oneTo !== mainA.id ? [{ type: 'buttons', items: [{ label: `Your main: ${mainA.name}`, action: 'oneToMain' }] }] : []),
+                            ...(mainA && oneTo === mainA.id ? [{ type: 'text', text: 'Your main account.' }] : [])] },
+                    { id: 'what', title: 'What to send', done: !!oneWhat, summary: oneWhat ? `${oneWhat}${each}` : 'pick a preset, type an item, or tokens',
+                        text: 'Pick a preset, or Custom and type it. Each sender sends its own.',
                         blocks: [
                             { type: 'picker', action: 'onePreset', tag: 'Picked', grid: true, items: PRESETS.map(p => ({ id: p.id, on: p.id === preset, title: p.title, sub: p.sub })) },
                             { type: 'settings', keys: ['oneItem', 'oneCount', 'oneFavs', 'oneTokens'] },
@@ -988,7 +994,9 @@ module.exports = {
                             { type: 'text', text: 'Tokens take 500K, 2.5M, 1B or "all", and only go from Pro senders (a basic sender still sends the item).' },
                             ...invBlocks,
                         ] },
-                    { type: 'section', title: '3. Send from', text: term ? `Pick one or more. Look up shows how many of ${terms.length > 1 ? 'the items' : 'the item'} each account has.` : "Pick one or more. Each account's tokens are shown.",
+                    { id: 'from', title: 'Send from', done: fromIds.length > 0, warn: fromIds.length ? null : listed.length ? 'pick one or more senders' : 'add another account to trade between them',
+                        summary: fromIds.length ? (fromIds.length <= 3 ? fromIds.map(id => (accts.get(id) || {}).name).join(', ') : `${fromIds.length} accounts`) : '',
+                        text: term ? `Pick one or more. Look up shows how many of ${terms.length > 1 ? 'the items' : 'the item'} each account has.` : "Pick one or more. Each account's tokens are shown.",
                         blocks: [
                             { type: 'buttons', items: [
                                 ...(term ? [{ label: lk && lk.running ? `Looking… ${lk.done}/${lk.total}` : lk ? 'Look up again' : 'Look up', action: 'oneLookup' }] : []),
@@ -1001,45 +1009,44 @@ module.exports = {
                             listed.length ? { type: 'picker', action: 'onePick', tag: 'Sender', grid: true, multi: true, items: listed.map(a => ({ id: a.id, on: picked.has(a.id), title: a.name, lines: itemLines(a), meta: meta(a) })) }
                                 : { type: 'text', text: 'Add another account to trade between them.' },
                         ] },
-                    { type: 'section', title: '4. Send', blocks: [
-                        ...(oneWhy && !(one && one.running) ? [{ type: 'notice', text: oneWhy }]
-                            : [{ type: 'text', text: `${oneWhat}${each} from ${fromTxt} to ${toA ? toA.name : '?'}${fromIds.length > 1 ? ` — ${fromIds.length} trades, one after another` : ''}.` }]),
-                        { type: 'buttons', items: one && one.running && !practice && one.total > 1
-                            ? [{ label: one.halt ? 'Stopping…' : 'Stop', action: 'oneStop', danger: true, disabled: !!one.halt }]
-                            : [{ label: practice ? 'Practice send' : fromIds.length > 1 ? `Send ${fromIds.length} trades` : 'Send trade', action: 'oneSend', primary: true,
-                            ...(practice ? {} : { confirm: fromIds.length > 1 ? `Send ${fromIds.length} trades now? Trades can't be undone.` : "Send this trade now? A trade can't be undone." }) }] },
-                        ...(practice ? [{ type: 'text', text: 'Practice mode: it only says what it would send. Set the mode to Live (top card) to send for real.' }] : []),
-                        ...(one ? [{ type: 'notice', level: one.running ? '' : one.ok ? 'ok' : 'warn', text: one.text }] : []),
-                        ...(one && one.results && one.results.length ? [{ type: 'table', wrap: true, columns: ['Sender', practice ? 'Would' : 'Result'], rows: one.results.map(r => [r.name, r.text]) }] : []),
-                    ] },
-                ] };
+                ],
+                finish: { title: one && one.running ? 'Sending…' : oneWhy ? 'Send' : `Send ${oneWhat}${each}`, ready: !oneWhy, next: 'Review and send',
+                    text: oneWhy && !(one && one.running) ? oneWhy : `${oneWhat}${each} from ${fromTxt} to ${toA ? toA.name : '?'}${fromIds.length > 1 ? ` — ${fromIds.length} trades, one after another` : ''}.`,
+                    buttons: oneSendBtns,
+                    blocks: practice ? [{ type: 'text', text: 'Practice mode: it only says what it would send. Set the mode to Live (top card) to send for real.' }] : [] } },
+                ...(one ? [{ type: 'notice', level: one.running ? '' : one.ok ? 'ok' : 'warn', text: one.text }] : []),
+                ...(one && one.results && one.results.length ? [{ type: 'table', wrap: true, columns: ['Sender', practice ? 'Would' : 'Result'], rows: one.results.map(r => [r.name, r.text]) }] : []),
+            ] };
             // Send to many: source, tokens each, receivers.
             const fanFrom = S('fanFrom'), fanA = accts.get(fanFrom), fanTk = amount(S('fanTokens'), false), fanTo = fanIds(), fanSet = new Set(fanTo);
             const fanWhy = fanProblem(), fanTotal = Number.isFinite(fanTk) ? fanTk * fanTo.length : 0;
             const fanHas = fanA ? num((ctx.accounts.stats(fanFrom) || {}).tokens) : 0;
-            const fanCard = { type: 'card', id: 'fan', open: false, title: 'Send to many',
-                summary: fanA && fanTo.length && fanTk > 0 ? `${count(fanTk)} tokens each · ${fanA.name} → ${fanTo.length} account${fanTo.length === 1 ? '' : 's'}` : 'one account sends tokens to several',
-                blocks: [
-                    { type: 'section', title: '1. Send from', blocks: [{ type: 'settings', keys: ['fanFrom'], bare: true },
-                        ...(fanA ? [{ type: 'text', text: meta(fanA) || ' ' }] : [])] },
-                    { type: 'section', title: '2. Tokens each', text: 'Every receiver gets this many: 500K, 2.5M, 1B. Only Pro accounts can send tokens.', blocks: [{ type: 'settings', keys: ['fanTokens'], bare: true }] },
-                    { type: 'section', title: '3. Send to', blocks: [
-                        { type: 'buttons', items: [{ label: `All (${[...accts.values()].filter(a => a.id !== fanFrom).length})`, action: 'fanAll' }, ...(fanTo.length ? [{ label: 'None', action: 'fanNone' }] : [])] },
-                        ...(fanTo.length ? [{ type: 'text', text: `${fanTo.length} picked.` }] : []),
-                        { type: 'picker', action: 'fanPick', tag: 'Receiver', grid: true, multi: true, items: [...accts.values()].filter(a => a.id !== fanFrom).map(a => ({ id: a.id, on: fanSet.has(a.id), title: a.name, meta: meta(a) })) },
-                    ] },
-                    { type: 'section', title: '4. Send', blocks: [
-                        ...(fanWhy && !(fan && fan.running) ? [{ type: 'notice', text: fanWhy }]
-                            : [{ type: 'text', text: `${count(fanTk)} tokens to each of ${fanTo.length} account${fanTo.length === 1 ? '' : 's'} from ${fanA ? fanA.name : '?'} — ${count(fanTotal)} in all, ${fanTo.length} trade${fanTo.length === 1 ? '' : 's'} one after another.` },
-                               ...(fanA && fanHas && fanTotal > fanHas ? [{ type: 'notice', level: 'warn', text: `${fanA.name} has ${count(fanHas)} tokens: enough for ${Math.floor(fanHas / fanTk)} of them. The rest are skipped.` }] : [])]),
-                        { type: 'buttons', items: fan && fan.running && !practice && fan.total > 1
-                            ? [{ label: fan.halt ? 'Stopping…' : 'Stop', action: 'fanStop', danger: true, disabled: !!fan.halt }]
-                            : [{ label: practice ? 'Practice send' : fanTo.length > 1 ? `Send ${fanTo.length} trades` : 'Send trade', action: 'fanSend', primary: true,
-                            ...(practice ? {} : { confirm: `Send ${count(fanTk)} tokens to each of ${fanTo.length} account${fanTo.length === 1 ? '' : 's'} (${count(fanTotal)} in all)? Trades can't be undone.` }) }] },
-                        ...(fan ? [{ type: 'notice', level: fan.running ? '' : fan.ok ? 'ok' : 'warn', text: fan.text }] : []),
-                        ...(fan && fan.results.length ? [{ type: 'table', wrap: true, columns: ['Receiver', practice ? 'Would' : 'Result'], rows: fan.results.map(r => [r.name, r.text]) }] : []),
-                    ] },
-                ] };
+            const others = [...accts.values()].filter(a => a.id !== fanFrom);
+            const fanCard = { type: 'section', title: 'Send to many', blocks: [
+                { type: 'wizard', id: 'fan', steps: [
+                    { id: 'from', title: 'Send from', done: !!fanA, warn: fanA ? null : 'pick the account that sends', summary: fanA ? [fanA.name, meta(fanA)].filter(Boolean).join(' · ') : '',
+                        keys: ['fanFrom'] },
+                    { id: 'tokens', title: 'Tokens each', done: fanTk > 0, warn: fanTk > 0 ? null : 'how many tokens each', summary: fanTk > 0 ? `${count(fanTk)} to every receiver` : '',
+                        text: 'Every receiver gets this many: 500K, 2.5M, 1B. Only Pro accounts can send tokens.', keys: ['fanTokens'] },
+                    { id: 'to', title: 'Send to', done: fanTo.length > 0, warn: fanTo.length ? null : 'pick the receivers',
+                        summary: fanTo.length ? (fanTo.length <= 3 ? fanTo.map(id => (accts.get(id) || {}).name).join(', ') : `${fanTo.length} accounts`) : '',
+                        blocks: [
+                            { type: 'buttons', items: [{ label: `All (${others.length})`, action: 'fanAll' }, ...(fanTo.length ? [{ label: 'None', action: 'fanNone' }] : [])] },
+                            ...(fanTo.length ? [{ type: 'text', text: `${fanTo.length} picked.` }] : []),
+                            { type: 'picker', action: 'fanPick', tag: 'Receiver', grid: true, multi: true, items: others.map(a => ({ id: a.id, on: fanSet.has(a.id), title: a.name, meta: meta(a) })) },
+                        ] },
+                ],
+                finish: { title: fan && fan.running ? 'Sending…' : fanWhy ? 'Send' : `Send ${count(fanTotal)} tokens`, ready: !fanWhy, next: 'Review and send',
+                    text: fanWhy && !(fan && fan.running) ? fanWhy : `${count(fanTk)} tokens to each of ${fanTo.length} account${fanTo.length === 1 ? '' : 's'} from ${fanA ? fanA.name : '?'} — ${count(fanTotal)} in all, ${fanTo.length} trade${fanTo.length === 1 ? '' : 's'} one after another.`,
+                    buttons: fan && fan.running && !practice && fan.total > 1
+                        ? [{ label: fan.halt ? 'Stopping…' : 'Stop', action: 'fanStop', danger: true, disabled: !!fan.halt }]
+                        : [{ label: practice ? 'Practice send' : fanTo.length > 1 ? `Send ${fanTo.length} trades` : 'Send trade', action: 'fanSend', primary: true, disabled: !!fanWhy,
+                        ...(practice ? {} : { confirm: `Send ${count(fanTk)} tokens to each of ${fanTo.length} account${fanTo.length === 1 ? '' : 's'} (${count(fanTotal)} in all)? Trades can't be undone.` }) }],
+                    blocks: [] } },
+                ...(fanA && fanHas && fanTotal > fanHas && !fanWhy ? [{ type: 'notice', level: 'warn', text: `${fanA.name} has ${count(fanHas)} tokens: enough for ${Math.floor(fanHas / fanTk)} of them. The rest are skipped.` }] : []),
+                ...(fan ? [{ type: 'notice', level: fan.running ? '' : fan.ok ? 'ok' : 'warn', text: fan.text }] : []),
+                ...(fan && fan.results.length ? [{ type: 'table', wrap: true, columns: ['Receiver', practice ? 'Would' : 'Result'], rows: fan.results.map(r => [r.name, r.text]) }] : []),
+            ] };
             // Open trades: what's running on the hub's accounts, to finish or delete one that's stuck.
             const ago = (ms) => { const s = Math.max(0, Math.round((Date.now() - ms) / 1000)); return s < 90 ? `${s}s` : s < 5400 ? `${Math.round(s / 60)} min` : s < 172800 ? `${Math.round(s / 3600)} h` : `${Math.round(s / 86400)} days`; };
             const who = (s) => (s.acct ? s.acct.name : s.uid ? { text: `${s.name || 'someone'} (not in the hub)`, level: 'warn' } : { text: 'nobody joined', level: 'muted' });
@@ -1063,7 +1070,9 @@ module.exports = {
                     ...(openRows.length ? [{ type: 'table', columns: ['Started', 'Host', 'Guest', 'In it', 'Accepted', '', ''], rows: openRows }] : []),
                     ...(practice && openRows.length ? [{ type: 'text', text: 'Practice mode: finishing and deleting need Live (top card).' }] : []),
                 ] };
-            return { modal: invModal, blocks: [
+            const accountLines = Object.fromEntries([...accts.values()].map(a => { const me = meOf(a.id);
+                return [a.id, [me.tokens != null ? `${short(num(me.tokens))} tokens` : 'Tokens not read yet', busy.has(a.id) ? 'Trading now' : me.membership === 'pro' ? 'Pro' : me.membership ? 'Not Pro (no tokens out)' : '']]; }));
+            return { modal: invModal, accountLines, blocks: [
                 { type: 'card', id: 'power', toggle: 'on', toggleDisabled: practice ? 'Set the mode to Live first' : null, bodyWhenOff: true, open: !live,
                     title: live ? (busy.size ? 'Trader — on, trading now' : 'Trader — on') : 'Trader — off',
                     summary: !routes.length ? 'add a route first' : practice ? 'practice: nothing is sent unless you press Practice run' : `live · ${routes.length} route${routes.length === 1 ? '' : 's'}, every ${every} min`,

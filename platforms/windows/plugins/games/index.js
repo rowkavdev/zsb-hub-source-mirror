@@ -470,13 +470,14 @@ module.exports = {
             const rw = all.reduce((t, s) => t + s.rewards, 0), cash = all.reduce((t, s) => t + s.cash, 0);
             const plans = practice ? Object.values(state.plans || {}).filter(x => chosen.some(a => a.name === x.name)).sort((a, b) => b.t - a.t) : [];
             const xp = farm();
-            return { blocks: [
+            // The account pills: tokens (what the games bet), then wallet.
+            const accountLines = Object.fromEntries(ctx.accounts.list().map(a => { const m = a.me || {};
+                return [a.id, [m.tokens != null ? `${tok(num(m.tokens))} tokens` : 'Tokens not read yet', busy.has(a.id) ? 'Playing now' : m.money != null ? `Wallet $${count(num(m.money))}` : '']]; }));
+            return { accountLines, blocks: [
                 { type: 'card', id: 'power', toggle: 'on', toggleDisabled: practice ? 'Set the mode to Live first' : null, bodyWhenOff: true, open: !live,
                     title: live ? (busy.size ? 'Games — on, playing now' : 'Games — on') : 'Games — off',
                     summary: !n && !xp ? 'choose accounts first' : practice ? 'practice: nothing is played unless you press Practice run' : `live on ${n} account${n === 1 ? '' : 's'}, every ${Math.max(5, num(S('everyMin')))} min`,
-                    keys: ['runMode'], blocks: n || xp ? [{ type: 'buttons', items: busy.size && !practice
-                        ? [{ label: halt ? 'Stopping…' : busy.size === 1 ? 'Stop' : `Stop all ${busy.size}`, action: 'stop', danger: true, disabled: halt }]
-                        : [{ label: practice ? 'Practice run' : 'Run now', action: 'run', primary: true }] }] : [] },
+                    keys: ['runMode'] },
                 ...(plans.length ? [{ type: 'table', wrap: true, columns: ['Account', 'The last practice run would', 'When'], rows: plans.slice(0, 10).map(x => [x.name, x.lines.join(' · '), new Date(x.t).toLocaleTimeString()]) }] : []),
                 ...(bet ? [{ type: 'stats', items: [
                     { label: 'Profit', value: tok(back - bet + rw) + ' tokens' + (cash ? ` · $${cash}` : '') },
@@ -484,18 +485,32 @@ module.exports = {
                     { label: 'House edge paid', value: tok(bet - back) },
                     { label: 'Rewards', value: tok(rw) + ' tokens' },
                 ] }] : []),
-                { type: 'card', id: 'accounts', open: !n, title: 'Accounts', summary: n ? `${n} account${n === 1 ? '' : 's'}` : 'none yet', keys: ['accounts'], bare: true },
-                { type: 'section', title: 'Reward tiers', blocks: Object.keys(GAMES).map(g => {
-                    const s = stats(g);
-                    return { type: 'card', id: 'g-' + g, toggle: g, open: false, title: GAMES[g].label,
-                        summary: s.plays ? `${count(s.plays)} plays · ${s.tiers} tiers · ${tok(lossPerPlay(g))} lost a play${s.plays < MIN_SAMPLE ? ' (guess)' : ''}` : 'not played yet',
-                        blocks: s.plays ? [{ type: 'stats', items: [{ label: 'Bets', value: tok(s.bet) }, { label: 'Back', value: tok(s.back) }, { label: 'Reward tokens', value: tok(s.rewards) }] }] : [] };
-                }) },
-                { type: 'card', id: 'careful', open: false, title: 'How careful', summary: `loss ≤ ${num(S('maxLoss'))} a tier · keep ${tok(num(S('keepTokens')))} tokens`, keys: ['maxLoss', 'keepTokens', 'maxPlays'] },
-                { type: 'card', id: 'schedule', open: false, title: 'Schedule', summary: `every ${Math.max(5, num(S('everyMin')))} min`, keys: ['everyMin'] },
-                { type: 'card', id: 'xp', toggle: xp ? null : 'xpMode', open: false, title: 'Armory XP',
-                    summary: xp ? `follows the Armory: ${Object.entries(xp.games).filter(([, on]) => on).map(([g]) => GAMES[g] ? GAMES[g].label : g).join(', ') || 'no games'} on ${xp.accounts.length} account${xp.accounts.length === 1 ? '' : 's'}`
-                        : 'after the tiers, keep playing at the smallest bets up to each daily limit' },
+                // Who, which games, how careful, then Run: one step at a time.
+                { type: 'wizard', id: 'play', steps: [
+                    { id: 'accounts', title: 'Accounts', done: n > 0, warn: n || xp ? null : 'choose accounts first',
+                        summary: n ? (n > 3 ? `${chosen.slice(0, 3).map(a => a.name).join(', ')} and ${n - 3} more` : chosen.map(a => a.name).join(', ')) : xp ? 'the Armory\'s accounts' : '', keys: ['accounts'] },
+                    { id: 'games', title: 'Games to play', done: Object.keys(GAMES).some(g => S(g)), warn: Object.keys(GAMES).some(g => S(g)) ? null : 'no game switched on',
+                        summary: Object.keys(GAMES).filter(g => S(g)).map(g => GAMES[g].label).join(', '),
+                        text: 'Each game is played until its reward tiers are claimed, as long as a tier costs less than How careful allows.',
+                        keys: Object.keys(GAMES) },
+                    { id: 'careful', title: 'How careful', done: true, summary: `loss ≤ ${num(S('maxLoss'))} a tier · keep ${tok(num(S('keepTokens')))} tokens`, keys: ['maxLoss', 'keepTokens', 'maxPlays'] },
+                ],
+                extras: [
+                    { id: 'tiers', title: 'Reward tiers', summary: all.some(x => x.plays) ? `${count(all.reduce((t, x) => t + x.plays, 0))} plays so far` : 'not played yet',
+                        blocks: [{ type: 'table', wrap: true, columns: ['Game', 'Plays', 'Tiers', 'Lost a play', 'Bets', 'Back', 'Reward tokens'],
+                            rows: Object.keys(GAMES).map(g => { const x = stats(g); return [GAMES[g].label, count(x.plays), String(x.tiers), x.plays ? tok(lossPerPlay(g)) + (x.plays < MIN_SAMPLE ? ' (guess)' : '') : '—', tok(x.bet), tok(x.back), tok(x.rewards)]; }) }] },
+                    { id: 'xp', title: 'Armory XP', keys: xp ? [] : ['xpMode'],
+                        summary: xp ? `follows the Armory: ${Object.entries(xp.games).filter(([, on]) => on).map(([g]) => GAMES[g] ? GAMES[g].label : g).join(', ') || 'no games'} on ${xp.accounts.length} account${xp.accounts.length === 1 ? '' : 's'}`
+                            : S('xpMode') ? 'on: after the tiers, smallest bets up to each daily limit' : 'off',
+                        text: 'After the tiers, keep playing at the smallest bets up to each daily limit, for pass XP.' },
+                    { id: 'schedule', title: 'Schedule', summary: `every ${Math.max(5, num(S('everyMin')))} min`, keys: ['everyMin'] },
+                ],
+                finish: { title: busy.size && !practice ? `Playing on ${busy.size} account${busy.size === 1 ? '' : 's'}` : !n && !xp ? 'Choose accounts first' : practice ? 'Practice run' : live ? 'Games — on' : 'Run once',
+                    ready: !!(n || xp), next: 'Run',
+                    text: !n && !xp ? '' : practice ? 'Shows what a run would play on each account, without betting.' : live ? `Every ${Math.max(5, num(S('everyMin')))} min; Run now starts straight away.` : 'Games is off: Run now plays once.',
+                    buttons: n || xp ? (busy.size && !practice
+                        ? [{ label: halt ? 'Stopping…' : busy.size === 1 ? 'Stop' : `Stop all ${busy.size}`, action: 'stop', danger: true, disabled: halt }]
+                        : [{ label: practice ? 'Practice run' : 'Run now', action: 'run', primary: true }]) : [] } },
                 { type: 'section', title: 'Recent runs', blocks: [{ type: 'table', empty: 'No runs yet.', columns: ['When', 'Account', 'Plays', 'Net', 'Rewards', 'Result'],
                     rows: (state.runs || []).slice(0, 10).map(r => [new Date(r.t).toLocaleTimeString(), r.acct, String(r.plays), tok(r.net), tok(r.rewards) + (r.cash ? ` · $${r.cash}` : ''), r.result]) }] },
             ] };

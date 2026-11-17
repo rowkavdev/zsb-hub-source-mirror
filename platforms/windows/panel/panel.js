@@ -1179,9 +1179,12 @@
         if (s.type === 'choice' && (s.dynamic || s.select || (s.options || []).length > 4)) return `<div class="pset" data-key="${key}" data-type="choice">${label}${choiceSelect(s.options, s.value, 'data-pset' + al)}</div>`;
         if (s.type === 'accounts') {
             const v = s.value || {}, ids = new Set(v.ids || []);
+            // One pill per account: its picture, its name, and two lines from the plugin page (accountLines) or its wallet and whether it clicks.
+            const lines = (a) => { const l = acctLines && acctLines[a.id]; return Array.isArray(l) && l.length ? l.slice(0, 2).map(String)
+                : [T('pick.wallet', { money: money(a.me && a.me.money) }), a.startedAt ? T('pluginmodal.clicking') : T('pluginmodal.notClicking')]; };
             const row = (a) => `
-                <label class="pick" data-name="${esc(String(a.name || '').toLowerCase())}" data-folder="${esc(a.folder || '')}"><input type="checkbox" data-pick="acct" value="${esc(a.id)}" ${ids.has(a.id) || v.all ? 'checked' : ''} ${v.all ? 'disabled' : ''}>
-                  <span>${esc(a.name || a.id)}</span><span class="muted">${a.startedAt ? H('pluginmodal.clicking') : H('pluginmodal.notClicking')}</span></label>`;
+                <label class="pick pick-pill${a.startedAt ? '' : ' off'}" data-name="${esc(String(a.name || '').toLowerCase())}" data-folder="${esc(a.folder || '')}"><input type="checkbox" class="pick-cb" data-pick="acct" value="${esc(a.id)}" ${ids.has(a.id) || v.all ? 'checked' : ''} ${v.all ? 'disabled' : ''}>
+                  ${avatarHtml(a)}<span class="pick-txt"><b>${esc(a.name || a.id)}</b>${lines(a).map(x => `<span>${esc(x)}</span>`).join('')}</span><span class="pick-mark" aria-hidden="true"></span></label>`;
             // With folders: the accounts under each folder's name, which ticks or clears the whole folder.
             const folders = (S.folders || []).filter(f => S.accounts.some(a => a.folder === f.id));
             const groups = folders.length ? [...folders.map(f => [f.id, f.name]), ['', T('folders.none')]] : null;
@@ -1196,9 +1199,10 @@
                 <label class="pick-all"><span class="switch"><input type="checkbox" data-pick="all" ${v.all ? 'checked' : ''}><i></i></span><span>${H('pluginmodal.all')} <span class="muted">${H('pluginmodal.allHint')}</span></span></label>
                 ${S.accounts.length > 1 ? `<div class="pick-tools"><button class="small" data-pick="every" ${v.all ? 'disabled' : ''}>${H('pluginmodal.selectAll')}</button><button class="small" data-pick="clear" ${v.all ? 'disabled' : ''}>${H('pluginmodal.clear')}</button>
                   ${S.accounts.length > 8 ? `<input class="pick-search" data-pick="search" aria-label="${H('pluginmodal.search')}" placeholder="${H('pluginmodal.search')}">` : ''}</div>` : ''}
-                <div class="pick-list">${list}</div>
+                <div class="pick-list pick-pills">${list}</div>
                 <div class="muted pick-count"></div></div>`;
         }
+        if (s.type === 'choice' && (s.options || []).some(o => o.help)) return `<div class="pset pset-wide" data-key="${key}" data-type="choice">${label}<div class="popts" role="group"${al}>${(s.options || []).map(o => `<button type="button" class="popt${o.value === s.value ? ' on' : ''}" aria-pressed="${o.value === s.value}" data-choice="${esc(o.value)}"><span class="popt-mark" aria-hidden="true"></span><span class="popt-txt"><b>${esc(o.label || o.value)}</b>${o.help ? `<span>${esc(o.help)}</span>` : ''}</span></button>`).join('')}</div></div>`;
         if (s.type === 'choice') return `<div class="pset" data-key="${key}" data-type="choice">${label}<div class="seg" role="group"${al}>${(s.options || []).map(o => `<button class="${o.value === s.value ? 'on' : ''}" aria-pressed="${o.value === s.value}" data-choice="${esc(o.value)}">${esc(o.label || o.value)}</button>`).join('')}</div></div>`;
         if (s.type === 'boolean') return `<div class="pset" data-key="${key}" data-type="boolean"><label class="pick-all"><span class="switch"><input type="checkbox" data-pset ${s.value ? 'checked' : ''}><i></i></span><span>${esc(s.label || s.key)}</span></label></div>`;
         // tags: names typed one at a time. Enter (or clicking away) turns the text into a chip and leaves an empty box for
@@ -1288,6 +1292,20 @@
         // Properties, not addEventListener: the modal box is reused by every dialog (modal() clears them),
         // and the plugin tab is bound again on every draw.
         root.onchange = (e) => {
+            // A shop grid: ticks, Select all and Queue in Opener (kept in shopSel; the totals follow).
+            const sg = e.target.closest('.pshopg');
+            if (sg && sg.dataset.shopK) {
+                const st = shopOf(sg.dataset.shopK);
+                if (e.target.hasAttribute('data-shop-all')) sg.querySelectorAll('[data-shop-tick]').forEach(x => { x.checked = e.target.checked; });
+                if (e.target.hasAttribute('data-shop-queue')) { st.queue = e.target.checked; tabHtml = ''; drawPluginTab(); return; }
+                if (e.target.hasAttribute('data-shop-under')) { st.under = e.target.value; return; }
+                if (e.target.hasAttribute('data-shop-low')) { st.low = e.target.value; return; }
+                if (e.target.hasAttribute('data-shop-high')) { st.high = e.target.value; return; }
+                if (e.target.hasAttribute('data-shop-pat')) { st.pat = e.target.checked; return; }
+                st.ticks = new Set([...sg.querySelectorAll('[data-shop-row]')].filter(r => r.querySelector('[data-shop-tick]').checked).map(r => r.dataset.shopRow));
+                shopSync(sg);
+                return;
+            }
             const set = e.target.closest('.pset');
             if (!set) return;
             if (set.dataset.type === 'list') {
@@ -1311,6 +1329,19 @@
             else if (e.target.hasAttribute('data-pset')) { save(set.dataset.key, e.target.type === 'checkbox' ? e.target.checked !== e.target.hasAttribute('data-invert') : e.target.value); showWhen(); }
         };
         root.oninput = (e) => {
+            if (e.target.hasAttribute('data-tiles-q')) { tilesFilter(e.target); return; }
+            if (e.target.hasAttribute('data-shop-low') || e.target.hasAttribute('data-shop-high')) {
+                const st = shopOf(e.target.closest('.pshopg').dataset.shopK);
+                st[e.target.hasAttribute('data-shop-low') ? 'low' : 'high'] = e.target.value;
+                return;
+            }
+            if (e.target.hasAttribute('data-shop-amt') || e.target.hasAttribute('data-shop-under')) {
+                const sg = e.target.closest('.pshopg'), st = shopOf(sg.dataset.shopK);
+                if (e.target.hasAttribute('data-shop-under')) st.under = e.target.value;
+                else st.amt[e.target.closest('[data-shop-row]').dataset.shopRow] = e.target.value;
+                shopSync(sg);
+                return;
+            }
             if (e.target.hasAttribute('data-shop-qty')) {
                 const q = e.target, btn = q.parentElement.querySelector('button');
                 btn.textContent = shopLabel(q.value, Number(q.dataset.pack), q.dataset.price, q.dataset.unit);
@@ -1370,6 +1401,53 @@
                 if (inp.value.trim()) inp.focus();
                 return chain(e);
             }
+            // A wizard: a step row or Back / Next opens that step's window; ×, Done or a click outside closes it.
+            const wz = e.target.closest('.pwiz');
+            if (wz) {
+                const wk = wz.dataset.wizK;
+                if (e.target.classList.contains('pwiz-ov') || e.target.closest('[data-wiz-close]')) { wizGo(wk, null); return chain(e); }
+                const go = e.target.closest('[data-wiz-open]');
+                if (go) { wizGo(wk, go.dataset.wizOpen); return chain(e); }
+                const nx = wz.dataset.wizNext;
+                if (nx && e.target.closest('[data-wiz-advance] [data-choice]')) setTimeout(() => wizGo(wk, nx), 0);   // after its save below
+            }
+            // A shop grid: pick an item (again: put it back), the drops profile, Buy / Buy max.
+            const sg = e.target.closest('.pshopg');
+            if (sg && (e.target.classList.contains('pshopg-ov') || e.target.closest('[data-shop-close]'))) { shopClose(sg); return chain(e); }
+            const sb = sg && e.target.closest('[data-shop-item], [data-shop-mode], [data-shop-drops], [data-shop-fav], [data-shop-buy]');
+            if (sb) {
+                const st = shopOf(sg.dataset.shopK);
+                if (sb.dataset.shopItem != null) {
+                    st.item = sb.dataset.shopItem; st.ticks = new Set(); st.amt = {};
+                    tabHtml = ''; drawPluginTab();
+                    const d = document.querySelector('.pshopg-detail'); if (d) d.focus();
+                    return chain(e);
+                }
+                else if (sb.dataset.shopMode) st.mode = sb.dataset.shopMode;
+                else if (sb.dataset.shopDrops) st.drops = sb.dataset.shopDrops;
+                else if (sb.dataset.shopFav) st.fav = sb.dataset.shopFav;
+                else {
+                    const t = shopSync(sg), max = sb.dataset.shopBuy === 'max';
+                    if (!t || !t.on.length) { toast(T('block.shopgrid.noneTicked')); return chain(e); }
+                    const buys = t.on.map(r => ({ account: r.dataset.shopRow, n: (max ? Number(r.dataset.max) : t.amt(r)) * t.pack }));
+                    const n = buys.reduce((s2, x) => s2 + x.n, 0), cost = shopUnits(n / t.pack * t.price, t.unit), name = sg.dataset.name;
+                    const fav = st.fav === 'custom' ? { mode: 'custom', low: Number(st.low) || 0, high: Number(st.high) || 0, patterns: !!st.pat } : { mode: st.fav };
+                    const queue = st.queue ? (st.mode === 'custom' ? { mode: 'custom', drops: st.drops, under: Number(st.under) || 0, fav } : { mode: 'default' }) : null;
+                    const favs = !queue || queue.mode === 'default' ? '' : fav.mode === 'opener' ? T('block.shopgrid.favThen', { text: sg.dataset.qfavs })
+                        : fav.mode === 'own' ? T('block.shopgrid.favThenOwn')
+                        : T('block.shopgrid.favThen', { text: [fav.low > 0 ? T('block.shopgrid.favUnder', { n: fav.low }) : '', fav.high > 0 ? T('block.shopgrid.favOver', { n: fav.high }) : '', fav.patterns ? T('block.shopgrid.favPats') : ''].filter(Boolean).join(', ') || T('block.shopgrid.favNothing') });
+                    const drops = !queue ? '' : queue.mode === 'default' ? sg.dataset.qdefault : queue.drops === 'keep' ? T('block.shopgrid.kept')
+                        : T(queue.under > 0 ? 'block.shopgrid.soldUnder' : 'block.shopgrid.sold', { how: T(queue.drops === 'tokens' ? 'block.shopgrid.howTokens' : 'block.shopgrid.howCash'), under: queue.under.toLocaleString('en-US') });
+                    sb.dataset.paction = sg.dataset.shopAction;
+                    sb.dataset.arg = JSON.stringify({ id: st.item, buys, max, queue });
+                    sb.dataset.confirm = T(max ? 'block.shopgrid.confirmMax' : 'block.shopgrid.confirm', { count: n.toLocaleString('en-US'), name, cost, accounts: `${buys.length} account${buys.length === 1 ? '' : 's'}` }) + (queue ? ' ' + T('block.shopgrid.then', { drops }) + (favs ? ' ' + favs : '') : '');
+                    const k = sg.dataset.shopK, item = st.item;
+                    pluginAction(id, sb).then(r => { if (r && r.ok !== false && !r.error && shopOf(k).item === item) shopClose(document.querySelector(`.pshopg[data-shop-k="${CSS.escape(k)}"]`)); });
+                    return chain(e);
+                }
+                tabHtml = ''; drawPluginTab();
+                return chain(e);
+            }
             const b = e.target.closest('button');
             const set = b && b.closest('.pset');
             if (b && set && set.dataset.type === 'list' && (b.hasAttribute('data-row-add') || b.dataset.rowDel != null)) {
@@ -1411,7 +1489,8 @@
                     if (box.classList.contains('multi')) b.classList.toggle('on');   // several can be picked: only this one flips
                     else box.querySelectorAll('.ppick').forEach(x => x.classList.toggle('on', x === b));
                 }
-                pluginAction(id, b);
+                const wf = b.closest('[data-wiz-finish]') && b.closest('.pwiz');
+                pluginAction(id, b).then(r => { if (wf && r && r.ok !== false && !r.error) wizGo(wf.dataset.wizK, null); });
             }
             // A step card's head opens / folds it (not when the click was on its switch).
             const head = (!b || b.classList.contains('pcard-caret')) && e.target.closest('[data-card]');
@@ -1449,7 +1528,7 @@
 
     // A plugin's button (ctx.panel.action): runs it in the plugin, says how it went.
     async function pluginAction(id, b) {
-        if (b.dataset.confirm && !(await modal({ title: b.textContent.trim(), body: b.dataset.confirm, ok: b.textContent.trim(), danger: b.classList.contains('danger') }))) return;
+        if (b.dataset.confirm && !(await modal({ title: b.textContent.trim(), body: b.dataset.confirm, ok: b.textContent.trim(), danger: b.classList.contains('danger') }))) return null;
         b.disabled = true;
         await Promise.all([...pendingSaves]).catch(() => {});
         let r = null;
@@ -1457,6 +1536,7 @@
         b.disabled = false;
         if (r && r.message) toast(r.message); else if (!r || !r.ok) toast(plainError(r && r.error) || T('toast.failed'), 'bad');
         refresh();
+        return r;
     }
 
     // A plugin's own tab: blocks it returns from render(). Settings blocks show that plugin's
@@ -1474,6 +1554,7 @@
     //   hero { title, text, pill, level, buttons } · flow { items: [{ label, sub, on }] } · tip { text }
     //   checklist { items: [{ label, done, hint }] } · list { key, summaries } (rows fold to their summary)
     //   card also: id + summary + open (folds), step (number), locked (why it can't be set up yet)
+    //   tiles { key, groups, search, next } (picture tiles setting a choice) · wizard { steps, extras, finish } (see wizardHtml)
     const openCards = new Map();
     const openLines = new Set();   // picker entries whose long line list is shown in full (action + id)
     // A picker entry's lines: up to 3 as they are; more fold behind "Show all" (a toggle that doesn't pick the entry).
@@ -1483,6 +1564,184 @@
             ${many ? `<span class="ppick-more" role="button" tabindex="0" data-plines="${esc(k)}" aria-expanded="${open}">${open ? H('block.picker.fewer') : H('block.picker.all', { n: lines.length })}</span>` : ''}</div>`;
     };
     const btnsHtml = (items) => `<div class="pbtns">${(items || []).map(i => `<button class="${i.primary ? 'primary' : ''} ${i.danger ? 'danger' : ''}" data-paction="${esc(i.action)}" ${i.arg != null ? `data-arg="${esc(i.arg)}"` : ''} ${i.confirm ? `data-confirm="${esc(i.confirm)}"` : ''}${i.disabled ? ' disabled' : ''}>${esc(i.label)}</button>`).join('')}</div>`;
+    // A shop grid (the Armory shop): pictures grouped by kind; picking one shows the accounts whose credits cover at least
+    // one pack, each with a tickbox and an amount, Select all, Buy (the amounts) and Buy max (all each one's credits
+    // cover), and optionally Queue in Opener with a drops profile. What's picked lives here (shopSel), across redraws.
+    //   shopgrid { action, unit, pack, groups: [{ title, items: [{ id, name, image, price }] }], accounts: [{ id, name, credits }],
+    //              queue?: { defaultText (the Opener's drops, e.g. 'sold for cash'), maxUnder, off (why it can't now) }, empty }
+    //   sends action with { id, buys: [{ account, n (items) }], max, queue: null | { mode: 'default' } | { mode: 'custom', drops, under } }
+    const shopSel = new Map();
+    // Picture tiles that set a choice setting (the Opener's item): a search box over groups of tiles; a click saves
+    // the setting. Inside a wizard step marked next, picking one goes on to the next step.
+    //   tiles { key, search, next, empty, groups: [{ title, items: [{ id, name, image, sub, meta }] }] }
+    const tileQ = new Map();   // plugin:key -> what's typed in its search box (kept across redraws)
+    const tilePic = (u, cls = '') => `<span class="pshopg-img${cls}">${/^https:\/\//.test(u || '') ? `<img src="${esc(u)}" alt="" loading="lazy">` : ''}</span>`;
+    function tilesHtml(b, p) {
+        const sp = p.settings.find(x => x.key === b.key), cur = sp ? String(sp.value ?? '') : '';
+        const k = p.id + ':' + b.key, q = (tileQ.get(k) || '').trim().toLowerCase();
+        const groups = (b.groups || []).filter(g => (g.items || []).length);
+        if (!groups.length) return `<p class="muted">${esc(b.empty || '')}</p>`;
+        const hit = (i) => !q || String(i.name || '').toLowerCase().includes(q);
+        const tile = (i) => `<button type="button" class="pshopg-tile${i.id === cur ? ' on' : ''}" aria-pressed="${i.id === cur}" data-choice="${esc(i.id)}" data-name="${esc(String(i.name || '').toLowerCase())}"${hit(i) ? '' : ' hidden'}>
+            ${tilePic(i.image)}<span class="pshopg-name">${esc(i.name)}</span>${i.sub ? `<span class="pshopg-price">${esc(i.sub)}</span>` : ''}${i.meta ? `<span class="ptile-meta">${esc(i.meta)}</span>` : ''}</button>`;
+        const any = groups.some(g => g.items.some(hit));
+        return `<div class="pset pset-wide ptiles" data-key="${esc(b.key)}" data-type="choice"${b.next ? ' data-wiz-advance' : ''}>
+            ${b.search ? `<input type="search" class="ptiles-q" data-tiles-q="${esc(k)}" value="${esc(tileQ.get(k) || '')}" placeholder="${H('block.tiles.search')}" aria-label="${H('block.tiles.search')}" autocomplete="off" spellcheck="false">` : ''}
+            ${groups.map(g => `<section class="ptiles-group"${g.items.some(hit) ? '' : ' hidden'}><h5>${esc(g.title)}</h5><div class="pshopg-grid">${g.items.map(tile).join('')}</div></section>`).join('')}
+            <p class="muted ptiles-none"${any ? ' hidden' : ''}>${H('block.tiles.none')}</p></div>`;
+    }
+    function tilesFilter(inp) {
+        const box = inp.closest('.ptiles'), q = inp.value.trim().toLowerCase();
+        tileQ.set(inp.dataset.tilesQ, inp.value);
+        let any = false;
+        box.querySelectorAll('.ptiles-group').forEach(g => {
+            let n = 0;
+            g.querySelectorAll('[data-choice]').forEach(t => { const on = !q || t.dataset.name.includes(q); t.hidden = !on; if (on) n++; });
+            g.hidden = !n; if (n) any = true;
+        });
+        const none = box.querySelector('.ptiles-none'); if (none) none.hidden = any;
+    }
+    // A wizard: numbered steps, each a row with what it's set to; a click opens that step in a window over the page
+    // with Back / Next, the last Next going to the finish (a review with the start buttons). Extras are rows under the
+    // steps ("More options") that open the same kind of window with only Done. Which window is open lives here.
+    //   wizard { id, steps: [{ id, title, summary, image, done, warn, text, keys, blocks }], extras: [same],
+    //            extrasTitle, finish: { title, text, ready, next (the last Next's label), buttons, blocks } }
+    const avatarHtml = (a) => { const ch = esc((String(a.name || a.id || '?').match(/[a-z0-9]/i) || ['?'])[0].toUpperCase());
+        return `<span class="pick-av" aria-hidden="true" data-ch="${ch}">${a.me && a.me.image ? `<img src="${esc(a.me.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ch}</span>`; };
+    let acctLines = null;   // the plugin tab being drawn: account id -> its two lines for the account pills
+    const wizOpen = new Map();   // plugin:wizard id -> the open step's id, '__finish', or nothing
+    function wizardHtml(b, p, settingsHtml) {
+        const k = p.id + ':' + (b.id || 'wizard'), steps = b.steps || [], extras = b.extras || [], f = b.finish || null;
+        const all = [...steps, ...extras];
+        let cur = wizOpen.get(k) || null;
+        if (cur && (cur === '__finish' ? !f : !all.some(x => x.id === cur))) cur = null;
+        const si = steps.findIndex(x => x.id === cur);
+        const next = si >= 0 ? (steps[si + 1] ? steps[si + 1].id : f ? '__finish' : '') : '';
+        const total = steps.length + (f ? 1 : 0);
+        const row = (x, i, go) => `<button type="button" class="pwiz-row${x.done ? ' done' : ''}${x.warn ? ' warn' : ''}" data-wiz-open="${esc(x.id)}">
+            ${i != null ? `<span class="pstep">${x.done ? '✓' : i + 1}</span>` : ''}${x.image ? tilePic(x.image, ' pwiz-img') : ''}
+            <span class="pwiz-txt"><b>${esc(x.title || '')}</b><span class="${x.warn ? 'pcell-warn' : 'muted'}">${esc(x.warn || x.summary || '')}</span></span>
+            <span class="pwiz-go">${H(go || (i == null ? 'block.wizard.open' : x.done ? 'block.wizard.change' : 'block.wizard.choose'))}</span></button>`;
+        const start = f ? `<div class="pwiz-start${f.ready ? ' ready' : ''}"><span class="pstep">${steps.length + 1}</span>
+            <span class="pwiz-txt"><b>${esc(f.title || '')}</b>${f.text ? `<span class="muted">${esc(f.text)}</span>` : ''}</span>${btnsHtml(f.buttons || [])}</div>` : '';
+        const page = `<ol class="pwiz-steps">${steps.map((x, i) => `<li>${row(x, i)}</li>`).join('')}${f ? `<li>${start}</li>` : ''}</ol>
+            ${extras.length ? `<div class="pwiz-extras"><h5>${esc(b.extrasTitle || T('block.wizard.more'))}</h5><div class="pwiz-xgrid">${extras.map(x => row(x, null)).join('')}</div></div>` : ''}`;
+        let ov = '';
+        if (cur) {
+            const fin = cur === '__finish', x = fin ? null : all.find(y => y.id === cur), isStep = si >= 0;
+            const prev = fin ? steps[steps.length - 1] : si > 0 ? steps[si - 1] : null;
+            const kicker = fin || isStep ? T('block.wizard.of', { n: fin ? total : si + 1, total }) : (b.extrasTitle || T('block.wizard.more'));
+            const nextStep = steps.find(y => y.id === next);
+            const body = fin
+                ? `<ol class="pwiz-steps pwiz-review">${steps.map((y, i) => `<li>${row(y, i, 'block.wizard.change')}</li>`).join('')}</ol>${f.text ? `<p class="muted">${esc(f.text)}</p>` : ''}${pluginBlocks(f.blocks, p)}`
+                : `${x.text ? `<p class="muted">${esc(x.text)}</p>` : ''}${(x.keys || []).length ? settingsHtml(x.keys, false, false, x.title) : ''}${pluginBlocks(x.blocks, p)}`;
+            const back = prev ? `<button type="button" data-wiz-open="${esc(prev.id)}">${H('block.wizard.back')}</button>` : '';
+            const foot = fin ? `${back}<span class="pwiz-sp"></span>${btnsHtml(f.buttons || [])}`
+                : isStep ? `${back}<span class="pwiz-sp"></span>${next ? `<button type="button" class="primary" data-wiz-open="${esc(next)}">${next === '__finish' ? esc(f.next || T('block.wizard.review')) : H('block.wizard.next', { title: nextStep ? nextStep.title : '' })}</button>`
+                    : `<button type="button" class="primary" data-wiz-close>${H('block.wizard.done')}</button>`}`
+                : `<span class="pwiz-sp"></span><button type="button" class="primary" data-wiz-close>${H('block.wizard.done')}</button>`;
+            ov = `<div class="pshopg-ov pwiz-ov"><div class="pshopg-detail pwiz-dlg" role="dialog" aria-modal="true" aria-labelledby="pwiz-title" tabindex="-1"${fin ? ' data-wiz-finish' : ''}>
+                <div class="pwiz-head">${x && x.image ? tilePic(x.image, ' pwiz-img') : ''}<div class="pwiz-titles"><span class="pwiz-kicker">${esc(kicker)}</span><h4 id="pwiz-title">${esc(fin ? f.title || '' : x.title || '')}</h4></div>
+                  <button type="button" class="pshopg-x" data-wiz-close aria-label="${H('block.shopgrid.close')}">×</button></div>
+                ${total > 1 && (fin || isStep) ? `<div class="pwiz-dots" aria-hidden="true">${[...steps, ...(f ? [{ id: '__finish' }] : [])].map((y, i) => `<i class="${y.id === cur ? 'on' : y.done || i < si ? 'done' : ''}"></i>`).join('')}</div>` : ''}
+                <div class="pwiz-body">${body}</div><div class="pwiz-foot">${foot}</div></div></div>`;
+        }
+        return `<div class="pwiz" data-wiz-k="${esc(k)}" data-wiz-next="${esc(next)}">${page}${ov}</div>`;
+    }
+    function wizGo(k, id) {
+        const was = wizOpen.get(k);
+        if (id) wizOpen.set(k, id); else wizOpen.delete(k);
+        tabHtml = ''; drawPluginTab();
+        if (id) { const d = document.querySelector('.pwiz-dlg'); if (d) { d.focus(); d.scrollTop = 0; d.querySelectorAll('.table-wrap').forEach(w => { w.scrollTop = 0; }); } }
+        else { const t = was && document.querySelector(`.pwiz-steps [data-wiz-open="${CSS.escape(was)}"], .pwiz-xgrid [data-wiz-open="${CSS.escape(was)}"]`); if (t) t.focus(); }
+    }
+    // A shop picture the site doesn't have: an empty tile, not the browser's broken-image mark.
+    document.addEventListener('error', (e) => { const t = e.target; if (t && t.tagName === 'IMG' && t.closest('.pshopg-img, .pitem-img')) t.style.visibility = 'hidden';
+        else if (t && t.tagName === 'IMG' && t.parentNode && t.parentNode.classList.contains('pick-av')) t.parentNode.textContent = t.parentNode.dataset.ch || '?'; }, true);
+    function shopClose(sg) {
+        if (!sg) return;
+        const st = shopOf(sg.dataset.shopK), was = st.item;
+        st.item = null;
+        tabHtml = ''; drawPluginTab();
+        const t = was && document.querySelector(`[data-shop-item="${CSS.escape(was)}"]`); if (t) t.focus();
+    }
+    document.addEventListener('keydown', (e) => {
+        const d = document.querySelector('.pshopg-detail');
+        if (!d || !$('#modal').hidden) return;
+        const wz = d.closest('.pwiz');
+        if (e.key === 'Escape') { e.preventDefault(); if (wz) wizGo(wz.dataset.wizK, null); else shopClose(d.closest('.pshopg')); return; }
+        if (e.key !== 'Tab') return;
+        const f = [...d.querySelectorAll('button:not([disabled]), input:not([disabled]), select:not([disabled]), textarea:not([disabled])')].filter(x => x.offsetParent);
+        if (!f.length) return;
+        const first = f[0], last = f[f.length - 1];
+        if (!d.contains(document.activeElement)) { e.preventDefault(); first.focus(); }
+        else if (e.shiftKey && (document.activeElement === first || document.activeElement === d)) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    });
+    const shopOf = (k) => { if (!shopSel.has(k)) shopSel.set(k, { item: null, ticks: new Set(), amt: {}, queue: false, mode: 'default', drops: 'money', under: '', fav: 'opener', low: '', high: '', pat: true }); return shopSel.get(k); };
+    const shopUnits = (c, unit) => `${Number(c).toLocaleString('en-US')}${unit ? ' ' + unit + (Number(c) === 1 ? '' : 's') : ''}`;
+    function shopGridHtml(b, p) {
+        const k = p.id + ':' + b.action, st = shopOf(k), pack = Math.max(1, Number(b.pack) || 1), unit = b.unit || '';
+        const groups = (b.groups || []).filter(g => (g.items || []).length);
+        const sel = groups.flatMap(g => g.items).find(i => i.id === st.item) || null;
+        if (!sel) st.item = null;
+        const tile = (i) => `<button type="button" class="pshopg-tile${i.id === st.item ? ' on' : ''}" data-shop-item="${esc(i.id)}" aria-pressed="${i.id === st.item}">
+            <span class="pshopg-img">${/^https:\/\//.test(i.image || '') ? `<img src="${esc(i.image)}" alt="" loading="lazy">` : ''}</span>
+            <span class="pshopg-name">${esc(i.name)}</span><span class="pshopg-price">${H('block.shopgrid.per', { cost: shopUnits(i.price, unit), count: pack })}</span></button>`;
+        const grid = groups.length ? `<div class="pshopg-groups">${groups.map(g => `<div class="pshopg-group"><h5>${esc(g.title || '')}</h5><div class="pshopg-grid">${g.items.map(tile).join('')}</div></div>`).join('')}</div>`
+            : emptyHtml(esc(b.empty || ''), '', '', true);
+        if (!sel) return `<div class="pshopg" data-shop-k="${esc(k)}">${grid}</div>`;
+        const price = Math.max(1, Number(sel.price) || 1);
+        const able = (b.accounts || []).map(a => ({ ...a, max: Math.floor((Number(a.credits) || 0) / price) })).filter(a => a.max >= 1);
+        for (const id of [...st.ticks]) if (!able.some(a => a.id === id)) st.ticks.delete(id);
+        const q = b.queue || null, off = q && q.off;
+        if (off) st.queue = false;
+        const rows = able.map((a, n) => {
+            const on = st.ticks.has(a.id), v = Math.min(a.max * pack, Math.max(pack, Number(st.amt[a.id]) || pack));
+            return `<div class="pshopg-acct${on ? ' on' : ''}" data-shop-row="${esc(a.id)}" data-max="${a.max}">
+                <input type="checkbox" id="shopg-${n}" data-shop-tick${on ? ' checked' : ''}>
+                <label for="shopg-${n}"><b>${esc(a.name)}</b><span>${H('block.shopgrid.has', { credits: shopUnits(Number(a.credits) || 0, unit), count: (a.max * pack).toLocaleString('en-US') })}</span></label>
+                <input type="number" min="${pack}" step="${pack}" max="${a.max * pack}" value="${v}" data-shop-amt aria-label="${H('block.shopgrid.amount', { name: a.name })}"></div>`;
+        }).join('');
+        const seg = (attr, cur, opts, label = 'block.shopgrid.profile') => `<div class="seg" role="group" aria-label="${H(label)}">${opts.map(([v, key]) => `<button type="button" class="${v === cur ? 'on' : ''}" aria-pressed="${v === cur}" ${attr}="${v}">${H(key)}</button>`).join('')}</div>`;
+        const queue = !q ? '' : `<div class="pshopg-queue">
+            <label class="pshopg-check"><input type="checkbox" data-shop-queue${st.queue ? ' checked' : ''}${off ? ' disabled' : ''}><b>${H('block.shopgrid.queue')}</b><span class="muted">${off ? esc(off) : H('block.shopgrid.queueHint')}</span></label>
+            ${st.queue ? `${seg('data-shop-mode', st.mode, [['default', 'block.shopgrid.default'], ['custom', 'block.shopgrid.custom']])}
+              ${st.mode === 'default' ? `<p class="muted">${H('block.shopgrid.defaultIs', { text: q.defaultText || '' })}${q.favText ? ' ' + H('block.shopgrid.favDefaultIs', { text: q.favText }) : ''}</p>`
+                : `<div class="pshopg-custom">${seg('data-shop-drops', st.drops, [['money', 'block.shopgrid.cash'], ['tokens', 'block.shopgrid.tokens'], ['keep', 'block.shopgrid.keep']])}
+                  ${st.drops !== 'keep' ? `<label class="pshopg-under"><span>${H('block.shopgrid.under', { max: '$' + Number(q.maxUnder || 0).toLocaleString('en-US') })}</span><input type="number" min="0"${q.maxUnder ? ` max="${Number(q.maxUnder)}"` : ''} step="any" value="${esc(st.under)}" data-shop-under></label>` : ''}</div>
+                  <div class="pshopg-custom"><span class="pshopg-lbl">${H('block.shopgrid.fav')}</span>${seg('data-shop-fav', st.fav, [['opener', 'block.shopgrid.favOpener'], ['own', 'block.shopgrid.favOwn'], ['custom', 'block.shopgrid.custom']], 'block.shopgrid.fav')}</div>
+                  ${st.fav === 'opener' ? `<p class="muted">${H('block.shopgrid.favOpenerIs', { text: q.favText || '' })}</p>` : st.fav === 'own' ? `<p class="muted">${H('block.shopgrid.favOwnIs')}</p>`
+                    : `<div class="pshopg-custom">
+                      <label class="pshopg-under"><span>${H('block.shopgrid.favLow')}</span><input type="number" min="0" max="0.1" step="any" placeholder="0.0000001" value="${esc(st.low)}" data-shop-low></label>
+                      <label class="pshopg-under"><span>${H('block.shopgrid.favHigh')}</span><input type="number" min="0.9" max="1" step="any" placeholder="0.99999" value="${esc(st.high)}" data-shop-high></label>
+                      <label class="pshopg-check"><input type="checkbox" data-shop-pat${st.pat ? ' checked' : ''}><span>${H('block.shopgrid.favPatterns')}</span></label></div>`}`}` : ''}</div>`;
+        return `<div class="pshopg" data-shop-k="${esc(k)}" data-shop-action="${esc(b.action)}" data-pack="${pack}" data-price="${price}" data-unit="${esc(unit)}" data-name="${esc(sel.name)}" data-qdefault="${esc((q && q.defaultText) || '')}" data-qfavs="${esc((q && q.favText) || '')}">${grid}
+          <div class="pshopg-ov"><div class="pshopg-detail" role="dialog" aria-modal="true" aria-labelledby="pshopg-title" tabindex="-1">
+            <div class="pshopg-top"><span class="pshopg-img">${/^https:\/\//.test(sel.image || '') ? `<img src="${esc(sel.image)}" alt="" loading="lazy">` : ''}</span>
+              <div class="pshopg-title"><h4 id="pshopg-title">${esc(sel.name)}</h4><span>${H('block.shopgrid.per', { cost: shopUnits(price, unit), count: pack })}</span></div>
+              <button type="button" class="pshopg-x" data-shop-close aria-label="${H('block.shopgrid.close')}">×</button></div>
+            <div class="pshopg-head"><h5>${H('block.shopgrid.who', { count: pack, cost: shopUnits(price, unit) })}</h5>
+            ${able.length ? `<label class="pshopg-check"><input type="checkbox" data-shop-all${able.every(a => st.ticks.has(a.id)) ? ' checked' : ''}><span>${H('block.shopgrid.all')}</span></label><span class="muted" data-shop-count></span>` : ''}</div>
+            ${able.length ? `<div class="pshopg-accts">${rows}</div>${queue}
+              <div class="pshopg-bar"><button type="button" class="small" data-shop-buy="max"></button><button type="button" class="small primary" data-shop-buy="amt"></button></div>`
+            : `<p class="muted">${H('block.shopgrid.none', { count: pack, cost: shopUnits(price, unit) })}</p>`}</div></div></div>`;
+    }
+    // The ticked count and the two Buy buttons' totals, from the grid as it is (no redraw while typing an amount).
+    function shopSync(grid) {
+        if (!grid || !grid.dataset.shopK) return;
+        const pack = Number(grid.dataset.pack), price = Number(grid.dataset.price), unit = grid.dataset.unit;
+        const rows = [...grid.querySelectorAll('[data-shop-row]')], on = rows.filter(r => r.querySelector('[data-shop-tick]').checked);
+        const amt = (r) => Math.min(Number(r.dataset.max), Math.max(1, Math.round(Number(r.querySelector('[data-shop-amt]').value) / pack) || 1));
+        const packs = on.reduce((s, r) => s + amt(r), 0), maxPacks = on.reduce((s, r) => s + Number(r.dataset.max), 0);
+        rows.forEach(r => r.classList.toggle('on', on.includes(r)));
+        const c = grid.querySelector('[data-shop-count]'); if (c) c.textContent = T('block.shopgrid.ticked', { n: on.length, total: rows.length });
+        const all = grid.querySelector('[data-shop-all]'); if (all) all.checked = rows.length > 0 && on.length === rows.length;
+        const bm = grid.querySelector('[data-shop-buy="max"]'), ba = grid.querySelector('[data-shop-buy="amt"]');
+        if (bm) { bm.textContent = T('block.shopgrid.max', { count: (maxPacks * pack).toLocaleString('en-US'), cost: shopUnits(maxPacks * price, unit) }); bm.disabled = !on.length; }
+        if (ba) { ba.textContent = T('block.shopgrid.buy', { count: (packs * pack).toLocaleString('en-US'), cost: shopUnits(packs * price, unit) }); ba.disabled = !on.length; }
+        return { on, amt, pack, price, unit };
+    }
     // A shop row's button: "Buy 30 for 3 credits" (items come in packs; a pack costs price).
     const shopLabel = (qty, pack, price, unit) => { const packs = Math.max(1, Math.round(Number(qty) / pack) || 1); const cost = packs * Number(price); return T('block.shop.buy', { count: packs * pack, cost: `${cost}${unit ? ' ' + unit + (cost === 1 ? '' : 's') : ''}` }); };
     // A table cell: text, or { text, level: ok|warn|bad|muted } (coloured text), { bar: 0..1, text } (a progress bar
@@ -1497,7 +1756,7 @@
     };
     function pluginBlocks(blocks, p) {
         const setting = (k) => p.settings.find(x => x.key === k);
-        const settingsHtml = (keys, bare, filters) => `<div class="psets${filters ? ' pfilters' : ''}">${(keys || []).map(setting).filter(Boolean).map(x => (bare ? { ...x, label: '', help: '' } : x)).map(pluginSettingHtml).join('')}</div>`;
+        const settingsHtml = (keys, bare, filters, title) => `<div class="psets${filters ? ' pfilters' : ''}">${(keys || []).map(setting).filter(Boolean).map(x => (bare ? { ...x, label: '', help: '' } : title && x.label === title && x.type !== 'boolean' ? { ...x, label: '' } : x)).map(pluginSettingHtml).join('')}</div>`;
         return (blocks || []).map(b => {
             if (b.type === 'hero') return `<div class="phero ${esc(b.level || '')}"><div class="phero-main">${b.pill ? `<span class="ppill ${esc(b.level || '')}">${esc(b.pill)}</span>` : ''}
                 <div class="phero-title">${esc(b.title || '')}</div>${b.text ? `<div class="phero-text">${esc(b.text)}</div>` : ''}</div>${b.buttons ? btnsHtml(b.buttons) : ''}</div>`;
@@ -1520,6 +1779,9 @@
                 <div class="pshop-name"><div class="title">${esc(i.name)}</div>${i.sub ? `<div class="desc">${esc(i.sub)}</div>` : ''}</div>
                 <input type="number" min="${n}" step="${n}" value="${n}" data-shop-qty aria-label="${H('block.shop.qty', { name: i.name })}" data-pack="${n}" data-price="${esc(i.price)}" data-unit="${esc(b.unit || '')}"${i.max != null ? ` max="${esc(i.max * n)}"` : ''}>
                 <button class="small" data-paction="${esc(b.action)}" data-shop="${esc(i.id)}"${i.max === 0 ? ' disabled' : ''}>${esc(shopLabel(n, n, i.price, b.unit))}</button></div>`; }).join('')}</div>`;
+            if (b.type === 'shopgrid') return shopGridHtml(b, p);
+            if (b.type === 'tiles') return tilesHtml(b, p);
+            if (b.type === 'wizard') return wizardHtml(b, p, settingsHtml);
             // A toolbar: settings without their labels (a search box), then buttons, on one row that wraps.
             if (b.type === 'bar') return `<div class="ptoolbar">${(b.keys || []).length ? settingsHtml(b.keys, true) : ''}${(b.items || []).length ? pluginBlocks([{ type: 'buttons', items: b.items }], p) : ''}${b.text ? `<span class="muted ptoolbar-text">${esc(b.text)}</span>` : ''}</div>`;
             // Items like the game's inventory: picture, name, wear/float, price, a rarity stripe; click to pick.
@@ -1590,7 +1852,8 @@
         const md = c && p && c.modal && Array.isArray(c.modal.blocks) ? c.modal : null;
         const mdHtml = md ? `<div class="modal pmodal" role="dialog" aria-modal="true"><div class="modal-box pmodal-box"><div class="pmodal-head"><h3>${esc(md.title || '')}</h3>${md.close ? `<button class="small ghost close-x" data-paction="${esc(md.close)}" aria-label="${H('banner.close')}" title="${H('banner.close')}">×</button>` : ''}</div>${pluginBlocks(md.blocks, p)}</div></div>` : '';
         const html = t && t.failed && p ? `<div class="pnotice bad pfailed"><b>${H('plugintab.failed.title')}</b><div class="muted">${H('plugintab.failed.body', { code: 'CC-PLUG-02' })}</div><div class="code">${esc(t.failed)}</div><div class="pbtns"><button class="small" data-act="pluginReload" data-id="${esc(p.id)}">${H('plugins.reload')}</button></div></div>`
-            : !c || !p ? emptyHtml(H('plugintab.empty')) : `<div class="ptab">${pluginBlocks(c.blocks, p)}${mdHtml}</div>`;
+            : !c || !p ? emptyHtml(H('plugintab.empty')) : (() => { acctLines = c.accountLines && typeof c.accountLines === 'object' ? c.accountLines : null;
+                try { return `<div class="ptab">${pluginBlocks(c.blocks, p)}${mdHtml}</div>`; } finally { acctLines = null; } })();
         if (html === tabHtml && el.innerHTML) return;
         tabHtml = html;
         const tpl = document.createElement('template');
@@ -1598,6 +1861,7 @@
         morph(el, tpl.content);
         el.querySelectorAll('[data-color]').forEach(i => i.style.setProperty('--rc', '#' + i.dataset.color));   // rarity, through CSSOM
         el.querySelectorAll('[data-w]').forEach(i => { i.style.width = i.dataset.w + '%'; });   // table progress bars, the same way
+        el.querySelectorAll('.pshopg').forEach(shopSync);   // shop grid totals
         if (p) bindSettings(el, p.id);
     }
 
@@ -1669,6 +1933,7 @@
               ${(S.themes || []).map(t => `<option value="${esc(t.id)}" ${s.theme === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}
               ${s.theme && !(S.themes || []).some(t => t.id === s.theme) ? `<option value="${esc(s.theme)}" selected>${H('settings.theme.off', { id: esc(s.theme) })}</option>` : ''}
             </select></div>
+          ${themeOptsHtml(s)}
 
           ${S.stats && S.stats.available ? `<div class="section-title">${H('settings.section.sharing')}</div>
           ${sw('shareStats', s.shareStats)}
@@ -1706,7 +1971,18 @@
         </div>`;
         for (const id of TYPED) { const i = document.getElementById(id); if (!i) continue; i.dataset.saved = i.value; if (id in typed) i.value = typed[id]; }
         paintSwatches($('#tab-settings'));
+        // the picked theme's own options, saved as they change like on its Plugins page
+        const to = $('#tab-settings [data-theme-opts]');
+        if (to) bindSettings(to, to.dataset.themeOpts);
         syncShareName();
+    }
+
+    // Settings > Theme: the options of the theme plugin that's picked (its look, say), right under the picker.
+    function themeOptsHtml(s) {
+        const p = s.theme && (S.themes || []).some(t => t.id === s.theme) && (S.plugins || []).find(x => x.id === s.theme);
+        const sets = p ? (p.settings || []).filter(x => !x.page) : [];
+        if (!sets.length) return '';
+        return `<div class="row sub theme-opts" data-theme-opts="${esc(p.id)}"><div class="psets">${sets.map(pluginSettingHtml).join('')}</div></div>`;
     }
 
     // Income over the last 24 hours: hourly averages of the header's estimate (core/income.js).
@@ -1919,6 +2195,8 @@
         try { themeSheet.replaceSync(t ? `:root { ${vars} }
 ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         themeStamp = t ? t.stamp : null;
+        // Fancy's scene and glows take their colours from the theme
+        if (window.ZSBFancy && window.ZSBFancy.recolor) window.ZSBFancy.recolor();
         document.documentElement.dataset.theme = t ? t.id : '';
     }
     try { const saved = JSON.parse(localStorage.getItem('zsb.theme') || 'null'); if (saved && saved.stamp) applyTheme(saved); } catch (_) {}

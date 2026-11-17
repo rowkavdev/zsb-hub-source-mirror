@@ -347,7 +347,9 @@ class PluginHost {
     makeCtx(id, p) {
         const host = this, r = p.res, engine = this.engine, store = this.store;
         p.state = 'starting';
-        const pub = (a) => ({ id: a.id, name: a.name, type: a.type, running: engine.isRunning(a.id), healthy: engine.isHealthy(a.id) });
+        // An account as plugins see it; me: its last numbers from the site (null until read), for pages to show.
+        const pubMe = (m) => (m ? { money: m.money, tokens: m.tokens, openCount: m.openCount, openMult: m.openMult, at: m.at } : null);
+        const pub = (a) => ({ id: a.id, name: a.name, type: a.type, running: engine.isRunning(a.id), healthy: engine.isHealthy(a.id), me: pubMe(engine.meOf(a.id)) });
         const dataFile = path.join(this.dataDir, id + '.json');
         const ownDir = path.join(this.dataDir, id);
         const settingDefaults = Object.fromEntries(Object.entries(p.manifest.settings || {}).map(([k, v]) => [k, settingDefault(v)]));

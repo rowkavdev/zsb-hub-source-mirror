@@ -1,7 +1,7 @@
 {
   "id": "opener",
   "name": "Opener",
-  "version": "1.10.0",
+  "version": "1.14.0",
   "description": "A tool for opening cases, capsules or collections on the accounts you choose: Preview shows what it would do, Open now buys a set amount (or what the spare cash covers, or uses what is in stock), opens it all and keeps or sells the drops. Tracks XP and rank-ups.",
   "minCore": "1.2.7",
   "main": "index.js",
@@ -21,24 +21,28 @@
     },
     "source": {
       "type": "choice",
-      "label": "Source",
+      "label": "How to get them",
       "default": "buy",
       "options": [
         {
+          "value": "owned",
+          "label": "From stock",
+          "help": "Opens only what the accounts already have. Buys nothing."
+        },
+        {
           "value": "amount",
-          "label": "Buy a set amount"
+          "label": "Buy a set amount",
+          "help": "Buys this many on each account, then opens them."
         },
         {
           "value": "stockAmount",
-          "label": "Stock first, then buy"
+          "label": "Stock first, then buy",
+          "help": "Opens what each account has in stock first, then buys this many and opens those."
         },
         {
           "value": "buy",
-          "label": "Buy with spare cash"
-        },
-        {
-          "value": "owned",
-          "label": "From stock"
+          "label": "Buy with spare cash",
+          "help": "Spends the cash above what you keep, then opens it all."
         }
       ]
     },
@@ -73,6 +77,26 @@
       "label": "Most to spend per Open now ($, 0 = no limit)",
       "default": 0,
       "min": 0
+    },
+    "useTickets": {
+      "type": "boolean",
+      "label": "Use event tickets",
+      "help": "During an event, open with event tickets: one ticket per case opened. An account that runs out of tickets, or that the site won't let use them (no event on), stops.",
+      "default": false
+    },
+    "buyTickets": {
+      "type": "boolean",
+      "label": "Buy tickets",
+      "help": "Buy one ticket ($0.50) for each case it's about to open that has no ticket yet. Counts against Keep cash and Most to spend.",
+      "default": false
+    },
+    "ticketBuyN": {
+      "type": "number",
+      "label": "Tickets per account",
+      "help": "For the Event tickets buttons: buy this many on each account, or top each up to this many.",
+      "default": 100,
+      "min": 1,
+      "max": 1000000
     },
     "sets": {
       "type": "list",
@@ -153,6 +177,20 @@
           "label": "Most to spend per Open now ($, spare cash)",
           "default": 0,
           "min": 0
+        },
+        "h2": {
+          "type": "heading",
+          "label": "Event tickets"
+        },
+        "useTickets": {
+          "type": "boolean",
+          "label": "Use event tickets",
+          "default": false
+        },
+        "buyTickets": {
+          "type": "boolean",
+          "label": "Buy tickets ($0.50 per case)",
+          "default": false
         }
       }
     },
@@ -163,15 +201,18 @@
       "options": [
         {
           "value": "money",
-          "label": "Sell for cash"
+          "label": "Sell for cash",
+          "help": "Each drop is sold for cash as it lands."
         },
         {
           "value": "tokens",
-          "label": "Sell for tokens"
+          "label": "Sell for tokens",
+          "help": "Each drop is sold for tokens as it lands."
         },
         {
           "value": "keep",
-          "label": "Keep"
+          "label": "Keep",
+          "help": "Nothing is sold; drops stay in the inventory."
         }
       ]
     },
@@ -203,18 +244,20 @@
     "favLow": {
       "type": "boolean",
       "label": "Favourite low floats",
+      "help": "Floats under the number below, e.g. 0.0000001.",
       "default": true
     },
     "lowFloat": {
       "type": "number",
       "label": "Low floats: under",
-      "default": 1e-7,
+      "default": 1e-07,
       "min": 0,
       "max": 0.1
     },
     "favHigh": {
       "type": "boolean",
       "label": "Favourite high floats",
+      "help": "Floats over the number below, e.g. 0.99999.",
       "default": true
     },
     "highFloat": {
@@ -227,6 +270,7 @@
     "favCustom": {
       "type": "boolean",
       "label": "Favourite custom floats",
+      "help": "Exact floats you list, e.g. 0.123456.",
       "default": false
     },
     "customFloats": {
@@ -238,6 +282,7 @@
     "favPatterns": {
       "type": "boolean",
       "label": "Favourite patterns, gems and tiers",
+      "help": "Named patterns, gems and tier drops, minus any you list below.",
       "default": true
     },
     "patternBlacklist": {
@@ -261,6 +306,7 @@
     "boostCashback": {
       "type": "boolean",
       "label": "Keep case-open cashback running",
+      "help": "Part of each open's cost back.",
       "default": false
     },
     "boostBuy": {
