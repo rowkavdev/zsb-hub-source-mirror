@@ -210,6 +210,8 @@ main { padding: 18px var(--page-side) 48px; }
 .seg button.on { background: var(--surface-3); color: var(--text); box-shadow: inset 0 1px 0 rgba(255,255,255,.06); }
 
 .menu { position: absolute; top: 54px; right: 14px; z-index: var(--z-menu); min-width: 170px; padding: 6px; border-radius: var(--r-m); background: var(--surface-2); border: 1px solid var(--line-2); box-shadow: var(--shadow-pop); display: grid; }
+/* A card (or folder head) with its menu open sits above its neighbours: in Fancy every card is its own layer (isolation, the fade-in), which would otherwise put the next card over the menu. */
+.card:has(.menu:not([hidden])), .f-head:has(.menu:not([hidden])) { z-index: var(--z-menu); }
 .menu button { background: none; border: none; text-align: left; border-radius: var(--r-s); padding: 7px 10px; font-size: var(--fs-m); }
 .menu button:hover { background: var(--surface-3); }
 
@@ -855,9 +857,12 @@ html[data-graphics="fancy"] :is(.card, .row, .stat, .pcard, .phero, .steps div, 
 html[data-graphics="fancy"] :is(.card, .row, .stat, .pcard, .phero, .steps div, button):hover::before { opacity: calc((var(--edge) - 50) / 50); transition: opacity .25s ease-out; }
 html[data-graphics="fancy"] :is(.card, .row, .stat, .pcard, .phero, .steps div, button):hover::after { opacity: calc(.5 * (var(--edge) - 50) / 50); transition: opacity .25s ease-out; }
 /* the glow round the edge */
-.fx-edge { position: absolute; inset: -40px; border-radius: inherit; pointer-events: none; z-index: 1; opacity: 0; transition: opacity .75s ease-in-out;
-  mask: conic-gradient(from var(--angle) at center, #000 2.5%, transparent 10%, transparent 90%, #000 97.5%); mix-blend-mode: plus-lighter; }
-.fx-edge::before { content: ""; position: absolute; inset: 40px; border-radius: inherit;
+/* The layer stays inside the element (a box sticking out counts as content and gives a scroll box, or the page, a sideways
+   scrollbar); only its drawing reaches out: the outer shadows, and the mask drawn 40px past every side with no-clip. */
+.fx-edge { position: absolute; inset: 0; border-radius: inherit; pointer-events: none; z-index: 1; opacity: 0; transition: opacity .75s ease-in-out;
+  mask: conic-gradient(from var(--angle) at center, #000 2.5%, transparent 10%, transparent 90%, #000 97.5%) center / calc(100% + 80px) calc(100% + 80px) no-repeat;
+  mask-clip: no-clip; mix-blend-mode: plus-lighter; }
+.fx-edge::before { content: ""; position: absolute; inset: 0; border-radius: inherit;
   --g: var(--white);
   box-shadow: inset 0 0 0 1px var(--g),
     inset 0 0 1px 0 color-mix(in srgb, var(--g) 60%, transparent), inset 0 0 3px 0 color-mix(in srgb, var(--g) 50%, transparent),

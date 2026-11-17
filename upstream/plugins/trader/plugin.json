@@ -3,7 +3,7 @@
   "name": "Trader",
   "version": "1.9.0",
   "description": "Moves tokens and items between your accounts: one trade at a time, or by trade routes you set up (from which accounts, to which account, and what goes: tokens, terminals, skins over a price or by name). Both sides must be accounts in this app and clicking. Starts in practice mode.",
-  "minCore": "1.2.7",
+  "minCore": "1.2.14",
   "main": "index.js",
   "tab": "Trader",
   "group": "trading",

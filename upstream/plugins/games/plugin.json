@@ -3,7 +3,7 @@
   "name": "Games",
   "version": "1.10.0",
   "description": "Plays the games tab for its rewards: the smallest bets that reach each game's next reward tier, only when the reward is worth more than the bets are expected to lose. Tracks bets, wins, rewards and the profit. Starts in practice mode.",
-  "minCore": "1.2.5",
+  "minCore": "1.2.14",
   "main": "index.js",
   "tab": "Games",
   "group": "farming",
