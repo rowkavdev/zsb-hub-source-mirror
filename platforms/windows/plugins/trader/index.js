@@ -45,7 +45,7 @@ function giveBack(ids) {
 }
 const wanting = new Map();   // account id -> what it's wanted for
 const said = new Set();      // pairs whose wait was logged (said once until the trade happens)
-let running = false, lastRun = 0, rerun = false;
+let running = false, lastRun = 0, rerun = false, routeHalt = false;   // routeHalt: Stop pressed on a route run
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const count = (n) => Math.round(n).toLocaleString('en-US');
@@ -427,7 +427,7 @@ function oneProblem() {
 }
 
 // One sender's trade: works out what it sends, then sends it (in practice, only says what it would).
-async function sendFrom(from, to, accts, terms, want, tokens, withFavs, prog) {
+async function sendFrom(from, to, accts, terms, want, tokens, withFavs, prog, quit = () => false) {
     const fromName = accts.get(from).name, toName = accts.get(to).name;
     if (!accts.get(from).healthy) return { ok: false, skip: true, text: `${fromName} isn't clicking.` };
     // A trade you start goes now. Other plugins' marks (the Armory's star farming, Games, the Opener) cover whole turns,
@@ -437,13 +437,14 @@ async function sendFrom(from, to, accts, terms, want, tokens, withFavs, prog) {
     const practice = ctx.power.practice(), end = Date.now() + LOCK_MAX_MS;
     while (busy.has(from) || busy.has(to)) {
         if (ctx.stopping) return { ok: false, text: `${fromName}: the Trader was turned off.` };
+        if (quit()) return { ok: false, halted: true, text: `${fromName}: stopped by you.` };
         if (Date.now() > end) return { ok: false, text: `${fromName}: still in a route trade after a minute — try again.` };
         if (prog) prog(`waiting for a route trade on ${fromName}`);
         await ctx.sleep(500);
     }
     for (;;) {
         const r = await sendFromNow(from, to, accts, terms, want, tokens, withFavs, fromName, toName);
-        if (!r.locked || Date.now() > end || ctx.stopping) return r;
+        if (!r.locked || Date.now() > end || ctx.stopping || quit()) return r;
         if (prog) prog(`the site says ${fromName} or ${toName} is busy for a moment — trying again`);
         await ctx.sleep(LOCK_RETRY_MS);
     }
@@ -512,10 +513,10 @@ async function sendOne() {
     askFor(asked, `single trade to ${toName}`);
     try {
     for (const id of ids) {
-        if (ctx.stopping) break;
+        if (ctx.stopping || me.halt) break;
         let r;
         const head = ids.length > 1 ? `${practice ? 'Working it out' : 'Sending'}… ${me.done}/${ids.length} · ` : '';
-        try { r = await sendFrom(id, to, accts, terms, want, tokens, withFavs, (w) => { me.text = head + w[0].toUpperCase() + w.slice(1) + '…'; }); } catch (e) { r = { ok: false, text: `${accts.get(id).name}: ${e.message}` }; }
+        try { r = await sendFrom(id, to, accts, terms, want, tokens, withFavs, (w) => { me.text = head + w[0].toUpperCase() + w.slice(1) + '…'; }, () => me.halt); } catch (e) { r = { ok: false, text: `${accts.get(id).name}: ${e.message}` }; }
         giveBack(asked.filter(x => x === id && x !== to));
         const name = accts.get(id).name;
         me.results.push({ name, ...r, text: r.ok ? `${practice ? 'would send' : 'sent'} ${r.what}${r.note}` : r.text });
@@ -531,7 +532,8 @@ async function sendOne() {
             : `Sent ${r.what} from ${r.name} to ${toName}${r.note}.`;
         me.ok = r.ok; me.results = [];
     } else {
-        const tail = [skipped.length ? `${skipped.length} had nothing to send` : '', failed.length ? `${failed.length} failed` : ''].filter(Boolean).join(' · ');
+        const notRun = ids.length - me.results.length;
+        const tail = [skipped.length ? `${skipped.length} had nothing to send` : '', failed.length ? `${failed.length} failed` : '', me.halt && notRun ? `stopped by you, ${notRun} not sent` : ''].filter(Boolean).join(' · ');
         me.text = practice ? `Practice — ${ok.length} of ${ids.length} would send to ${toName}${tail ? ` · ${tail}` : ''}. Set the mode to Live to send.`
             : `${ok.length} of ${ids.length} sent to ${toName}${tail ? ` · ${tail}` : ''}.`;
         me.ok = !failed.length && ok.length > 0;
@@ -574,12 +576,12 @@ async function sendFan() {
     try {
     try { left = Math.floor(num((await getJson(from, '/api/me')).tokens)); } catch (_) {}
     for (const id of ids) {
-        if (ctx.stopping) break;
+        if (ctx.stopping || me.halt) break;
         const name = accts.get(id).name;
         let r;
         if (left != null && left < tk) r = { ok: false, skip: true, text: `not sent: ${fromName} has ${count(left)} tokens left` };
         else {
-            try { r = await sendFrom(from, id, accts, [], 'all', tk, false, (w) => { me.text = `Sending… ${me.done}/${ids.length} · ${w[0].toUpperCase() + w.slice(1)}…`; }); } catch (e) { r = { ok: false, text: e.message }; }
+            try { r = await sendFrom(from, id, accts, [], 'all', tk, false, (w) => { me.text = `Sending… ${me.done}/${ids.length} · ${w[0].toUpperCase() + w.slice(1)}…`; }, () => me.halt); } catch (e) { r = { ok: false, text: e.message }; }
             giveBack(asked.filter(x => x === id && x !== from));
             if (r.ok && left != null) left -= tk;
         }
@@ -590,7 +592,7 @@ async function sendFan() {
     } finally { giveBack(asked); }
     const ok = me.results.filter(r => r.ok), failed = me.results.filter(r => !r.ok);
     me.text = practice ? `Practice — ${ok.length} of ${ids.length} would get ${count(tk)} tokens from ${fromName} (${count(ok.length * tk)} in all)${failed.length ? ` · ${failed.length} wouldn't` : ''}. Set the mode to Live to send.`
-        : `${ok.length} of ${ids.length} got ${count(tk)} tokens from ${fromName} (${count(ok.length * tk)} in all)${failed.length ? ` · ${failed.length} not sent` : ''}.`;
+        : `${ok.length} of ${ids.length} got ${count(tk)} tokens from ${fromName} (${count(ok.length * tk)} in all)${failed.length ? ` · ${failed.length} not sent` : ''}${me.halt && ids.length > me.results.length ? ` · stopped by you, ${ids.length - me.results.length} not sent` : ''}.`;
     me.ok = ok.length > 0 && !failed.length;
     me.running = false;
 }
@@ -609,7 +611,7 @@ async function check() {
             if (!to.healthy) { ctx.log(`route to ${to.name}: not clicking, skipped`); continue; }
             const from = accts.filter(a => a.id !== to.id && (route.from.all || (route.from.ids || []).includes(a.id)));
             for (const a of from) {
-                if (ctx.stopping) return;
+                if (ctx.stopping || routeHalt) return;
                 if (done.has(a.id) || busy.has(a.id) || !a.healthy) continue;
                 // Another plugin has either side tied up (opening cases, playing games): this pair waits for the
                 // next check. While trading, both are marked so they wait for the trade in turn.
@@ -632,6 +634,7 @@ async function check() {
     } finally {
         if (ctx.power.practice()) { state.practiceAt = Date.now(); ctx.data.set(state); }
         running = false;
+        if (routeHalt) { routeHalt = false; rerun = false; waited = false; ctx.log('route run stopped by you'); }
         if (rerun) { rerun = false; setTimeout(() => { if (!ctx.stopping && ctx.power.live()) check(); }, 1000); }
         else if (waited) setTimeout(() => { if (!ctx.stopping && ctx.power.live()) check(); }, wantNow.size ? WANT_RETRY_MS : WAIT_RETRY_MS);   // a busy account: try again soon
         // Asks for accounts no pair waits on any more are taken back.
@@ -760,6 +763,10 @@ module.exports = {
             lastRun = 0; check(true);
             return { message: running ? 'Already checking — it goes again right after.' : ctx.power.practice() ? 'Checking routes — the plan shows up here in a moment.' : 'Checking routes now.' };
         });
+        // Stop: the trade in flight finishes (a half-made trade would be left stuck), nothing after it starts.
+        ctx.panel.action('checkStop', () => { if (!running) return { message: 'No route run going.' }; routeHalt = true; return { message: 'Stopping after the current trade.' }; });
+        ctx.panel.action('oneStop', () => { if (!(one && one.running)) return { message: 'Nothing is sending.' }; one.halt = true; return { message: 'Stopping after the current trade.' }; });
+        ctx.panel.action('fanStop', () => { if (!(fan && fan.running)) return { message: 'Nothing is sending.' }; fan.halt = true; return { message: 'Stopping after the current trade.' }; });
         ctx.panel.action('tradesCheck', () => {
             if (open && open.running) return { message: 'Already checking.' };
             checkTrades().catch(e => { open = { ...(open || {}), running: false, trades: (open && open.trades) || [], errors: [...((open && open.errors) || []), e.message] }; });
@@ -997,7 +1004,9 @@ module.exports = {
                     { type: 'section', title: '4. Send', blocks: [
                         ...(oneWhy && !(one && one.running) ? [{ type: 'notice', text: oneWhy }]
                             : [{ type: 'text', text: `${oneWhat}${each} from ${fromTxt} to ${toA ? toA.name : '?'}${fromIds.length > 1 ? ` — ${fromIds.length} trades, one after another` : ''}.` }]),
-                        { type: 'buttons', items: [{ label: practice ? 'Practice send' : fromIds.length > 1 ? `Send ${fromIds.length} trades` : 'Send trade', action: 'oneSend', primary: true,
+                        { type: 'buttons', items: one && one.running && !practice && one.total > 1
+                            ? [{ label: one.halt ? 'Stopping…' : 'Stop', action: 'oneStop', danger: true, disabled: !!one.halt }]
+                            : [{ label: practice ? 'Practice send' : fromIds.length > 1 ? `Send ${fromIds.length} trades` : 'Send trade', action: 'oneSend', primary: true,
                             ...(practice ? {} : { confirm: fromIds.length > 1 ? `Send ${fromIds.length} trades now? Trades can't be undone.` : "Send this trade now? A trade can't be undone." }) }] },
                         ...(practice ? [{ type: 'text', text: 'Practice mode: it only says what it would send. Set the mode to Live (top card) to send for real.' }] : []),
                         ...(one ? [{ type: 'notice', level: one.running ? '' : one.ok ? 'ok' : 'warn', text: one.text }] : []),
@@ -1023,7 +1032,9 @@ module.exports = {
                         ...(fanWhy && !(fan && fan.running) ? [{ type: 'notice', text: fanWhy }]
                             : [{ type: 'text', text: `${count(fanTk)} tokens to each of ${fanTo.length} account${fanTo.length === 1 ? '' : 's'} from ${fanA ? fanA.name : '?'} — ${count(fanTotal)} in all, ${fanTo.length} trade${fanTo.length === 1 ? '' : 's'} one after another.` },
                                ...(fanA && fanHas && fanTotal > fanHas ? [{ type: 'notice', level: 'warn', text: `${fanA.name} has ${count(fanHas)} tokens: enough for ${Math.floor(fanHas / fanTk)} of them. The rest are skipped.` }] : [])]),
-                        { type: 'buttons', items: [{ label: practice ? 'Practice send' : fanTo.length > 1 ? `Send ${fanTo.length} trades` : 'Send trade', action: 'fanSend', primary: true,
+                        { type: 'buttons', items: fan && fan.running && !practice && fan.total > 1
+                            ? [{ label: fan.halt ? 'Stopping…' : 'Stop', action: 'fanStop', danger: true, disabled: !!fan.halt }]
+                            : [{ label: practice ? 'Practice send' : fanTo.length > 1 ? `Send ${fanTo.length} trades` : 'Send trade', action: 'fanSend', primary: true,
                             ...(practice ? {} : { confirm: `Send ${count(fanTk)} tokens to each of ${fanTo.length} account${fanTo.length === 1 ? '' : 's'} (${count(fanTotal)} in all)? Trades can't be undone.` }) }] },
                         ...(fan ? [{ type: 'notice', level: fan.running ? '' : fan.ok ? 'ok' : 'warn', text: fan.text }] : []),
                         ...(fan && fan.results.length ? [{ type: 'table', wrap: true, columns: ['Receiver', practice ? 'Would' : 'Result'], rows: fan.results.map(r => [r.name, r.text]) }] : []),
@@ -1055,10 +1066,12 @@ module.exports = {
             return { modal: invModal, blocks: [
                 { type: 'card', id: 'power', toggle: 'on', toggleDisabled: practice ? 'Set the mode to Live first' : null, bodyWhenOff: true, open: !live,
                     title: live ? (busy.size ? 'Trader — on, trading now' : 'Trader — on') : 'Trader — off',
-                    summary: !routes.length ? 'add a route first' : practice ? 'practice: nothing is sent unless you press Check' : `live · ${routes.length} route${routes.length === 1 ? '' : 's'}, every ${every} min`,
-                    keys: ['runMode'], blocks: routes.length ? [{ type: 'buttons', items: [{ label: practice ? 'Practice run' : 'Check now', action: 'check', primary: true }] }] : [] },
+                    summary: !routes.length ? 'add a route first' : practice ? 'practice: nothing is sent unless you press Practice run' : `live · ${routes.length} route${routes.length === 1 ? '' : 's'}, every ${every} min`,
+                    keys: ['runMode'], blocks: routes.length ? [{ type: 'buttons', items: running && !practice
+                        ? [{ label: routeHalt ? 'Stopping…' : 'Stop', action: 'checkStop', danger: true, disabled: routeHalt }]
+                        : [{ label: practice ? 'Practice run' : 'Run now', action: 'check', primary: true }] }] : [] },
                 ...problems.map(text => ({ type: 'notice', level: 'warn', text })),
-                ...(plans.length ? [{ type: 'table', wrap: true, columns: ['From', 'To', 'The last practice check would', 'When'], rows: plans.slice(0, 15).map(x => [x.from, x.to, x.what, new Date(x.t).toLocaleTimeString()]) }] : []),
+                ...(plans.length ? [{ type: 'table', wrap: true, columns: ['From', 'To', 'The last practice run would', 'When'], rows: plans.slice(0, 15).map(x => [x.from, x.to, x.what, new Date(x.t).toLocaleTimeString()]) }] : []),
                 ...(t.trades ? [{ type: 'stats', items: [
                     { label: 'Trades today', value: String(t.trades) },
                     { label: 'Items sent today', value: count(t.items) },
@@ -1071,7 +1084,8 @@ module.exports = {
                     blocks: [
                         ...(mainA && !routes.some(r => r.to === mainA.id) ? [{ type: 'buttons', items: [{ label: `Add a route to your main (${mainA.name})`, action: 'routeToMain' }] }] : []),
                         { type: 'list', key: 'routes', summaries: routes.map(summary) }] },
-                { type: 'card', id: 'limits', open: false, title: 'Limits and schedule', summary: `keep ${num(S('dailyCap'))} daily trades free · every ${every} min`, keys: ['dailyCap', 'everyMin'] },
+                { type: 'card', id: 'limits', open: false, title: 'Limits', summary: `keep ${num(S('dailyCap'))} daily trades free`, keys: ['dailyCap'] },
+                { type: 'card', id: 'schedule', open: false, title: 'Schedule', summary: `every ${every} min`, keys: ['everyMin'] },
                 { type: 'section', title: 'Recent trades', blocks: [{ type: 'table', empty: 'No trades yet.', columns: ['When', 'From', 'To', 'Items', 'Tokens', 'Result'],
                     rows: (state.history || []).slice(0, 10).map(r => [new Date(r.t).toLocaleTimeString(), r.from, r.to, String(r.items), count(r.tokens), r.ok ? 'sent' : r.why]) }] },
             ] };

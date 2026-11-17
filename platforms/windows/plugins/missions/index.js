@@ -82,6 +82,7 @@ module.exports = {
                         : { type: 'notice', text: 'Waiting for the first check on a clicking account.' },
                     ...(perAcct.length ? [{ type: 'card', id: 'per-account', open: false, title: 'Per account', summary: `${perAcct.length} account${perAcct.length === 1 ? '' : 's'}`,
                         blocks: [{ type: 'table', columns: ['Account', 'Missions done', 'Claimed since start'], rows: perAcct }] }] : []),
+                    { type: 'card', id: 'schedule', open: false, title: 'Schedule', summary: `every ${ctx.settings.get('checkEverySec')} s`, keys: ['checkEverySec'] },
                 ],
             };
         });

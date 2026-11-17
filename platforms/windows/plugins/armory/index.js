@@ -1010,7 +1010,7 @@ module.exports = {
             if (!chosen().length) return { ok: false, error: 'Choose accounts first.' };
             if (farming) return { message: 'Already running.' };
             check();
-            return { message: practiceMode() ? 'Practice check started — the plan shows up here in a moment.' : 'Checking now.' };
+            return { message: practiceMode() ? 'Practice run started — the plan shows up here in a moment.' : 'Checking now.' };
         });
         ctx.panel.action('stop', () => { if (!farming) return { message: 'Nothing running.' }; halt = true; return { message: 'Stopping after the current battle, flip or round.' }; });
         // Switching off (or to practice, which the host turns off) stops after the current battle or round.
@@ -1042,20 +1042,21 @@ module.exports = {
             return { blocks: [
                 { type: 'card', id: 'power', toggle: 'on', toggleDisabled: practice ? 'Set the mode to Live first' : null, bodyWhenOff: true, open: practice || !S('on'),
                     title: S('on') && !practice ? (farming ? 'Star farming — on, farming now' : 'Star farming — on') : 'Star farming — off',
-                    summary: !n ? 'choose the star farming accounts first' : practice ? 'practice: nothing runs unless you press Run' : `live on ${n} account${n === 1 ? '' : 's'} with ${on} game${on === 1 ? '' : 's'}`,
-                    keys: ['runMode'], blocks: n ? [{ type: 'buttons', items: [{ label: practice ? 'Practice run' : 'Check now', action: 'run', primary: true }, ...(farming ? [{ label: 'Stop', action: 'stop', danger: true }] : [])] }] : [] },
-                ...(plan ? [{ type: 'table', wrap: true, columns: ['The last practice check would', 'When'], rows: plan.lines.map(l => [l, new Date(plan.t).toLocaleTimeString()]) }] : []),
+                    summary: !n ? 'choose the star farming accounts first' : practice ? 'practice: nothing runs unless you press Practice run' : `live on ${n} account${n === 1 ? '' : 's'} with ${on} game${on === 1 ? '' : 's'}`,
+                    keys: ['runMode'], blocks: n ? [{ type: 'buttons', items: [{ label: practice ? 'Practice run' : 'Run now', action: 'run', primary: true }, ...(farming ? [{ label: 'Stop', action: 'stop', danger: true }] : [])] }] : [] },
+                ...(plan ? [{ type: 'table', wrap: true, columns: ['The last practice run would', 'When'], rows: plan.lines.map(l => [l, new Date(plan.t).toLocaleTimeString()]) }] : []),
                 ...(n ? [{ type: 'stats', items: [
                     { label: 'Battles today', value: `${count(t.battles)} · ${count(t.rounds)} rounds` },
                     { label: 'Jackpot rounds', value: count(t.jackpots || 0) },
                     { label: 'Upgrades', value: count(t.upgrades || 0) },
                     { label: 'Guesses', value: count(t.gtr || 0) },
                 ] }] : []),
-                { type: 'card', id: 'accounts', open: n < 2, title: 'Star farming accounts', summary: n ? `${n} account${n === 1 ? '' : 's'}` : 'none yet', keys: ['accounts'], bare: true },
+                { type: 'card', id: 'accounts', open: n < 2, title: 'Accounts', summary: n ? `${n} account${n === 1 ? '' : 's'}` : 'none yet', keys: ['accounts'], bare: true },
                 { type: 'section', title: 'What to farm', blocks: GAME_CARDS.map(g => ({ type: 'card', id: g.id, toggle: g.key, open: false, title: g.title, summary: g.sum(), keys: g.keys })) },
                 { type: 'card', id: 'passes', open: false, title: 'Passes', summary: (S('passes') ? `all slots active${S('restart') ? ' · full ones redeemed, even with farming off' : ''}` : 'off') + (lvl != null ? ` · average level ${lvl}` : ''),
                     keys: ['passes', 'restart'], blocks: n ? [{ type: 'table', columns: ['Account', 'Passes', 'Levels', 'Credits'], rows }] : [] },
-                { type: 'card', id: 'general', open: false, title: 'Turns and limits', summary: `${num(S('turnMin'))} min turns · keep ${count(num(S('keepTokens')))} tokens`, keys: ['turnMin', 'keepTokens', 'everyMin'] },
+                { type: 'card', id: 'general', open: false, title: 'Turns and limits', summary: `${num(S('turnMin'))} min turns · keep ${count(num(S('keepTokens')))} tokens`, keys: ['turnMin', 'keepTokens'] },
+                { type: 'card', id: 'schedule', open: false, title: 'Schedule', summary: `checks every ${num(S('everyMin'))} min`, keys: ['everyMin'] },
                 { type: 'section', title: 'Recent battles', blocks: [{ type: 'table', empty: 'No battles yet.', columns: ['When', 'Host', 'Players', 'Rounds', 'Each paid'],
                     rows: (state.history || []).slice(0, 10).map(h => [new Date(h.t).toLocaleTimeString(), h.host, String(h.players || 2), String(h.rounds), money(h.price)]) }] },
             ] };
@@ -1102,9 +1103,9 @@ module.exports = {
                     price: num(x.creditPrice), pack: 10, max: Math.floor(most / num(x.creditPrice)) })),
                     accounts: list.map((a, i) => ({ id: a.id, name: a.name, credits: credits[i] })) }] : [{ type: 'notice', text: 'The shop loads once a star account is clicking.' }]),
                 { type: 'card', id: 'shop-accounts', open: false, title: 'Credits per account', summary: `${list.length} account${list.length === 1 ? '' : 's'}`,
-                    blocks: [{ type: 'table', columns: ['Account', 'Credits'], rows: list.map((a, i) => [a.name, count(credits[i])]) }] },
+                    blocks: [{ type: 'table', empty: 'No accounts chosen yet.', columns: ['Account', 'Credits'], rows: list.map((a, i) => [a.name, count(credits[i])]) }] },
             ] };
-        });
+        }, { group: 'management' });   // buying with credits is upkeep, not farming
     },
     stop() { halt = true; passBusy.clear(); },
 };

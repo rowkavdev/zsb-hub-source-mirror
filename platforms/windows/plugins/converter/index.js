@@ -413,7 +413,7 @@ module.exports = {
             return { blocks: [
                 { type: 'card', id: 'power', toggle: 'on', toggleDisabled: practice ? 'Set the mode to Live first' : null, bodyWhenOff: true, open: !live,
                     title: live ? (lanes.size ? `Converter — on, converting ${lanes.size}` : 'Converter — on') : 'Converter — off',
-                    summary: !n ? 'choose accounts first' : !steps.length ? 'switch on a step' : practice ? 'practice: nothing changes unless you press Run' : `live on ${n} account${n === 1 ? '' : 's'}, every ${every} min`,
+                    summary: !n ? 'choose accounts first' : !steps.length ? 'switch on a step' : practice ? 'practice: nothing changes unless you press Practice run' : `live on ${n} account${n === 1 ? '' : 's'}, every ${every} min`,
                     keys: ['runMode'], blocks: n ? [{ type: 'buttons', items: [{ label: practice ? 'Practice run' : 'Run now', action: 'run', primary: true }, ...(lanes.size ? [{ label: 'Stop', action: 'stop', danger: true }] : [])] }] : [] },
                 ...(paused ? [{ type: 'notice', level: 'bad', text: 'Buying is stopped: ' + paused }] : []),
                 ...(plans.length ? [{ type: 'table', wrap: true, columns: ['Account', 'The last practice run would', 'When'], rows: plans.slice(0, 10).map(x => [x.name, x.lines.join(' · '), new Date(x.t).toLocaleTimeString()]) }] : []),

@@ -39,29 +39,98 @@
 
     // --- toast + modal ---------------------------------------------------
     let toastTimer = null;
-    function toast(msg) { const t = $('#toast'); t.textContent = msg; t.hidden = false; clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, 3500); }
+    // A short pop-up at the bottom. kind 'bad' marks a failure (read out at once). Longer text stays up longer.
+    function toast(msg, kind) {
+        const t = $('#toast'), text = String(msg == null ? '' : msg);
+        t.textContent = text; t.classList.toggle('bad', kind === 'bad'); t.setAttribute('role', kind === 'bad' ? 'alert' : 'status'); t.hidden = false;
+        clearTimeout(toastTimer); toastTimer = setTimeout(() => { t.hidden = true; }, Math.max(3500, Math.min(9000, 2000 + 60 * text.length)));
+    }
+
+    // Tab stays inside an open dialog.
+    // Errors the hub or the network hands back raw, in plain words; the code stays, in brackets or small print.
+    const ERR_MAP = [
+        [/ERR_INTERNET_DISCONNECTED|ERR_NETWORK_CHANGED|ERR_ADDRESS_UNREACHABLE|ENETUNREACH/, 'offline'],
+        [/ERR_NAME_NOT_RESOLVED|ENOTFOUND/, 'dns'],
+        [/ERR_PROXY|ERR_TUNNEL|ERR_SOCKS|ERR_MANDATORY_PROXY/, 'proxy'],
+        [/ERR_TIMED_OUT|ERR_CONNECTION_TIMED_OUT|ETIMEDOUT|^timed? ?out$/i, 'timeout'],
+        [/ERR_CONNECTION_|ERR_EMPTY_RESPONSE|ECONNRESET|ECONNREFUSED/, 'refused'],
+        [/ERR_CERT|ERR_SSL/, 'cert'],
+        [/^No such account\.?$/, 'noAccount'],
+        [/^No such plugin$/, 'noPlugin'],
+        [/^Not a number$/, 'notNumber'],
+        [/^Not one of the choices$/, 'notChoice'],
+        [/^window closed$/, 'windowClosed'],
+    ];
+    function errParts(raw) {
+        const s = String(raw == null ? '' : raw);
+        for (const [re, k] of ERR_MAP) if (re.test(s)) return { text: T('err.' + k), code: (/(?:net::)?ERR_[A-Z_]+|\bE[A-Z]{5,}\b/.exec(s) || [''])[0] };
+        return { text: s, code: '' };
+    }
+    const plainError = (raw) => { const e = errParts(raw); return e.text + (e.code ? ' (' + e.code + ')' : ''); };
+    const errHtml = (raw) => { const e = errParts(raw); return esc(e.text) + (e.code ? ` <small class="err-code">${esc(e.code)}</small>` : ''); };
+
+    // "Nothing here", the same everywhere: what is missing, a hint, a button. plain leaves the box off (inside a card or a dialog).
+    // Accounts that need the user: the count on the Accounts tab and the Problems filter.
+    const isBad = (a) => a.status === 'logged-out' || a.status === 'problem' || a.status === 'needs-you';
+    const FILTERS = ['all', 'problems', 'clicking', 'stopped'];
+    // True while someone is typing or choosing in a field inside el, so a redraw would get in the way.
+    const typingIn = (el) => { const a = document.activeElement; return !!(a && el && el.contains(a) && (/^(INPUT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox' || a.tagName === 'SELECT')); };
+    const emptyHtml = (title, hint, button, plain) => `<div class="empty-note${plain ? ' plain' : ''}"><div><div class="empty-title">${title}</div>${hint ? `<span>${hint}</span>` : ''}</div>${button || ''}</div>`;
+
+    function trapTab(e, box) {
+        const f = [...box.querySelectorAll('button, [href], input, select, textarea, [tabindex]:not([tabindex="-1"])')].filter(n => !n.disabled && n.offsetParent !== null);
+        if (!f.length) { e.preventDefault(); return; }
+        const first = f[0], last = f[f.length - 1], a = document.activeElement;
+        if (!box.contains(a)) { e.preventDefault(); first.focus(); }
+        else if (e.shiftKey && a === first) { e.preventDefault(); last.focus(); }
+        else if (!e.shiftKey && a === last) { e.preventDefault(); first.focus(); }
+    }
 
     // html: an already-escaped body. cancel: false = a single OK button (for notices).
-    function modal({ title, body = '', html = '', input = null, ok = 'OK', danger = false, cancel = true, wide = false }) {
+    // check (optional) runs when OK is pressed: it returns '' to close, or the reason to stay open, shown in the dialog.
+    function modal({ title, body = '', html = '', input = null, ok = 'OK', danger = false, cancel = true, wide = false, check = null }) {
         return new Promise((resolve) => {
             const m = $('#modal'), box = m.querySelector('.modal-box');
             box.classList.toggle('wide', wide);
             box.onchange = box.oninput = null;
-            box.innerHTML = `<h3>${esc(title)}</h3>${body ? `<div class="muted">${esc(body)}</div>` : ''}${html}${input != null ? `<input id="modalInput" maxlength="40" value="${esc(input)}">` : ''}
+            const opener = document.activeElement, openedAt = Date.now();
+            box.innerHTML = `<h3 id="modalTitle">${esc(title)}</h3>${body ? `<div class="muted">${esc(body)}</div>` : ''}${html}${input != null ? `<input id="modalInput" maxlength="40" value="${esc(input)}">` : ''}
+                <div class="modal-err" role="alert" hidden></div>
                 <div class="btns">${cancel ? `<button data-m="cancel">${H('modal.cancel')}</button>` : ''}<button data-m="ok" class="${danger ? 'danger' : 'primary'}">${esc(ok)}</button></div>`;
             m.hidden = false;
             const inp = box.querySelector('#modalInput');
+            // Focus starts inside: the field, or Cancel when the button would remove or quit something, or OK.
             if (inp) { inp.focus(); inp.select(); }
-            const done = (v) => { m.hidden = true; box.innerHTML = ''; document.removeEventListener('keydown', key); resolve(v); };
+            else { const f = box.querySelector(danger && cancel ? '[data-m="cancel"]' : '[data-m="ok"]'); if (f) f.focus(); }
+            const done = (v) => {
+                m.hidden = true; box.innerHTML = ''; document.removeEventListener('keydown', key);
+                let back = opener;
+                if (!back || back === document.body || !back.isConnected || !back.getClientRects().length) back = menuClosed && menuClosed.at > openedAt - 1500 ? menuClosed.btn : null;
+                if (back && back.isConnected && back.focus) back.focus();
+                resolve(v);
+            };
+            const finish = async (v) => {
+                if (!check) return done(v);
+                const okBtn = box.querySelector('[data-m="ok"]'), err = box.querySelector('.modal-err');
+                if (okBtn.disabled) return;
+                okBtn.disabled = true;
+                let why = '';
+                try { why = await check(); } catch (_) { why = T('toast.failed'); }
+                if (m.hidden || !okBtn.isConnected) return;   // closed while it was checking
+                okBtn.disabled = false;
+                if (why) { err.textContent = why; err.hidden = false; return; }
+                done(v);
+            };
             const key = (e) => {
                 if (e.key === 'Escape') done(null);
+                else if (e.key === 'Tab') trapTab(e, box);
                 // In a plugin's settings, Enter just finishes the field (blur saves it) instead of closing.
                 else if (e.key === 'Enter' && e.target.closest && e.target.closest('.psets')) e.target.blur();
-                else if (e.key === 'Enter' && e.target.tagName === 'TEXTAREA') return;
-                else if (e.key === 'Enter') done(inp ? inp.value : true);
+                // Enter confirms from a text field only. On a button it presses that button (Cancel cancels).
+                else if (e.key === 'Enter' && box.contains(e.target) && e.target.tagName === 'INPUT' && !/^(checkbox|radio|file)$/.test(e.target.type)) finish(inp ? inp.value : true);
             };
             document.addEventListener('keydown', key);
-            box.onclick = (e) => { const b = e.target.closest('[data-m]'); if (b) done(b.dataset.m === 'ok' ? (inp ? inp.value : true) : null); };
+            box.onclick = (e) => { const b = e.target.closest('[data-m]'); if (!b) return; if (b.dataset.m === 'ok') finish(inp ? inp.value : true); else done(null); };
             m.onclick = (e) => { if (e.target === m) done(null); };
         });
     }
@@ -80,21 +149,25 @@
         const html = `<div class="muted">${H('main.body')}</div>
             <label class="mfield"><span>${H('main.pick')}</span><select id="mainAcct"><option value="">${H('main.notHere')}</option>${S.accounts.map(a => `<option value="${esc(a.id)}"${a.id === pick.account ? ' selected' : ''}>${esc(a.name)}</option>`).join('')}</select></label>
             <label class="mfield"><span>${H('main.paste')}</span><input id="mainText" placeholder="${H('main.paste.placeholder')}" value="${esc(pick.text)}"></label>`;
-        const p = modal({ title: T('main.title'), html, ok: T('main.save') });
+        // Saved when Save is pressed; an id the site doesn't know keeps the dialog open with the reason in it.
+        let saved = null;
+        const p = modal({ title: T('main.title'), html, ok: T('main.save'), check: async () => {
+            const r = await call('setMain', pick.account ? { account: pick.account } : { text: pick.text });
+            if (r && r.ok) { saved = r; return ''; }
+            return plainError(r && r.error) || T('main.bad');
+        } });
         const box = $('#modal .modal-box');
         const sync = () => { pick = { account: box.querySelector('#mainAcct').value, text: box.querySelector('#mainText').value }; box.querySelector('#mainText').closest('label').hidden = !!pick.account; };
         sync();
         box.oninput = box.onchange = sync;
-        if (!(await p)) return;
-        const r = await call('setMain', pick.account ? { account: pick.account } : { text: pick.text });
-        if (r && r.ok) toast(T('main.saved', { name: r.name }));
-        else { toast((r && r.error) || T('main.bad')); }
+        if (!(await p) || !saved) return;
+        toast(T('main.saved', { name: saved.name }));
     }
 
     // What's new: the lines are written per release (text/whats-new.json), **bold** allowed.
     const rich = (s) => esc(s).replace(/\*\*(.+?)\*\*/g, '<strong>$1</strong>');
     function whatsNewHtml(entries) {
-        if (!entries || !entries.length) return `<div class="muted">${H('whatsnew.empty')}</div>`;
+        if (!entries || !entries.length) return emptyHtml(H('whatsnew.empty'), '', '', true);
         return `<div class="whatsnew">${entries.map(e => `<div class="wn-version">${H('whatsnew.version', { version: e.version })}</div>
             <ul>${e.items.map(i => `<li>${rich(i)}</li>`).join('')}</ul>`).join('')}</div>`;
     }
@@ -122,19 +195,19 @@
             <input id="shareName" maxlength="32" autocomplete="off" spellcheck="false" placeholder="${H(required ? 'share.name.placeholderRequired' : 'share.name.placeholder')}" value="${esc(pick.name)}"></label>
             <div class="muted share-hint" id="shareHint"></div>`;
         const steps = {
-            start: () => `<h3>${H('share.start.title')}</h3><div class="muted">${H('share.start.text')}</div>
+            start: () => `<h3 id="modalTitle">${H('share.start.title')}</h3><div class="muted">${H('share.start.text')}</div>
                 <div class="share-choices">
                   <button class="share-choice primary" data-share="anon"><b>${H('share.anon.title')}</b><span>${H('share.anon.desc')}</span></button>
                   <button class="share-choice" data-share="choose"><b>${H('share.choose.title')}</b><span>${H('share.choose.desc')}</span></button>
                   <button class="share-choice" data-share="all"><b>${H('share.all.title')}</b><span>${H('share.all.desc')}</span></button>
                 </div>
                 <div class="muted share-hint">${H('share.later')}</div>`,
-            choose: () => `<h3>${H('share.choose.title')}</h3><div class="muted">${H('share.choose.text')}</div>
+            choose: () => `<h3 id="modalTitle">${H('share.choose.title')}</h3><div class="muted">${H('share.choose.text')}</div>
                 <div class="share-list">${catRow('usage', pick.usage, false)}${SHARE_CATS.map(c => catRow(c, pick.more[c], !pick.usage)).join('')}</div>
                 <div class="muted share-hint" id="shareOff"${pick.usage ? ' hidden' : ''}>${H('share.offNote')}</div>
                 ${nameField(false)}
                 <div class="btns"><button data-share="back">${H('share.back')}</button><button class="primary" data-share="save">${H('share.save')}</button></div>`,
-            all: () => `<h3>${H('share.all.title')}</h3><div class="muted">${H('share.all.text')}</div>
+            all: () => `<h3 id="modalTitle">${H('share.all.title')}</h3><div class="muted">${H('share.all.text')}</div>
                 <ul class="share-all">${['usage', ...SHARE_CATS].map(c => `<li><b>${H(`share.cat.${c}.title`)}</b> <span class="muted">${H(`share.cat.${c}.desc`)}</span></li>`).join('')}</ul>
                 ${nameField(true)}
                 <div class="btns"><button data-share="back">${H('share.back')}</button><button class="primary" data-share="saveAll">${H('share.saveAll')}</button></div>`,
@@ -163,8 +236,7 @@
             document.removeEventListener('keydown', key);
             shareOpen = false; shareKey = null;
             if (studio) return;
-            call('setSettings', { ...patch, shareAsked: true }).then(r => { if (r) S.settings = r; settingsDrawn = false; refresh(); });
-            if (toastKey) toast(T(toastKey, vars));
+            saveSettings({ ...patch, shareAsked: true }).then(ok => { settingsDrawn = false; if (ok && toastKey) toast(T(toastKey, vars)); refresh(); });
         };
         const save = (all) => {
             const name = tidyName(pick.name);
@@ -174,6 +246,7 @@
         };
         const key = (e) => {
             if (e.key === 'Escape') done({});
+            else if (e.key === 'Tab') trapTab(e, box);
             else if (e.key === 'Enter' && e.target.id === 'shareName') save(step === 'all');
         };
         box.onclick = (e) => {
@@ -270,24 +343,24 @@
             </div>`).join(''));
     }
 
-    // Plugin tabs sit in a few drop-down groups so the bar stays short. A plugin can name its own (manifest.group);
-    // these are the defaults for the known ones. A group with a single tab shows as a plain tab.
-    const TAB_GROUPS = { armory: 'farming', games: 'farming', opener: 'farming', pass: 'farming', rewards: 'farming', missions: 'farming', skillmaps: 'farming',
-        converter: 'trading', trader: 'trading' };
+    // Plugin tabs sit in a few drop-down groups so the bar stays short. Each plugin names its group (manifest.group);
+    // one without goes under More. A group with a single tab shows as a plain tab.
     let openGroup = null;
     function placeTabMenu(m) {
         m.style.left = '';
         const r = m.getBoundingClientRect(), over = r.right - (document.documentElement.clientWidth - 8);
         if (over > 0) m.style.left = -Math.min(over, r.left - 8) + 'px';
     }
+    let tabSaved = '';
     function drawTabs() {
-        const bad = S.accounts.filter(a => a.status === 'logged-out' || a.status === 'problem' || a.status === 'needs-you').length;
+        const bad = S.accounts.filter(isBad).length;
         const plugBad = S.plugins.filter(p => p.state === 'error').length;
         // A tab whose content has pin (a few words, e.g. 'running') comes out of its drop-down onto the bar, with that word.
         const ptabs = S.tabs.map(t => { const id = 'plugin:' + t.plugin + ':' + t.title, pin = t.content && typeof t.content.pin === 'string' && t.content.pin.slice(0, 20);
-            return { id, label: t.title, pin, group: pin ? 'pin:' + id : t.group || TAB_GROUPS[t.plugin] || 'more' }; });
+            return { id, label: t.title, pin, group: pin ? 'pin:' + id : t.group || 'more' }; });
         const all = [['accounts', T('tabs.accounts'), bad], ['overview', T('tabs.overview'), 0], ['plugins', T('tabs.plugins'), plugBad], ...ptabs.map(t => [t.id, t.label, 0]), ['log', T('tabs.log'), 0], ['settings', T('tabs.settings'), 0]];
         if (tab.startsWith('plugin:') && !all.some(t => t[0] === tab)) tab = 'accounts';
+        if (tab !== tabSaved && !studio && tourAt < 0) { tabSaved = tab; try { localStorage.setItem('zsb.tab', tab); } catch (_) {} }
         const one = ([id, label, n]) => `<button role="tab" data-act="tab" data-tab="${esc(id)}" aria-selected="${id === tab}">${esc(label)}${n ? `<span class="count">${n}</span>` : ''}</button>`;
         const groups = new Map();
         for (const t of ptabs) groups.set(t.group, [...(groups.get(t.group) || []), t]);
@@ -313,22 +386,24 @@
     // Totals over every account, from each one's last /api/me report (an account that isn't clicking keeps what it
     // had when it last reported). The accounts table sorts by any column.
     let ovSort = { key: 'networth', dir: -1 };
+    try { const o = JSON.parse(localStorage.getItem('zsb.ovSort') || 'null'); if (o && typeof o.key === 'string' && (o.dir === 1 || o.dir === -1)) ovSort = { key: o.key, dir: o.dir }; } catch (_) {}
     function drawOverview() {
         const acc = S.accounts, me = (a) => a.me || {};
-        if (!acc.length) { setHtml('#tab-overview', `<div class="muted">${H('overview.empty')}</div>`); return; }
+        if (typingIn($('#tab-overview'))) return;
+        if (!acc.length) { setHtml('#tab-overview', emptyHtml(H('overview.empty'), '', `<button class="small primary" data-act="add">${H('header.add')}</button>`)); return; }
         const sum = (list, f) => list.reduce((s, a) => s + (Number(f(a)) || 0), 0);
         const has = (list, f) => list.some(a => f(a) != null);
         const total = (list, f, fmt) => (has(list, f) ? fmt(sum(list, f)) : '—');
         const income = (a) => (a.perHour ? a.perHour.total : null);
         const clicking = acc.filter(a => a.startedAt).length, pro = acc.filter(a => me(a).membership === 'pro').length;
-        const tile = (label, value, sub) => `<div class="stat"><span>${H(label)}</span><b>${esc(value)}</b>${sub ? `<small class="muted">${esc(sub)}</small>` : ''}</div>`;
+        const tile = (label, value, sub) => `<div class="stat"><span>${H(label)}</span><b title="${esc(value)}">${esc(value)}</b>${sub ? `<small class="muted">${esc(sub)}</small>` : ''}</div>`;
         const tiles = `<div class="statrow ov-stats">
-            ${tile('overview.accounts', `${clicking} / ${acc.length}`, T('overview.accounts.sub'))}
-            ${tile('overview.income', has(acc, income) ? '≈ ' + money(sum(acc, income)) : '—', T('overview.income.sub'))}
+            ${tile('overview.accounts', `${clicking} / ${acc.length}`)}
+            ${tile('overview.income', has(acc, income) ? T('overview.income.value', { v: money(sum(acc, income)) }) : '—')}
             ${tile('overview.money', total(acc, a => me(a).money, money))}
             ${tile('overview.tokens', total(acc, a => me(a).tokens, num))}
             ${tile('overview.networth', total(acc, a => me(a).networth, money))}
-            ${tile('overview.premier', total(acc, a => me(a).premier, num), T('overview.premier.sub'))}
+            ${tile('overview.premier', total(acc, a => me(a).premier, num))}
             ${tile('overview.pro', `${pro} / ${acc.length}`)}
           </div>`;
         const table = (head, rows, sortable) => `<div class="table-wrap"><table class="ov-table"><thead><tr>${head.map(([k, label, numCol]) => sortable
@@ -348,7 +423,7 @@
         const rankHtml = `<h4 class="plug-head">${H('overview.ranks')}</h4><div class="ov-ranks">${[...ranks].sort((x, y) => y[1].id - x[1].id)
             .map(([name, e]) => `<span class="ov-rank"><b>${e.n}</b> ${esc(name)}</span>`).join('')}</div>`;
         // Every account.
-        const folderName = (id) => { const f = (S.folders || []).find(x => x.id === id); return f ? f.name : ''; };
+        const names = folderNames(), folderName = (id) => names.get(id) || '';
         const cols = [['name', T('overview.col.account')], ...(folders.length ? [['folder', T('overview.col.folder')]] : []), ['status', T('overview.col.status')],
             ['income', T('overview.col.income'), 1], ['money', T('overview.col.money'), 1], ['tokens', T('overview.col.tokens'), 1], ['networth', T('overview.col.networth'), 1], ['premier', T('overview.col.premier'), 1],
             ['rank', T('overview.col.rank')], ['pro', T('overview.col.membership')]];
@@ -383,13 +458,15 @@
         const el = document.createElement('article');
         el.className = 'card';
         el.dataset.id = id;
+        if (onScreen) onScreen.observe(el);
         el.innerHTML = `
           <header class="c-head">
+            <input type="checkbox" class="c-pick" data-f="pick" data-id="${id}" aria-label="${H('bulk.pick')}" tabindex="-1">
             <button class="icon-btn grip" data-grip="card" data-id="${id}" aria-label="${H('folders.grip.card')}" title="${H('folders.grip.tip')}"><svg viewBox="0 0 10 16" width="10" height="16" aria-hidden="true"><circle cx="2.5" cy="3" r="1.4"/><circle cx="7.5" cy="3" r="1.4"/><circle cx="2.5" cy="8" r="1.4"/><circle cx="7.5" cy="8" r="1.4"/><circle cx="2.5" cy="13" r="1.4"/><circle cx="7.5" cy="13" r="1.4"/></svg></button>
             <div class="c-title"><div class="name" data-f="name"></div></div>
             <span class="premier" data-f="premier" hidden></span>
             <span class="chip" data-f="chip"></span>
-            <button class="icon-btn" data-act="menu" data-id="${id}" aria-label="${H('card.menu.label')}" title="${H('card.menu.tip')}">⋯</button>
+            <button class="icon-btn" data-act="menu" data-id="${id}" aria-expanded="false" aria-label="${H('card.menu.label')}" title="${H('card.menu.tip')}">⋯</button>
           </header>
           <div class="hero"><div class="hero-num" data-f="hero"></div><div class="hero-label" data-f="heroLabel"></div></div>
           <div class="meters">
@@ -447,7 +524,9 @@
     function updateCard(c, a) {
         const f = c.f, running = !!a.startedAt, me = a.me, ph = a.perHour;
         c.a = a;
-        c.el.className = 'card s-' + a.status + (running ? '' : ' off');
+        c.el.className = 'card s-' + a.status + (running ? '' : ' off') + (picked.has(a.id) ? ' picked' : '');
+        if (f.pick.checked !== picked.has(a.id)) f.pick.checked = picked.has(a.id);
+        f.pick.tabIndex = selecting ? 0 : -1;
         setText(f.name, a.name);
         f.name.title = a.name;
         setText(f.vaultLabel, a.vaultEveryMin ? T('card.vault.every', { min: Math.round(a.vaultEveryMin) }) : T('card.vault'));
@@ -489,15 +568,20 @@
         setHtml(null, issueHtml(a), f.issues);
 
         f.menuBusy.hidden = !running || !!a.test;
-        f.segAuto.className = a.type === 'auto' ? 'on' : '';
-        f.segMoney.className = a.type === 'money' ? 'on' : '';
-        f.segCases.className = a.type === 'cases' ? 'on' : '';
+        f.segAuto.className = a.type === 'auto' ? 'on' : ''; f.segAuto.setAttribute('aria-pressed', String(a.type === 'auto'));
+        f.segMoney.className = a.type === 'money' ? 'on' : ''; f.segMoney.setAttribute('aria-pressed', String(a.type === 'money'));
+        f.segCases.className = a.type === 'cases' ? 'on' : ''; f.segCases.setAttribute('aria-pressed', String(a.type === 'cases'));
         const main = running ? ['stop', T('card.btn.stop'), ''] : a.hasToken ? ['start', T('card.btn.start'), 'primary'] : ['relogin', T('card.btn.relogin'), 'primary'];
         f.main.dataset.act = main[0];
         f.main.className = main[2];
         setText(f.main, main[1]);
         tickCard(c);
     }
+
+    // Cards off screen skip the 250 ms bar updates (they still get every refresh).
+    const onScreen = 'IntersectionObserver' in window ? new IntersectionObserver((list) => { for (const e of list) e.target.dataset.off = e.isIntersecting ? '' : '1'; }, { rootMargin: '200px' }) : null;
+    function dropCard(c) { if (onScreen) onScreen.unobserve(c.el); c.el.remove(); }
+    const cardShows = (c) => !c.el.hidden && c.el.dataset.off !== '1' && !(c.el.parentNode && c.el.parentNode.parentNode && c.el.parentNode.parentNode.classList.contains('collapsed'));
 
     // Moves the two bars between refreshes (every 250 ms).
     function tickCard(c) {
@@ -524,7 +608,7 @@
     function drawAccounts() {
         const el = $('#tab-accounts');
         if (!S.accounts.length) {
-            for (const c of cards.values()) c.el.remove();
+            for (const c of cards.values()) dropCard(c);
             cards.clear();
             setHtml(null, `
             <div class="empty">
@@ -544,7 +628,7 @@
         let wrap = el.querySelector('.sections');
         if (!wrap) {
             lastHtml.delete(el);
-            el.innerHTML = `<p class="limit-note" hidden></p><div class="acct-tools"><input type="search" class="acct-search" placeholder="${H('cards.search')}" aria-label="${H('cards.search')}" hidden><span class="grow"></span><button class="small" data-act="compact" aria-pressed="false"></button><button class="small" data-act="folderNew">${H('folders.new')}</button></div><div class="sections"></div>`;
+            el.innerHTML = `<p class="limit-note" hidden></p><div class="acct-tools"><input type="search" class="acct-search" placeholder="${H('cards.search')}" aria-label="${H('cards.search')}" hidden><div class="seg acct-filter" role="group" aria-label="${H('cards.filter.label')}" hidden>${FILTERS.map(k => `<button data-act="acctFilter" data-id="${k}" aria-pressed="false">${H('cards.filter.' + k)}</button>`).join('')}</div><span class="grow"></span><button class="small" data-act="selectMode" aria-pressed="false">${H('bulk.select')}</button><button class="small" data-act="compact" aria-pressed="false"></button><button class="small" data-act="folderNew">${H('folders.new')}</button></div><div class="bulk-bar" role="toolbar" aria-label="${H('bulk.label')}" hidden><span class="bulk-n" aria-live="polite"></span><button class="small" data-act="bulkAll"></button><button class="small" data-act="bulkNone">${H('bulk.none')}</button><span class="grow"></span><button class="small" data-act="bulk" data-what="start">${H('bulk.start')}</button><button class="small" data-act="bulk" data-what="stop">${H('bulk.stop')}</button><div class="seg" role="group" aria-label="${H('card.type.label')}"><button data-act="bulk" data-what="type" data-arg="auto">${H('card.type.auto')}</button><button data-act="bulk" data-what="type" data-arg="money">${H('card.type.money')}</button><button data-act="bulk" data-what="type" data-arg="cases">${H('card.type.cases')}</button></div><button class="small" data-act="bulk" data-what="folder">${H('bulk.folder')}</button><button class="small danger" data-act="bulk" data-what="remove">${H('bulk.remove')}</button><button class="small primary" data-act="selectMode">${H('bulk.done')}</button></div><div class="acct-none" hidden>${emptyHtml(H('cards.noMatch'), H('cards.noMatchHint'), `<button class="small" data-act="acctClear">${H('cards.clear')}</button>`)}</div><div class="sections"></div>`;
             wrap = el.querySelector('.sections');
             for (const s of sections.values()) s.el.remove();
             sections.clear();
@@ -576,25 +660,128 @@
             updateCard(c, a);
             seen.add(a.id);
         }
-        for (const [id, c] of cards) if (!seen.has(id)) { c.el.remove(); cards.delete(id); }
+        for (const [id, c] of cards) if (!seen.has(id)) { dropCard(c); cards.delete(id); }
+        for (const id of picked) if (!seen.has(id)) picked.delete(id);
         applySearch();
+        paintBulk();
+    }
+
+    // Folder names and accounts by id, built once per state instead of a search per row.
+    let namesOf = null, namesMap = new Map(), acctsOf = null, acctsMap = new Map();
+    function folderNames() {
+        if (namesOf !== S.folders) { namesOf = S.folders; namesMap = new Map((S.folders || []).map(f => [f.id, f.name])); }
+        return namesMap;
+    }
+    function acctById(id) {
+        if (acctsOf !== S.accounts) { acctsOf = S.accounts; acctsMap = new Map(S.accounts.map(a => [a.id, a])); }
+        return acctsMap.get(id);
     }
 
     // The folder an account is in, as a small tag after its name (Troubleshoot lists).
     function folderTag(id) {
-        const a = S.accounts.find(x => x.id === id), f = a && a.folder && (S.folders || []).find(x => x.id === a.folder);
-        return f ? ` <span class="tr-folder">${esc(f.name)}</span>` : '';
+        const a = acctById(id), name = a && a.folder && folderNames().get(a.folder);
+        return name ? ` <span class="tr-folder">${esc(name)}</span>` : '';
     }
 
-    // Search above the cards (shown from 9 accounts): hides the cards whose name doesn't match, and folders with none.
-    let searchQ = '';
+    // Select mode: tick cards (the box, or a click anywhere on a card that isn't a button), then one action for all of
+    // them from the bar above the cards. Dragging is off while selecting; Escape or Done leaves it.
+    let selecting = false;
+    const picked = new Set();
+    const shownIds = () => S.accounts.filter(a => { const c = cards.get(a.id); return c && !c.el.hidden; }).map(a => a.id);
+    function paintBulk() {
+        const el = $('#tab-accounts'), bar = el && el.querySelector('.bulk-bar');
+        if (!bar) return;
+        el.classList.toggle('selecting', selecting);
+        bar.hidden = !selecting;
+        const btn = el.querySelector('.acct-tools [data-act="selectMode"]');
+        btn.classList.toggle('on', selecting); btn.setAttribute('aria-pressed', String(selecting));
+        if (!selecting) return;
+        const n = picked.size, shown = shownIds(), all = shown.length && shown.every(id => picked.has(id));
+        setText(bar.querySelector('.bulk-n'), n ? T(n === 1 ? 'bulk.n.one' : 'bulk.n', { n }) : T('bulk.n.none'));
+        const allBtn = bar.querySelector('[data-act="bulkAll"]');
+        setText(allBtn, T(shown.length < S.accounts.length ? 'bulk.allShown' : 'bulk.all', { n: shown.length }));
+        allBtn.disabled = !!all;
+        bar.querySelector('[data-act="bulkNone"]').disabled = !n;
+        bar.querySelectorAll('[data-act="bulk"]').forEach(b => { b.disabled = !n; });
+    }
+    function setSelecting(on) {
+        selecting = !!on;
+        if (!selecting) picked.clear();
+        for (const c of cards.values()) if (c.a) updateCard(c, c.a);
+        paintBulk();
+    }
+    function togglePick(id, on) {
+        if (on === undefined ? !picked.has(id) : on) picked.add(id); else picked.delete(id);
+        const c = cards.get(id); if (c && c.a) updateCard(c, c.a);
+        paintBulk();
+    }
+    document.addEventListener('change', (e) => { if (e.target.classList && e.target.classList.contains('c-pick')) togglePick(e.target.dataset.id, e.target.checked); });
+    // In select mode a click on a card (not on a button, a box or the menu) ticks it.
+    document.addEventListener('click', (e) => {
+        if (!selecting || !e.target.closest) return;
+        const card = e.target.closest('#tab-accounts .card');
+        if (!card || e.target.closest('button, input, select, a, .menu')) return;
+        togglePick(card.dataset.id);
+    });
+    document.addEventListener('keydown', (e) => { if (selecting && e.key === 'Escape' && $('#modal').hidden && !(drag && drag.live)) setSelecting(false); });
+    async function bulkAct(what, arg) {
+        const ids = [...picked], n = ids.length;
+        if (!n) return;
+        if (what === 'remove' && !(await modal({ title: T(n === 1 ? 'bulk.remove.title.one' : 'bulk.remove.title', { n }), body: T('modal.remove.body'), ok: T('modal.remove.ok'), danger: true }))) return;
+        if (what === 'folder') {
+            const opts = [['', T('folders.none')], ...(S.folders || []).map(f => [f.id, f.name]), ['+', T('folders.newOption')]];
+            let v = '';
+            const p = modal({ title: T(n === 1 ? 'bulk.move.title.one' : 'bulk.move.title', { n }), ok: T('folders.move.ok'),
+                html: `<select id="folderPick" class="folder-pick" aria-label="${H('bulk.folder')}">${opts.map(([k, nm]) => `<option value="${esc(k)}">${esc(nm)}</option>`).join('')}</select>` });
+            $('#modal .modal-box').onchange = (e) => { if (e.target.id === 'folderPick') v = e.target.value; };
+            if (!(await p)) return;
+            if (v === '+') {
+                const name = await modal({ title: T('folders.new.title'), input: '', ok: T('folders.new.ok') });
+                if (name == null || !name.trim()) return;
+                arg = { name: name.trim() };
+            } else arg = v || null;
+        }
+        const r = await call('accountsBulk', ids, what, arg);
+        if (!r || !r.ok) { toast(plainError(r && r.error) || T('toast.failed'), 'bad'); return; }
+        if (what === 'start') {
+            const codes = Object.values(r.results || {}).map(x => x && !x.ok && x.code);
+            if (codes.includes('CC-MAIN-01')) return setMainModal();
+            if (codes.includes('CC-RATE-01')) return toast(T('toast.limit', { max: S.maxPerIp }));
+            if (codes.includes('CC-AUTH-08')) return toast(T('toast.dupe'));
+        }
+        toast(T('bulk.done.' + what, { n }), 'ok');
+        if (what === 'remove') picked.clear();
+        paintBulk();
+    }
+
+    // Search and filter buttons above the cards (shown from 9 accounts): hide the cards that don't match, and folders
+    // with none. The search looks at account names and folder names.
+    let searchQ = '', filterBy = 'all';
     function applySearch() {
-        const box = $('#tab-accounts .acct-search');
+        const el = $('#tab-accounts'), box = el.querySelector('.acct-search');
         if (!box) return;
-        box.hidden = S.accounts.length <= 8 && !searchQ;
-        const q = searchQ.trim().toLowerCase();
-        for (const a of S.accounts) { const c = cards.get(a.id); if (c) c.el.hidden = !!q && !String(a.name || '').toLowerCase().includes(q); }
-        if (!q) return;
+        const few = S.accounts.length <= 8;
+        box.hidden = few && !searchQ;
+        const chips = el.querySelector('.acct-filter'), bad = S.accounts.filter(isBad).length;
+        chips.hidden = few && filterBy === 'all';
+        chips.querySelectorAll('button').forEach(b => {
+            const on = b.dataset.id === filterBy;
+            b.classList.toggle('on', on);
+            b.setAttribute('aria-pressed', String(on));
+            if (b.dataset.id === 'problems') setText(b, bad ? T('cards.filter.problemsN', { n: bad }) : T('cards.filter.problems'));
+        });
+        const q = searchQ.trim().toLowerCase(), names = folderNames(), active = !!q || filterBy !== 'all';
+        const fits = { all: () => true, problems: isBad, clicking: (a) => !!a.startedAt, stopped: (a) => !a.startedAt }[filterBy];
+        let shown = 0;
+        for (const a of S.accounts) {
+            const c = cards.get(a.id);
+            if (!c) continue;
+            const hit = fits(a) && (!q || String(a.name || '').toLowerCase().includes(q) || String(names.get(a.folder) || '').toLowerCase().includes(q));
+            c.el.hidden = !hit;
+            if (hit) shown++;
+        }
+        el.querySelector('.acct-none').hidden = !active || shown > 0;
+        if (!active) return;
         for (const s of sections.values()) s.el.hidden = !s.grid.querySelector('.card:not([hidden])');
     }
     document.addEventListener('input', (e) => {
@@ -620,7 +807,7 @@
             <span class="grow"></span>
             <button class="small" data-act="folderStart" data-id="${fid}" data-f="start">${H('folders.start')}</button>
             <button class="small" data-act="folderStop" data-id="${fid}" data-f="stop">${H('folders.stop')}</button>
-            <button class="icon-btn" data-act="folderMenu" data-id="${fid}" aria-label="${H('folders.menu')}" title="${H('card.menu.tip')}">⋯</button>
+            <button class="icon-btn" data-act="folderMenu" data-id="${fid}" aria-expanded="false" aria-label="${H('folders.menu')}" title="${H('card.menu.tip')}">⋯</button>
             <div class="menu" data-f="menu" hidden>
               <button data-act="folderRename" data-id="${fid}">${H('folders.rename')}</button>
               <button data-act="folderRemove" data-id="${fid}" class="danger">${H('folders.remove')}</button>
@@ -673,7 +860,7 @@
     let drag = null;
     const DRAG_START_PX = 6;
     function dragDown(e) {
-        if (e.button !== 0 || tab !== 'accounts' || drag) return;
+        if (e.button !== 0 || tab !== 'accounts' || drag || selecting) return;
         const grip = e.target.closest('[data-grip]');
         const head = !grip && e.pointerType === 'mouse' && e.target.closest('.card .c-head');
         if (!grip && (!head || e.target.closest('button, .menu'))) return;
@@ -811,8 +998,11 @@
     document.addEventListener('pointercancel', (e) => dragEnd(e, true));
     document.addEventListener('keydown', (e) => { if (drag && drag.live && e.key === 'Escape') dragEnd(null, true); else gripKey(e); });
 
+    // The ⋯ button whose menu is open, and the one that closed last (a dialog opened from a menu gives focus back to it).
+    let menuOpen = null, menuClosed = null;
     function closeMenus(except) {
         document.querySelectorAll('.menu').forEach(m => { if (m !== except) m.hidden = true; });
+        if (menuOpen && menuOpen.menu !== except) { menuOpen.btn.setAttribute('aria-expanded', 'false'); menuClosed = { btn: menuOpen.btn, at: Date.now() }; menuOpen = null; }
         if (openGroup && !(except && except.classList.contains('tab-menu'))) { openGroup = null; document.querySelectorAll('[data-act="tabGroup"]').forEach(b => b.setAttribute('aria-expanded', 'false')); }
     }
 
@@ -850,15 +1040,16 @@
               <div class="main">
                 <div class="title">${esc(p.name)} <span class="muted">${esc(p.version)}</span> ${p.enabled ? pluginState(p) : ''} ${p.bundled ? `<span class="tag">${H('plugins.tag.builtin')}</span>` : p.verified ? `<span class="tag ok">${H('plugins.tag.signed')}</span>` : `<span class="tag bad">${H('plugins.tag.unverified')}</span>`}</div>
                 <div class="desc">${esc(p.description)}</div>
-                ${p.error ? `<div class="desc bad-text">${esc(p.error.msg)}</div>` : ''}
+                ${p.error ? `<div class="desc bad-text">${errHtml(p.error.msg)}</div>` : ''}
                 ${acc.map(s => `<div class="desc runs-on${p.enabled && needsAccounts(p) ? ' warn-text' : ''}">${accountsSummary(s)}</div>`).join('')}
                 ${upd && ce.tooNew ? `<div class="desc muted">${H('plugins.updateNeedsApp', { version: esc(ce.version), app: esc(ce.minCore) })}</div>` : ''}
               </div>
               <div class="plug-btns">
                 ${upd && !ce.tooNew ? `<button class="small primary" data-act="pluginInstall" data-id="${esc(p.id)}">${H('plugins.update', { version: esc(ce.version) })}</button>` : ''}
                 ${p.removable ? `<button class="small" data-act="pluginRemove" data-id="${esc(p.id)}">${H('plugins.remove')}</button>` : ''}
+                ${p.state === 'error' ? `<button class="small" data-act="pluginReload" data-id="${esc(p.id)}">${H('plugins.reload')}</button>` : ''}
                 ${p.tab && p.state === 'running' ? `<button class="small" data-act="tab" data-tab="plugin:${esc(p.id)}:${esc(p.tab)}">${H('plugins.open')}</button>`
-                    : !p.tab && p.settings.length ? `<button class="small" data-act="pluginOpen" data-id="${esc(p.id)}">${H('plugins.settings')}</button>` : ''}
+                    : p.settings.some(s => !s.page) ? `<button class="small" data-act="pluginOpen" data-id="${esc(p.id)}">${H('plugins.settings')}</button>` : ''}
                 ${p.enabled ? `<button class="small" data-act="pluginToggle" data-id="${esc(p.id)}" data-on="0">${H('plugins.turnOff')}</button>`
                     : `<button class="small primary" data-act="pluginToggle" data-id="${esc(p.id)}" data-on="1">${H('plugins.turnOn')}</button>`}
               </div>
@@ -866,6 +1057,8 @@
     }
 
     function drawPlugins() {
+        // Don't redraw under someone typing in one of its fields.
+        if (typingIn($('#tab-plugins'))) return;
         const on = S.plugins.filter(p => p.enabled), off = S.plugins.filter(p => !p.enabled);
         const section = (title, list) => list.length ? `<h4 class="plug-head">${title}</h4><div class="rows">${list.map(pluginCard).join('')}</div>` : '';
         const c = S.catalog || {}, more = (c.entries || []).filter(e => !e.installed);
@@ -928,7 +1121,7 @@
                 <label class="pchip"><input type="checkbox" data-fall ${all ? 'checked' : ''}> ${H('pluginmodal.allShort')}</label>
                 ${S.accounts.map(a => `<label class="pchip"><input type="checkbox" data-facct value="${esc(a.id)}" ${all || ids.has(a.id) ? 'checked' : ''} ${all ? 'disabled' : ''}> ${esc(a.name || a.id)}${chipDetail(f, a)}</label>`).join('')}</div></div>`;
         }
-        return `<label ${at()}>${label}<input type="${f.type === 'number' ? 'number' : 'text'}" data-f="${esc(fk)}" value="${esc(v ?? '')}"${f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : ''}>${help}</label>`;
+        return `<label ${at()}>${label}<input type="${f.type === 'number' ? 'number' : 'text'}"${f.type === 'number' && f.min != null ? ` min="${esc(f.min)}"` : ''}${f.type === 'number' && f.max != null ? ` max="${esc(f.max)}"` : ''} data-f="${esc(fk)}" value="${esc(v ?? '')}"${f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : ''}>${help}</label>`;
     }
 
     // f.detail: a figure from the account's last report next to its name in an accounts field ("tokens", "money").
@@ -979,9 +1172,11 @@
     const plainNum = (v) => { const n = Number(v); return Number.isFinite(n) && n !== 0 && Math.abs(n) < 1e-6 ? n.toFixed(12).replace(/\.?0+$/, '') : v; };
     function pluginSettingInner(s) {
         const key = esc(s.key), label = s.label === '' ? '' : `<div class="pset-label">${esc(s.label || s.key)}</div>`;
+        // What a screen reader calls the control: its label, or the hint inside it when it has none (a toolbar's search box).
+        const al = ` aria-label="${esc(s.label || s.placeholder || s.key)}"`;
         if (s.type === 'list') return `<div class="pset" data-key="${key}" data-type="list">${label}<div class="prows">${listHtml(s)}</div></div>`;
-        if (s.type === 'account') return `<div class="pset" data-key="${key}" data-type="account">${label}${accountSelect(s.value, 'data-pset')}</div>`;
-        if (s.type === 'choice' && (s.dynamic || s.select || (s.options || []).length > 4)) return `<div class="pset" data-key="${key}" data-type="choice">${label}${choiceSelect(s.options, s.value, 'data-pset')}</div>`;
+        if (s.type === 'account') return `<div class="pset" data-key="${key}" data-type="account">${label}${accountSelect(s.value, 'data-pset' + al)}</div>`;
+        if (s.type === 'choice' && (s.dynamic || s.select || (s.options || []).length > 4)) return `<div class="pset" data-key="${key}" data-type="choice">${label}${choiceSelect(s.options, s.value, 'data-pset' + al)}</div>`;
         if (s.type === 'accounts') {
             const v = s.value || {}, ids = new Set(v.ids || []);
             const row = (a) => `
@@ -1000,18 +1195,18 @@
             return `<div class="pset" data-key="${key}" data-type="accounts">${label}
                 <label class="pick-all"><span class="switch"><input type="checkbox" data-pick="all" ${v.all ? 'checked' : ''}><i></i></span><span>${H('pluginmodal.all')} <span class="muted">${H('pluginmodal.allHint')}</span></span></label>
                 ${S.accounts.length > 1 ? `<div class="pick-tools"><button class="small" data-pick="every" ${v.all ? 'disabled' : ''}>${H('pluginmodal.selectAll')}</button><button class="small" data-pick="clear" ${v.all ? 'disabled' : ''}>${H('pluginmodal.clear')}</button>
-                  ${S.accounts.length > 8 ? `<input class="pick-search" data-pick="search" placeholder="${H('pluginmodal.search')}">` : ''}</div>` : ''}
+                  ${S.accounts.length > 8 ? `<input class="pick-search" data-pick="search" aria-label="${H('pluginmodal.search')}" placeholder="${H('pluginmodal.search')}">` : ''}</div>` : ''}
                 <div class="pick-list">${list}</div>
                 <div class="muted pick-count"></div></div>`;
         }
-        if (s.type === 'choice') return `<div class="pset" data-key="${key}" data-type="choice">${label}<div class="seg">${(s.options || []).map(o => `<button class="${o.value === s.value ? 'on' : ''}" data-choice="${esc(o.value)}">${esc(o.label || o.value)}</button>`).join('')}</div></div>`;
+        if (s.type === 'choice') return `<div class="pset" data-key="${key}" data-type="choice">${label}<div class="seg" role="group"${al}>${(s.options || []).map(o => `<button class="${o.value === s.value ? 'on' : ''}" aria-pressed="${o.value === s.value}" data-choice="${esc(o.value)}">${esc(o.label || o.value)}</button>`).join('')}</div></div>`;
         if (s.type === 'boolean') return `<div class="pset" data-key="${key}" data-type="boolean"><label class="pick-all"><span class="switch"><input type="checkbox" data-pset ${s.value ? 'checked' : ''}><i></i></span><span>${esc(s.label || s.key)}</span></label></div>`;
         // tags: names typed one at a time. Enter (or clicking away) turns the text into a chip and leaves an empty box for
         // the next one; clicking a chip takes it out.
-        if (s.type === 'tags') return `<div class="pset pset-wide" data-key="${key}" data-type="tags">${label}<div class="ptags">${tagsHtml(s.value)}<input data-tag-input spellcheck="false" autocomplete="off" placeholder="${esc(tagList(s.value).length ? T('tags.more') : s.placeholder || '')}"></div></div>`;
+        if (s.type === 'tags') return `<div class="pset pset-wide" data-key="${key}" data-type="tags">${label}<div class="ptags">${tagsHtml(s.value)}<input data-tag-input${al} spellcheck="false" autocomplete="off" placeholder="${esc(tagList(s.value).length ? T('tags.more') : s.placeholder || '')}"></div></div>`;
         // textarea: several lines (a pasted list); saved when the field loses focus.
-        if (s.type === 'textarea') return `<div class="pset pset-wide" data-key="${key}" data-type="text">${label}<textarea data-pset rows="6" spellcheck="false" autocomplete="off"${s.placeholder ? ` placeholder="${esc(s.placeholder)}"` : ''}>${esc(s.value || '')}</textarea></div>`;
-        return `<div class="pset" data-key="${key}" data-type="${s.type === 'number' ? 'number' : 'text'}">${label}<input type="${s.type === 'number' ? 'number' : 'text'}"${s.type === 'number' ? ' step="any"' : ''}${s.placeholder ? ` placeholder="${esc(s.placeholder)}"` : ''} data-pset value="${esc(s.type === 'number' ? plainNum(s.value) : s.value)}"></div>`;
+        if (s.type === 'textarea') return `<div class="pset pset-wide" data-key="${key}" data-type="text">${label}<textarea data-pset${al} rows="6" spellcheck="false" autocomplete="off"${s.placeholder ? ` placeholder="${esc(s.placeholder)}"` : ''}>${esc(s.value || '')}</textarea></div>`;
+        return `<div class="pset" data-key="${key}" data-type="${s.type === 'number' ? 'number' : 'text'}">${label}<input type="${s.type === 'number' ? 'number' : 'text'}"${s.type === 'number' ? ` step="any"${s.min != null ? ` min="${esc(s.min)}"` : ''}${s.max != null ? ` max="${esc(s.max)}"` : ''}` : ''}${s.placeholder ? ` placeholder="${esc(s.placeholder)}"` : ''} data-pset${al} value="${esc(s.type === 'number' ? plainNum(s.value) : s.value)}"></div>`;
     }
 
     function pluginModal(id) {
@@ -1030,7 +1225,13 @@
         const P = () => S.plugins.find(x => x.id === id) || { settings: [] };
         // Kept in pendingSaves so a button pressed right after typing (the field saves as it loses focus) runs with the new value.
         const save = (key, value) => {
-            const pr = call('pluginSetting', id, key, value).then(r => { if (r && !r.ok) toast(r.error); refresh(); });
+            // A number outside its range is saved as the nearest allowed one: say so.
+            const sp = P().settings.find(x => x.key === key), n = Number(value);
+            if (sp && sp.type === 'number' && Number.isFinite(n)) {
+                if (sp.min != null && n < sp.min) toast(T('pset.clamped.min', { label: sp.label || key, min: sp.min }));
+                else if (sp.max != null && n > sp.max) toast(T('pset.clamped.max', { label: sp.label || key, max: sp.max }));
+            }
+            const pr = call('pluginSetting', id, key, value).then(r => { if (r && !r.ok) toast(plainError(r.error), 'bad'); refresh(); });
             pendingSaves.add(pr); pr.finally(() => pendingSaves.delete(pr));
             return pr;
         };
@@ -1059,7 +1260,7 @@
             return out;
         });
         const redrawList = (set, rows) => { const sp = { ...listSpec(set), value: rows }; set.querySelector('.prows').innerHTML = listHtml(sp); };
-        const saveList = (set, rows, redraw) => { if (redraw) redrawList(set, rows); return call('pluginSetting', id, set.dataset.key, rows).then(r => { if (r && !r.ok) toast(r.error); return refresh(); }); };
+        const saveList = (set, rows, redraw) => { if (redraw) redrawList(set, rows); return call('pluginSetting', id, set.dataset.key, rows).then(r => { if (r && !r.ok) toast(plainError(r.error), 'bad'); return refresh(); }); };
         const countAccounts = (set) => {
             const boxes = [...set.querySelectorAll('[data-pick="acct"]')], all = set.querySelector('[data-pick="all"]').checked;
             const c = set.querySelector('.pick-count');
@@ -1189,12 +1390,8 @@
             } else if (b && (b.dataset.pick === 'every' || b.dataset.pick === 'clear')) {
                 set.querySelectorAll('.pick:not([hidden]) [data-pick="acct"]').forEach(x => { x.checked = b.dataset.pick === 'every'; });
                 ticked(set);
-            } else if (b && b.dataset.smap != null) {
-                smapOpen.set(b.dataset.smapKey, b.dataset.smap); smapSel.delete(b.dataset.smapKey); tabHtml = ''; drawPluginTab();
-            } else if (b && b.dataset.smapPick != null) {
-                smapSel.set(b.dataset.smapKey, b.dataset.smapPick); tabHtml = ''; drawPluginTab();
             } else if (b && b.dataset.choice != null) {
-                set.querySelectorAll('[data-choice]').forEach(x => x.classList.toggle('on', x === b));
+                set.querySelectorAll('[data-choice]').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', String(x === b)); });
                 save(set.dataset.key, b.dataset.choice);
             } else if (b && b.hasAttribute('data-pset-reload')) call('pluginReload', id).then(() => toast(T('toast.plugin.reloaded')));
             else if (b && b.dataset.paction) {
@@ -1217,11 +1414,12 @@
                 pluginAction(id, b);
             }
             // A step card's head opens / folds it (not when the click was on its switch).
-            const head = !b && e.target.closest('[data-card]');
+            const head = (!b || b.classList.contains('pcard-caret')) && e.target.closest('[data-card]');
             if (head && !e.target.closest('.switch')) {
                 const k = head.dataset.card;
                 openCards.set(k, !head.closest('.pcard').classList.contains('open'));
                 head.closest('.pcard').classList.toggle('open', openCards.get(k));
+                const caret = head.querySelector('.pcard-caret'); if (caret) caret.setAttribute('aria-expanded', String(openCards.get(k)));
             }
             chain(e);
         };
@@ -1254,19 +1452,19 @@
         if (b.dataset.confirm && !(await modal({ title: b.textContent.trim(), body: b.dataset.confirm, ok: b.textContent.trim(), danger: b.classList.contains('danger') }))) return;
         b.disabled = true;
         await Promise.all([...pendingSaves]).catch(() => {});
-        const r = await call('pluginAction', id, b.dataset.paction, b.dataset.arg || null);
+        let r = null;
+        try { r = await call('pluginAction', id, b.dataset.paction, b.dataset.arg || null); } catch (_) {}
         b.disabled = false;
-        if (r && r.message) toast(r.message); else if (r && !r.ok) toast(r.error || T('toast.plugin.failed'));
+        if (r && r.message) toast(r.message); else if (!r || !r.ok) toast(plainError(r && r.error) || T('toast.failed'), 'bad');
         refresh();
     }
 
     // A plugin's own tab: blocks it returns from render(). Settings blocks show that plugin's
     // settings as live controls, so a plugin can lay out its whole setup here instead of a dialog.
-    //   stats { items: [{ label, value }] } · table { columns, rows } · text { text } · notice { text, level: ok|warn|bad }
+    // The reference for plugin authors is docs/PLUGIN-UI.md; keep it in step with this list.
+    //   stats { items: [{ label, value }] } · table { columns, rows, wrap, empty (shown with no rows) } · text { text }
+    //   notice { text, level: ok|warn|bad } · bar { keys, items, text } (a toolbar) · items { items, action, empty } (inventory grid)
     //   buttons { items: [{ label, action, arg, primary, danger, confirm }] } · settings { keys }
-    //   skillmap { action, maps: [{ name, image, note, count }], skills: [{ id, map, x, y (% of the picture), next: [ids],
-    //   label, icon, cost, gives: [text], needs, owned, inPlan, missing, dependents }] } — a click picks a skill and shows its
-    //   details beside the map; their button sends action with the skill's id
     //   picker { action, items: [{ id, title, sub, meta, on }] } — a list to pick one from; a click sends action with the id;
     //   shop { action, unit (singular: 'credit'), items: [{ id, name, sub, price, pack, max (packs affordable) }], accounts?: [{ id, name, credits }] }
     //        — a row each with an amount; with accounts, Buy first asks which of them buy it (arg gets accounts: [ids]);
@@ -1284,21 +1482,7 @@
         return `<div class="ppick-lines">${(many && !open ? lines.slice(0, 3) : lines).map(l => `<div class="desc">${esc(l)}</div>`).join('')}
             ${many ? `<span class="ppick-more" role="button" tabindex="0" data-plines="${esc(k)}" aria-expanded="${open}">${open ? H('block.picker.fewer') : H('block.picker.all', { n: lines.length })}</span>` : ''}</div>`;
     };
-    const smapOpen = new Map();   // skill map block -> the map tab shown
-    const smapSel = new Map();    // skill map block -> the skill picked
-    // Skill icons by what the skill gives (drawn here: the panel loads no icon font).
-    const SMAP_ICONS = {
-        case: '<path d="M4 8l8-4 8 4v8l-8 4-8-4z"/><path d="M4 8l8 4 8-4M12 12v8"/>',
-        click: '<path d="M7 4l10 7-4.5 1.2L15 18l-2 1-2.3-5.5L7 16z"/>',
-        vault: '<rect x="4" y="5" width="16" height="14" rx="2"/><circle cx="12" cy="12" r="3"/><path d="M12 6v3M12 15v3"/>',
-        inventory: '<rect x="4" y="4" width="7" height="7" rx="1"/><rect x="13" y="4" width="7" height="7" rx="1"/><rect x="4" y="13" width="7" height="7" rx="1"/><rect x="13" y="13" width="7" height="7" rx="1"/>',
-        opens: '<path d="M5 8h14M5 12h14M5 16h14"/>',
-        price: '<path d="M4 12V4h8l8 8-8 8z"/><circle cx="8.5" cy="8.5" r="1.5"/>',
-        multi: '<path d="M7 7l10 10M17 7L7 17"/>',
-    };
-    const smapIcon = (icon) => `<svg class="psmap-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">${SMAP_ICONS[icon] || '<circle cx="12" cy="12" r="3"/>'}</svg>`;
-
-    const btnsHtml = (items) => `<div class="pbtns">${(items || []).map(i => `<button class="${i.primary ? 'primary' : ''} ${i.danger ? 'danger' : ''}" data-paction="${esc(i.action)}" ${i.arg != null ? `data-arg="${esc(i.arg)}"` : ''} ${i.confirm ? `data-confirm="${esc(i.confirm)}"` : ''}>${esc(i.label)}</button>`).join('')}</div>`;
+    const btnsHtml = (items) => `<div class="pbtns">${(items || []).map(i => `<button class="${i.primary ? 'primary' : ''} ${i.danger ? 'danger' : ''}" data-paction="${esc(i.action)}" ${i.arg != null ? `data-arg="${esc(i.arg)}"` : ''} ${i.confirm ? `data-confirm="${esc(i.confirm)}"` : ''}${i.disabled ? ' disabled' : ''}>${esc(i.label)}</button>`).join('')}</div>`;
     // A shop row's button: "Buy 30 for 3 credits" (items come in packs; a pack costs price).
     const shopLabel = (qty, pack, price, unit) => { const packs = Math.max(1, Math.round(Number(qty) / pack) || 1); const cost = packs * Number(price); return T('block.shop.buy', { count: packs * pack, cost: `${cost}${unit ? ' ' + unit + (cost === 1 ? '' : 's') : ''}` }); };
     // A table cell: text, or { text, level: ok|warn|bad|muted } (coloured text), { bar: 0..1, text } (a progress bar
@@ -1323,45 +1507,18 @@
             if (b.type === 'list') { const sp = setting(b.key); return sp ? `<div class="psets">${pluginSettingHtml({ ...sp, label: '', help: '', summaries: b.summaries || [] })}</div>` : ''; }
             if (b.type === 'stats') return `<div class="statrow">${b.items.map(i => `<div class="stat"><span>${esc(i.label)}</span><b>${esc(i.value)}</b></div>`).join('')}</div>`;
             if (b.type === 'table') return b.rows.length ? `<div class="table-wrap"><table${b.wrap ? ' class="wrap"' : ''}><thead><tr>${b.columns.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${b.rows.map(r => `<tr>${r.map(v => `<td${v && typeof v === 'object' && v.action ? ' class="pcell-btn"' : ''}>${cellHtml(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`
-                : (b.empty ? `<p class="muted">${esc(b.empty)}</p>` : '');
+                : (b.empty ? emptyHtml(esc(b.empty), '', '', true) : '');
+            if (b.type === 'text') return `<p class="muted ptext">${esc(b.text || '')}</p>`;
             if (b.type === 'notice') return `<div class="pnotice ${esc(b.level || '')}">${esc(b.text)}</div>`;
-            if (b.type === 'buttons') return `<div class="pbtns">${b.items.map(i => `<button class="${i.primary ? 'primary' : ''} ${i.danger ? 'danger' : ''}" data-paction="${esc(i.action)}" ${i.arg != null ? `data-arg="${esc(i.arg)}"` : ''} ${i.confirm ? `data-confirm="${esc(i.confirm)}"` : ''}>${esc(i.label)}</button>`).join('')}</div>`;
+            if (b.type === 'buttons') return btnsHtml(b.items);
             if (b.type === 'settings') return settingsHtml(b.keys, b.bare, b.filters);
-            if (b.type === 'skillmap') {
-                // Like the site's skill map page: a tab per map, the map picture with the skills on it, and the picked
-                // skill's details beside it (with the button that adds it to the plan or takes it out). The shown map
-                // and the picked skill are remembered per plugin while the panel is open.
-                const maps = b.maps || [], k = p.id + ':' + (b.id || 'smap');
-                const cur = maps.find(m => m.name === smapOpen.get(k)) || maps[0];
-                if (!cur) return '';
-                const skills = (b.skills || []).filter(s => s.map === cur.name), at = new Map(skills.map(s => [s.id, s]));
-                const sel = at.get(smapSel.get(k));
-                const lines = skills.flatMap(s => (s.next || []).map(n => at.get(n)).filter(Boolean).map(n =>
-                    `<line x1="${s.x}" y1="${s.y}" x2="${n.x}" y2="${n.y}" class="${s.inPlan && n.inPlan ? 'on' : ''}"/>`)).join('');
-                const node = (s) => `<button class="psmap-node${s.inPlan ? ' plan' : ''}${s.owned ? ' owned' : ''}${sel === s ? ' sel' : ''}" data-x="${Number(s.x)}" data-y="${Number(s.y)}" data-smap-pick="${esc(s.id)}" data-smap-key="${esc(k)}" aria-label="${esc(s.label)}">${smapIcon(s.icon)}</button>`;
-                const side = !sel ? `<div class="psmap-side muted">${H('block.skillmap.pick')}</div>` : `<div class="psmap-side">
-                    <div class="psmap-side-head">${smapIcon(sel.icon)}<div><div class="title">${esc(sel.label)}</div><div class="desc">${esc(sel.id)} · ${esc(cur.name)}</div></div></div>
-                    <div class="psmap-facts"><div><span>${H('block.skillmap.price')}</span><b>${esc(sel.cost)}</b></div>${(sel.gives || []).map(g => `<div><span>${H('block.skillmap.gives')}</span><b>${esc(g)}</b></div>`).join('')}
-                      <div><span>${H('block.skillmap.needs')}</span><b>${sel.needs ? esc(sel.needs) : H('block.skillmap.needsNothing')}</b></div>${sel.owned ? `<div><span>${H('block.skillmap.owned')}</span><b>${H('block.skillmap.ownedYes')}</b></div>` : ''}</div>
-                    <button class="${sel.inPlan ? '' : 'primary'}" data-paction="${esc(b.action)}" data-arg="${esc(sel.id)}">${sel.inPlan ? H('block.skillmap.remove') : H('block.skillmap.add')}</button>
-                    ${sel.inPlan && sel.dependents ? `<div class="desc">${H('block.skillmap.alsoRemoves', { what: sel.dependents })}</div>` : !sel.inPlan && sel.missing ? `<div class="desc">${H('block.skillmap.alsoAdds', { what: sel.missing })}</div>` : ''}
-                  </div>`;
-                return `<div class="psmap-wrap">
-                    <div class="seg psmap-tabs">${maps.map(m => `<button class="${m === cur ? 'on' : ''}" data-smap="${esc(m.name)}" data-smap-key="${esc(k)}">${esc(m.name)}${m.count ? ` <span class="muted">${esc(m.count)}</span>` : ''}</button>`).join('')}</div>
-                    ${cur.note ? `<div class="muted psmap-note">${esc(cur.note)}</div>` : ''}
-                    <div class="psmap-layout">
-                      <div class="psmap">${cur.image ? `<img src="${esc(cur.image)}" alt="">` : ''}<svg viewBox="0 0 100 100" preserveAspectRatio="none">${lines}</svg>${skills.map(node).join('')}</div>
-                      ${side}
-                    </div>
-                    <div class="psmap-legend"><span><i class="psmap-dot plan"></i>${H('block.skillmap.legendPlan')}</span><span><i class="psmap-dot owned"></i>${H('block.skillmap.legendOwned')}</span><span><i class="psmap-dot"></i>${H('block.skillmap.legendNone')}</span></div>
-                  </div>`;
-            }
-            if (b.type === 'picker') return `<div class="ppicker${b.grid ? ' grid' : ''}${b.multi ? ' multi' : ''}">${(b.items || []).map(i => `<button class="ppick${i.on ? ' on' : ''}" data-paction="${esc(b.action)}" data-arg="${esc(i.id)}"${b.multi ? ` aria-pressed="${i.on ? 'true' : 'false'}"` : ''}>
+            if (b.type === 'log') return `<div class="log plog">${(b.lines || []).map(l => `<div class="${esc(l.level || '')}">${l.t ? `<span class="t">${esc(l.t)}</span> ` : ''}${esc(l.text || '')}</div>`).join('')}</div>`;
+            if (b.type === 'picker') return `<div class="ppicker${b.grid ? ' grid' : ''}${b.cols === 2 ? ' cols-2' : ''}${b.multi ? ' multi' : ''}">${(b.items || []).map(i => `<button class="ppick${i.on ? ' on' : ''}" data-paction="${esc(b.action)}" data-arg="${esc(i.id)}"${b.multi ? ` aria-pressed="${i.on ? 'true' : 'false'}"` : ''}>
                 <div class="ppick-head"><span class="title">${esc(i.title)}</span>${i.on ? `<span class="ppick-tag">${b.tag ? esc(b.tag) : H('block.picker.inUse')}</span>` : ''}</div>
                 ${i.lines && i.lines.length ? pickLines(b, i) : i.sub ? `<div class="desc">${esc(i.sub)}</div>` : ''}${i.meta ?`<div class="ppick-meta">${esc(i.meta)}</div>` : ''}</button>`).join('')}</div>`;
             if (b.type === 'shop') return `<div class="pshop"${b.accounts && b.accounts.length ? ` data-shop-accts="${esc(JSON.stringify(b.accounts))}"` : ''}>${(b.items || []).map(i => { const n = i.pack || 1; return `<div class="pshop-row">
                 <div class="pshop-name"><div class="title">${esc(i.name)}</div>${i.sub ? `<div class="desc">${esc(i.sub)}</div>` : ''}</div>
-                <input type="number" min="${n}" step="${n}" value="${n}" data-shop-qty data-pack="${n}" data-price="${esc(i.price)}" data-unit="${esc(b.unit || '')}"${i.max != null ? ` max="${esc(i.max * n)}"` : ''}>
+                <input type="number" min="${n}" step="${n}" value="${n}" data-shop-qty aria-label="${H('block.shop.qty', { name: i.name })}" data-pack="${n}" data-price="${esc(i.price)}" data-unit="${esc(b.unit || '')}"${i.max != null ? ` max="${esc(i.max * n)}"` : ''}>
                 <button class="small" data-paction="${esc(b.action)}" data-shop="${esc(i.id)}"${i.max === 0 ? ' disabled' : ''}>${esc(shopLabel(n, n, i.price, b.unit))}</button></div>`; }).join('')}</div>`;
             // A toolbar: settings without their labels (a search box), then buttons, on one row that wraps.
             if (b.type === 'bar') return `<div class="ptoolbar">${(b.keys || []).length ? settingsHtml(b.keys, true) : ''}${(b.items || []).length ? pluginBlocks([{ type: 'buttons', items: b.items }], p) : ''}${b.text ? `<span class="muted ptoolbar-text">${esc(b.text)}</span>` : ''}</div>`;
@@ -1376,7 +1533,7 @@
                 <span class="pitem-title">${esc(i.title || '')}</span>${i.sub ? `<span class="pitem-sub">${esc(i.sub)}</span>` : ''}${i.detail ? `<span class="pitem-detail">${esc(i.detail)}</span>` : ''}
                 <span class="pitem-foot"><b>${esc(i.price || '')}</b>${i.qty ? `<span class="pitem-qty">${i.on ? `${esc(String(i.qty.n))}/${esc(String(i.qty.of) + (i.qty.more ? "+" : ""))}` : `×${esc(String(i.qty.of) + (i.qty.more ? "+" : ""))}`}</span>` : i.meta ? `<span>${esc(i.meta)}</span>` : ''}</span>
                 ${i.on ? '<span class="pitem-check" aria-hidden="true">✓</span>' : ''}</button>${qtyCtl(i)}</div>`).join('')}</div>`
-                : `<div class="muted">${esc(b.empty || '')}</div>`;
+                : emptyHtml(esc(b.empty || ''), '', '', true);
             if (b.type === 'section') return `<section class="psection"><h4 class="plug-head">${esc(b.title || '')}</h4>${b.text ? `<p class="muted">${esc(b.text)}</p>` : ''}${pluginBlocks(b.blocks, p)}</section>`;
             if (b.type === 'card') {
                 const tg = b.toggle && setting(b.toggle), on = !tg || (b.toggleInvert ? !tg.value : !!tg.value), body = (b.keys || []).length || (b.blocks || []).length;
@@ -1384,11 +1541,11 @@
                 const cls = ['pcard', on ? '' : 'off', b.locked ? 'locked' : '', k ? 'folds' : '', open ? 'open' : '', b.done ? 'done' : ''].filter(Boolean).join(' ');
                 return `<div class="${cls}">
                     <div class="pcard-head"${k && !b.locked ? ` data-card="${esc(k)}"` : ''}>${b.step != null ? `<span class="pstep">${b.done ? '✓' : esc(b.step)}</span>` : ''}
-                      ${tg && !b.locked ? `<div class="pset" data-key="${esc(tg.key)}" data-type="boolean"><label class="switch"${b.toggleDisabled ? ` title="${esc(b.toggleDisabled)}"` : ''}><input type="checkbox" data-pset${b.toggleInvert ? ' data-invert' : ''} ${on ? 'checked' : ''}${b.toggleDisabled ? ' disabled' : ''}><i></i></label></div>` : ''}
+                      ${tg && !b.locked ? `<div class="pset" data-key="${esc(tg.key)}" data-type="boolean"><label class="switch"${b.toggleDisabled ? ` title="${esc(b.toggleDisabled)}"` : ''}><input type="checkbox" data-pset aria-label="${esc(b.title || tg.key)}"${b.toggleInvert ? ' data-invert' : ''} ${on ? 'checked' : ''}${b.toggleDisabled ? ' disabled' : ''}><i></i></label></div>` : ''}
                       <div class="pcard-titles"><div class="title">${esc(b.title || '')}</div>
                         ${b.locked ? `<div class="desc">${esc(b.locked)}</div>` : (b.summary && k ? `<div class="desc pcard-sum">${esc(b.summary)}</div>` : '')}
                         ${b.text && !b.locked ? `<div class="desc pcard-text">${esc(b.text)}</div>` : ''}</div>
-                      ${k && !b.locked && body && (on || b.bodyWhenOff) ? `<span class="pcard-caret">⌄</span>` : ''}</div>
+                      ${k && !b.locked && body && (on || b.bodyWhenOff) ? `<button type="button" class="pcard-caret" aria-expanded="${open}" aria-label="${H('block.card.fold', { title: b.title || '' })}"><span aria-hidden="true">⌄</span></button>` : ''}</div>
                     ${(on || b.bodyWhenOff) && body && !b.locked ? `<div class="pcard-body">${(b.keys || []).length ? settingsHtml(b.keys, b.bare) : ''}${pluginBlocks(b.blocks, p)}</div>` : ''}
                   </div>`;
             }
@@ -1432,15 +1589,14 @@
         // A modal the tab asks for (modal: { title, blocks, close: action }): over the page, closed by its × (the action).
         const md = c && p && c.modal && Array.isArray(c.modal.blocks) ? c.modal : null;
         const mdHtml = md ? `<div class="modal pmodal" role="dialog" aria-modal="true"><div class="modal-box pmodal-box"><div class="pmodal-head"><h3>${esc(md.title || '')}</h3>${md.close ? `<button class="small ghost close-x" data-paction="${esc(md.close)}" aria-label="${H('banner.close')}" title="${H('banner.close')}">×</button>` : ''}</div>${pluginBlocks(md.blocks, p)}</div></div>` : '';
-        const html = !c || !p ? `<div class="muted">${H('plugintab.empty')}</div>` : `<div class="ptab">${pluginBlocks(c.blocks, p)}${mdHtml}</div>`;
+        const html = t && t.failed && p ? `<div class="pnotice bad pfailed"><b>${H('plugintab.failed.title')}</b><div class="muted">${H('plugintab.failed.body', { code: 'CC-PLUG-02' })}</div><div class="code">${esc(t.failed)}</div><div class="pbtns"><button class="small" data-act="pluginReload" data-id="${esc(p.id)}">${H('plugins.reload')}</button></div></div>`
+            : !c || !p ? emptyHtml(H('plugintab.empty')) : `<div class="ptab">${pluginBlocks(c.blocks, p)}${mdHtml}</div>`;
         if (html === tabHtml && el.innerHTML) return;
         tabHtml = html;
         const tpl = document.createElement('template');
         tpl.innerHTML = html;
         morph(el, tpl.content);
         el.querySelectorAll('[data-color]').forEach(i => i.style.setProperty('--rc', '#' + i.dataset.color));   // rarity, through CSSOM
-        // Skill map nodes: placed from here (the page's rules don't allow inline style attributes).
-        el.querySelectorAll('.psmap-node').forEach(n => { n.style.left = n.dataset.x + '%'; n.style.top = n.dataset.y + '%'; });
         el.querySelectorAll('[data-w]').forEach(i => { i.style.width = i.dataset.w + '%'; });   // table progress bars, the same way
         if (p) bindSettings(el, p.id);
     }
@@ -1458,20 +1614,34 @@
         const el = $('#log'), atBottom = el.scrollHeight - el.scrollTop - el.clientHeight < 40;
         const only = $('#logProblems').checked;
         el.innerHTML = logLines.filter(l => !only || l.level === 'warn' || l.level === 'error').map(l =>
-            `<div class="${l.level}"><span class="t">${new Date(l.t).toLocaleTimeString()}</span> ${l.name ? esc(l.name) + ': ' : ''}${esc(l.msg)}</div>`).join('') || `<div class="muted">${H('log.empty')}</div>`;
+            `<div class="${l.level}"><span class="t">${new Date(l.t).toLocaleTimeString()}</span> ${l.name ? esc(l.name) + ': ' : ''}${esc(l.msg)}</div>`).join('') || emptyHtml(only && logLines.length ? H('log.emptyFiltered') : H('log.empty'), '', '', true);
         if (atBottom) el.scrollTop = el.scrollHeight;
     }
 
     // --- settings ------------------------------------------------------------
     // A switch row; its title and description are settings.<key>.title / .desc (or the keys given).
     function sw(key, on, textKey = key) {
-        return `<div class="row"><label class="switch"><input type="checkbox" data-act="setting" data-key="${key}" ${on ? 'checked' : ''}><i></i></label>
+        return `<div class="row"><label class="switch"><input type="checkbox" data-act="setting" data-key="${key}" aria-label="${H(`settings.${textKey}.title`)}" ${on ? 'checked' : ''}><i></i></label>
             <div class="main"><div class="title">${H(`settings.${textKey}.title`)}</div><div class="desc">${H(`settings.${textKey}.desc`)}</div></div></div>`;
     }
     const row = (k, extra = '') => `<div class="row"><div class="main"><div class="title">${H(`settings.${k}.title`)}</div><div class="desc">${H(`settings.${k}.desc`)}</div></div>${extra}</div>`;
 
+    const TYPED = ['webPort', 'webPass', 'shareNameInput'];
+    // The share name is checked as it is typed, like in the sharing walkthrough.
+    function syncShareName() {
+        const i = $('#shareNameInput'), h = $('#shareNameHint');
+        if (!i || !h) return;
+        const v = tidyName(i.value), bad = !!v && !NAME_RE.test(v);
+        h.hidden = !bad;
+        const b = document.querySelector('[data-act="shareNameSave"]');
+        if (b) b.disabled = bad;
+    }
+    document.addEventListener('input', (e) => { if (e.target.id === 'shareNameInput') syncShareName(); });
     function drawSettings() {
         const s = S.settings, w = s.panelWeb;
+        // What was typed but not saved yet (port, password, name) comes back after the redraw.
+        const typed = {};
+        for (const id of TYPED) { const i = document.getElementById(id); if (i && i.value !== (i.dataset.saved || '')) typed[id] = i.value; }
         $('#tab-settings').innerHTML = `
         <div class="rows">
           <div class="section-title">${H('settings.section.clicking')}</div>
@@ -1479,11 +1649,11 @@
             <button class="small" data-act="setMain">${H(s.main && s.main.userId ? 'settings.main.change' : 'main.set')}</button></div>
           ${sw('resumeOnLaunch', s.resumeOnLaunch, 'resume')}
           <div class="row"><div class="main"><div class="title">${H('settings.auto.title')}</div><div class="desc">${H('settings.auto.desc')}</div></div>
-            <label><input type="number" min="0" max="100" step="0.01" value="${s.autoCasePct}" data-act="setting" data-key="autoCasePct"> %</label>
+            <label><input type="number" min="0" max="100" step="0.01" value="${s.autoCasePct}" data-act="setting" data-key="autoCasePct" aria-label="${H('settings.auto.title')}"> %</label>
             <div class="extra"><button class="small" data-act="allAuto">${H('settings.auto.all')}</button></div></div>
           ${row('caseValue')}
           <div class="row"><div class="main"><div class="title">${H('settings.maxPerIp.title')}</div><div class="desc">${H('settings.maxPerIp.desc', { max: 20 })}</div></div>
-            <input type="number" min="1" max="20" value="${s.maxPerIp}" data-act="setting" data-key="maxPerIp"></div>
+            <input type="number" min="1" max="20" value="${s.maxPerIp}" data-act="setting" data-key="maxPerIp" aria-label="${H('settings.maxPerIp.title')}"></div>
 
           <div class="section-title">${H('settings.section.app')}</div>
           ${sw('startMinimized', s.startMinimized)}
@@ -1491,8 +1661,10 @@
           ${sw('closeToTray', s.closeToTray)}
           ${sw('cleanOldSignIns', s.cleanOldSignIns !== false)}
 
+          <div class="section-title">${H('look.section')}</div>
+          ${lookHtml(s)}
           <div class="row"><div class="main"><div class="title">${H('settings.theme.title')}</div><div class="desc">${H((S.themes || []).length ? 'settings.theme.desc' : 'settings.theme.none')}</div></div>
-            <select data-act="setting" data-key="theme">
+            <select data-act="setting" data-key="theme" aria-label="${H('settings.theme.title')}">
               <option value="">${H('settings.theme.default')}</option>
               ${(S.themes || []).map(t => `<option value="${esc(t.id)}" ${s.theme === t.id ? 'selected' : ''}>${esc(t.name)}</option>`).join('')}
               ${s.theme && !(S.themes || []).some(t => t.id === s.theme) ? `<option value="${esc(s.theme)}" selected>${H('settings.theme.off', { id: esc(s.theme) })}</option>` : ''}
@@ -1500,16 +1672,17 @@
 
           ${S.stats && S.stats.available ? `<div class="section-title">${H('settings.section.sharing')}</div>
           ${sw('shareStats', s.shareStats)}
-          ${SHARE_CATS.map(c => `<div class="row sub${s.shareStats ? '' : ' off'}"><label class="switch"><input type="checkbox" data-act="shareMore" data-key="${c}" ${(s.shareMore || {})[c] ? 'checked' : ''} ${s.shareStats ? '' : 'disabled'}><i></i></label>
+          ${SHARE_CATS.map(c => `<div class="row sub${s.shareStats ? '' : ' off'}"><label class="switch"><input type="checkbox" data-act="shareMore" data-key="${c}" aria-label="${H(`share.cat.${c}.title`)}" ${(s.shareMore || {})[c] ? 'checked' : ''} ${s.shareStats ? '' : 'disabled'}><i></i></label>
             <div class="main"><div class="title">${H(`share.cat.${c}.title`)}</div><div class="desc">${H(`share.cat.${c}.desc`)}</div></div></div>`).join('')}
-          ${row('shareName', `<input id="shareNameInput" maxlength="32" autocomplete="off" spellcheck="false" placeholder="${H('share.name.placeholder')}" value="${esc(s.shareName || '')}">
-            <button class="small" data-act="shareNameSave">${H('settings.shareName.save')}</button>`)}
+          ${row('shareName', `<input id="shareNameInput" aria-label="${H('settings.shareName.title')}" maxlength="32" autocomplete="off" spellcheck="false" placeholder="${H('share.name.placeholder')}" value="${esc(s.shareName || '')}">
+            <button class="small" data-act="shareNameSave">${H('settings.shareName.save')}</button>
+            <div class="extra share-hint bad" id="shareNameHint" role="alert" hidden>${H('settings.shareName.bad')}</div>`)}
           ${row('statsPreview', `<button class="small" data-act="statsPreview">${H('settings.statsPreview.button')}</button>`)}
           ${row('shareWalk', `<button class="small" data-act="shareWalk">${H('settings.shareWalk.button')}</button>`)}` : ''}
 
           <div class="section-title">${H('settings.section.web')}</div>
           <div class="row">
-            <label class="switch"><input type="checkbox" data-act="web" ${w.enabled ? 'checked' : ''}><i></i></label>
+            <label class="switch"><input type="checkbox" data-act="web" aria-label="${H('settings.web.title')}" ${w.enabled ? 'checked' : ''}><i></i></label>
             <div class="main"><div class="title">${H('settings.web.title')}</div>
               <div class="desc">${H('settings.web.desc', { port: w.port })}</div></div>
             <div class="extra">
@@ -1531,6 +1704,9 @@
           ${webLook ? '' : row('data', `<button class="small" data-act="openDataFolder">${H('settings.data.button')}</button>`)
               + row('quit', `<button class="small danger" data-act="quit">${H('settings.quit.button')}</button>`)}
         </div>`;
+        for (const id of TYPED) { const i = document.getElementById(id); if (!i) continue; i.dataset.saved = i.value; if (id in typed) i.value = typed[id]; }
+        paintSwatches($('#tab-settings'));
+        syncShareName();
     }
 
     // Income over the last 24 hours: hourly averages of the header's estimate (core/income.js).
@@ -1542,7 +1718,7 @@
             <i data-h="${Math.max(2, Math.round(h.avg / max * 100))}"></i><span>${new Date(h.h).getHours()}</span></div>`).join('');
         const html = last.length ? `<div class="statrow"><div class="stat"><span>${H('income.last24')}</span><b>${esc(money(sum24))}</b></div>
               <div class="stat"><span>${H('income.last7')}</span><b>${esc(money(sum7))}</b></div></div>
-            <div class="ichart">${bars}</div><div class="muted">${H('income.note')}</div>` : `<div class="muted">${H('income.empty')}</div>`;
+            <div class="ichart">${bars}</div><div class="muted">${H('income.note')}</div>` : emptyHtml(H('income.empty'), '', '', true);
         const p = modal({ title: T('income.title'), html, cancel: false, ok: T('pluginmodal.done'), wide: true });
         document.querySelectorAll('#modal .ichart i').forEach(i => { i.style.height = i.dataset.h + '%'; });
         return p;
@@ -1556,7 +1732,7 @@
             case 'none': return H('settings.update.none', { ago: ago(u.checkedAt) });
             case 'downloading': return H('settings.update.downloading', { version: u.version, percent: u.percent || 0 });
             case 'ready': return H('settings.update.ready', { version: u.version });
-            case 'error': return H('settings.update.error', { error: u.error || '' });
+            case 'error': return H('settings.update.error', { error: plainError(u.error) });
             case 'off': return H('settings.update.off');
             default: return H('settings.update.idle');
         }
@@ -1575,7 +1751,7 @@
     };
 
     const TOUR = [
-        {}, { el: '#add' }, { el: '#summary' }, { sample: 'hero' }, { sample: 'meters' },
+        {}, { el: '#add' }, {}, { el: '#summary' }, { sample: 'hero' }, { sample: 'meters' },
         { sample: 'kv' }, { sample: 'foot' }, { el: '#tabs' }, { el: '#report' }, { finish: true },
     ];
 
@@ -1673,6 +1849,64 @@
         if (first) first.focus({ preventScroll: true });
     }
 
+    // --- look (Settings > Look: accent presets, custom colours) -------------
+    // panel/look.js works the colours out; they go in a constructed sheet ahead of a plugin theme's (which wins).
+    // Kept in localStorage too, so the panel opens in its colours instead of flashing the default first.
+    const LOOK = window.ZSBLook;
+    let lookSheet = null, lookSeen = null;
+    function applyLook(look) {
+        if (!LOOK) return;
+        if (!lookSheet) { lookSheet = new CSSStyleSheet(); document.adoptedStyleSheets = [lookSheet, ...document.adoptedStyleSheets]; }
+        try { lookSheet.replaceSync(LOOK.css(look)); } catch (_) { lookSheet.replaceSync(''); }
+        document.documentElement.dataset.look = LOOK.vars(look).light ? 'light' : 'dark';
+        // no GPU here: Fancy stays off (its glows and background would keep the CPU busy), the setting is kept
+        const clean = LOOK.clean(look), fancy = clean.graphics === 'fancy' && !(window.ZSBFancy && window.ZSBFancy.noGpu);
+        document.documentElement.dataset.graphics = fancy ? 'fancy' : 'simple';
+        if (window.ZSBFancy) window.ZSBFancy.set(fancy, clean.scene);
+    }
+    try { const saved = JSON.parse(localStorage.getItem('zsb.look') || 'null'); if (saved) { applyLook(saved); lookSeen = JSON.stringify(saved); } } catch (_) {}
+    function syncLook() {
+        const look = S.settings && S.settings.look, k = JSON.stringify(look || null);
+        if (k === lookSeen) return;
+        lookSeen = k;
+        applyLook(look);
+        try { localStorage.setItem('zsb.look', k); } catch (_) {}
+    }
+    // Settings > Look: the accent buttons, the four colour boxes when it's Custom, then background, text size, corners, spacing.
+    function lookHtml(s) {
+        if (!LOOK) return '';
+        const look = LOOK.clean(s.look), custom = look.custom || LOOK.DEFAULT_CUSTOM, on = look.accent === 'custom';
+        // No GPU here: Fancy can't be used, so the Graphics choice becomes a note and Scene goes
+        const noGpu = !!(window.ZSBFancy && window.ZSBFancy.noGpu);
+        const opt = ([k, vals]) => ((k === 'mode' && on) || (k === 'scene' && (look.graphics !== 'fancy' || noGpu))) ? ''
+            : k === 'graphics' && noGpu ? `<div class="look-opt"><span>${H('look.graphics')}</span><p class="look-note">${H('look.graphics.noGpu')}</p></div>` : `<div class="look-opt"><span>${H('look.' + k)}</span><div class="seg" role="group" aria-label="${H('look.' + k)}">${vals.map(v => `<button class="${look[k] === v ? 'on' : ''}" aria-pressed="${look[k] === v}" data-act="lookSet" data-key="${k}" data-id="${v}">${H('look.' + k + '.' + v)}</button>`).join('')}</div></div>`;
+        const sw = (id, color) => `<button class="look-sw${look.accent === id ? ' on' : ''}" data-act="lookAccent" data-id="${id}" aria-pressed="${look.accent === id}"${color ? ` data-swatch="${color}"` : ''}><i></i>${H('look.accent.' + id)}</button>`;
+        const warn = on ? LOOK.vars(look).warn : [];
+        return `<div class="row look-row"><div class="main"><div class="title">${H('look.title')}</div><div class="desc">${H('look.desc')}</div></div><div class="look-body">
+          <div class="look-sws" role="group" aria-label="${H('look.title')}">${LOOK.PRESETS.map(([id]) => sw(id, LOOK.accentOf(id, look.mode))).join('')}${sw('custom', custom.accent)}</div>
+          ${on ? `<div class="look-custom">${LOOK.KEYS.map(k => `<label class="look-color"><input type="color" value="${custom[k]}" data-act="lookColor" data-key="${k}" aria-label="${H('look.color.' + k)}"><span>${H('look.color.' + k)}</span></label>`).join('')}
+            <button class="small" data-act="lookReset">${H('look.reset')}</button></div>
+            <p class="look-warn"${warn.length ? '' : ' hidden'}>${warn.map(w => H('look.warn.' + w)).join(' ')}</p>` : ''}
+          <div class="look-opts">${LOOK.CHOICES.map(opt).join('')}</div></div></div>`;
+    }
+    // Swatch colours go in through CSSOM (the page's rules don't allow style attributes).
+    function paintSwatches(root) { root.querySelectorAll('[data-swatch]').forEach(n => n.style.setProperty('--sw', n.dataset.swatch)); }
+    // Dragging a colour box shows it right away; letting go saves it.
+    function lookCustomNow() {
+        const look = LOOK.clean(S.settings.look), c = { ...(look.custom || LOOK.DEFAULT_CUSTOM) };
+        document.querySelectorAll('[data-act="lookColor"]').forEach(i => { c[i.dataset.key] = i.value; });
+        return { ...look, accent: 'custom', custom: c };
+    }
+    document.addEventListener('input', (e) => {
+        if (!LOOK || !e.target.matches || !e.target.matches('[data-act="lookColor"]')) return;
+        const look = lookCustomNow();
+        applyLook(look);
+        const sw = document.querySelector('.look-sw[data-id="custom"]');
+        if (sw) sw.style.setProperty('--sw', look.custom.accent);
+        const w = document.querySelector('.look-warn'), list = LOOK.vars(look).warn;
+        if (w) { w.hidden = !list.length; w.textContent = list.map(x => T('look.warn.' + x)).join(' '); }
+    });
+
     // --- plugin theme ----------------------------------------------------
     // The theme picked in Settings (a plugin's ctx.panel.theme): its colour variables and CSS go in one constructed
     // stylesheet (the page's CSP allows no <style> tags, and needs none for this). Fetched only when its stamp
@@ -1704,6 +1938,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         catch (e) { $('#summary').textContent = T('header.unreachable'); return; }
         if (studio) studioAdjust(S);
         syncTheme();
+        syncLook();
         // A theme plugin turned on or off: the Settings picker lists it.
         const th = JSON.stringify([S.themes || [], S.settings.theme]);
         if (th !== themesSeen) { themesSeen = th; settingsDrawn = false; }
@@ -1721,12 +1956,33 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         else if (tab === 'settings' && !settingsDrawn) { drawSettings(); settingsDrawn = true; }
         else if (tab === 'settings') { const u = $('#updateText'); if (u) setHtml(null, updateText(), u); }
         if (TR.open) { if (TR.view === 'clicks') pullClicks(); else drawTrouble(); }
+        paintBusy();
     }
+
+    // A button whose work takes a moment (the site answers, a window opens) dims until it is through, and a second
+    // press waits. Kept by action + id, not by element: a redraw swaps the button for a new one mid-wait.
+    const BUSY_ACTS = new Set(['start', 'stop', 'folderStart', 'folderStop', 'add', 'relogin', 'pluginToggle', 'pluginInstall', 'pluginRemove', 'pluginReload', 'pluginCatalog', 'checkUpdates', 'webSave']);
+    const HEAD_BUSY = { 'add|': '#add', 'startAll|': '#startAll', 'stopAll|': '#stopAll' };
+    const busyKeys = new Set();
+    const busyKey = (el) => el.dataset.act + '|' + (el.dataset.id || '');
+    function paintBusy() {
+        const mark = (el, on) => { if (on) { el.setAttribute('data-busy', ''); el.setAttribute('aria-busy', 'true'); } else { el.removeAttribute('data-busy'); el.removeAttribute('aria-busy'); } };
+        for (const el of document.querySelectorAll('[data-busy]')) if (!(el.dataset.act ? busyKeys.has(busyKey(el)) : busyKeys.has(el.id + '|'))) mark(el, false);
+        if (!busyKeys.size) return;
+        for (const el of document.querySelectorAll('[data-act]')) if (busyKeys.has(busyKey(el))) mark(el, true);
+        for (const [k, sel] of Object.entries(HEAD_BUSY)) if (busyKeys.has(k)) mark($(sel), true);
+    }
+    async function busyRun(key, fn) {
+        if (key) { if (busyKeys.has(key)) return; busyKeys.add(key); paintBusy(); }
+        try { await fn(); } catch (err) { actFailed(err); }
+        finally { if (key) { busyKeys.delete(key); paintBusy(); } }
+    }
+    const runAct = (el, e) => busyRun(BUSY_ACTS.has(el.dataset.act) ? busyKey(el) : '', () => act(el, e));
 
     async function act(el, e) {
         const a = el.dataset.act, id = el.dataset.id;
         switch (a) {
-            case 'menu': { const m = cards.get(id).f.menu; closeMenus(m); m.hidden = !m.hidden; return; }
+            case 'menu': { const m = cards.get(id).f.menu; closeMenus(m); m.hidden = !m.hidden; menuToggled(el, m); return; }
             case 'tabGroup': {
                 const g = el.dataset.group, m = el.parentNode.querySelector('.tab-menu');
                 closeMenus(m);
@@ -1737,6 +1993,12 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
                 el.setAttribute('aria-expanded', String(openGroup === g));
                 return;
             }
+            case 'acctFilter': filterBy = FILTERS.includes(id) ? id : 'all'; drawAccounts(); return;
+            case 'selectMode': setSelecting(!selecting); return;
+            case 'bulkAll': for (const x of shownIds()) picked.add(x); setSelecting(true); return;
+            case 'bulkNone': picked.clear(); setSelecting(true); return;
+            case 'bulk': await bulkAct(el.dataset.what, el.dataset.arg); break;
+            case 'acctClear': { searchQ = ''; filterBy = 'all'; const box = $('#tab-accounts .acct-search'); if (box) box.value = ''; drawAccounts(); return; }
             case 'compact': {
                 compact = !compact;
                 try { localStorage.setItem('zsb.compactCards', compact ? '1' : '0'); } catch (_) {}
@@ -1746,9 +2008,10 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
             case 'ovSort': {
                 const k = el.dataset.key;
                 ovSort = ovSort.key === k ? { key: k, dir: -ovSort.dir } : { key: k, dir: ['name', 'folder', 'status'].includes(k) ? 1 : -1 };
+                try { localStorage.setItem('zsb.ovSort', JSON.stringify(ovSort)); } catch (_) {}
                 drawOverview(); return;
             }
-            case 'folderMenu': { const m = sections.get(id).f.menu; closeMenus(m); m.hidden = !m.hidden; return; }
+            case 'folderMenu': { const m = sections.get(id).f.menu; closeMenus(m); m.hidden = !m.hidden; menuToggled(el, m); return; }
             case 'moveTo': { const acc = S.accounts.find(x => x.id === id); if (acc) await pickFolder(acc); break; }
             case 'folderNew': {
                 const name = await modal({ title: T('folders.new.title'), input: '', ok: T('folders.new.ok') });
@@ -1781,7 +2044,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
             case 'add': case 'relogin': {
                 toast(web ? T('toast.login.web') : T('toast.login.app'));
                 const r = await call(a === 'add' ? 'addAccount' : 'relogin', id);
-                if (r && r.ok) toast(r.replaced ? T('toast.login.again') : a === 'add' ? T('toast.login.added') : T('toast.login.again'));
+                if (r && r.ok) toast(r.replaced ? T('toast.login.again') : a === 'add' ? T(S.settings.main && S.settings.main.userId ? 'toast.login.added' : 'toast.login.addedNoMain') : T('toast.login.again'));
                 else if (r && r.error) toast(r.error === 'A login window is already open' ? T('toast.login.alreadyOpen') : T('toast.login.unfinished'));
                 break;
             }
@@ -1809,7 +2072,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
             case 'pluginToggle': {
                 const on = el.dataset.on === '1';
                 const r = await call('pluginEnable', id, on);
-                if (r && !r.ok) toast(r.error || T('toast.plugin.failed'));
+                if (r && !r.ok) toast(plainError(r.error) || T('toast.plugin.failed'), 'bad');
                 else if (on) {
                     await refresh();
                     // Nothing runs until accounts are chosen, so ask right away — in its own tab if it has one.
@@ -1824,16 +2087,21 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
             case 'pluginInstall': {
                 const e = catalogEntry(id);
                 toast(T('toast.plugin.installing', { name: e ? e.name : id }));
-                el.disabled = true;
                 const r = await call('pluginInstall', id);
                 toast(r && r.ok ? T('toast.plugin.installed', { name: e ? e.name : id, version: e ? e.version : '' })
                     : T('plugins.err.' + ((r && r.code) || 'download')));
                 break;
             }
             case 'pluginRemove': {
-                const p = S.plugins.find(x => x.id === id);
+                const p = S.plugins.find(x => x.id === id), name = p ? p.name : id;
+                if (!(await modal({ title: T('modal.pluginRemove.title', { name }), body: T('modal.pluginRemove.body'), ok: T('plugins.remove'), danger: true }))) return;
                 const r = await call('pluginRemove', id);
-                if (r && r.ok) toast(T('toast.plugin.removed', { name: p ? p.name : id }));
+                toast(r && r.ok ? T('toast.plugin.removed', { name }) : T('toast.plugin.removeFailed', { name }), r && r.ok ? '' : 'bad');
+                break;
+            }
+            case 'pluginReload': {
+                const r = await call('pluginReload', id);
+                toast(r && r.ok === false ? (plainError(r.error) || T('toast.failed')) : T('toast.plugin.reloaded'), r && r.ok === false ? 'bad' : '');
                 break;
             }
             case 'pluginCatalog': await call('pluginCatalog'); break;
@@ -1851,33 +2119,54 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
                 const b64 = await new Promise((res, rej) => { const r = new FileReader(); r.onload = () => res(String(r.result).split(',')[1] || ''); r.onerror = rej; r.readAsDataURL(f); });
                 toast(T('plugins.import.working'));
                 const r = await call('pluginImportZip', b64);
-                toast(r && r.ok ? T(r.verified ? 'plugins.import.done' : 'plugins.import.doneUnverified', { name: r.name, version: r.version }) : T('plugins.import.failed', { why: (r && r.error) || '?' }));
+                toast(r && r.ok ? T(r.verified ? 'plugins.import.done' : 'plugins.import.doneUnverified', { name: r.name, version: r.version }) : T('plugins.import.failed', { why: plainError(r && r.error) || '?' }), r && r.ok ? '' : 'bad');
                 break;
             }
             case 'setting': {
                 if (e.type !== 'change') return;
                 const v = el.type === 'checkbox' ? el.checked : el.value;
-                S.settings = await call('setSettings', { [el.dataset.key]: v });
+                if (!(await saveSettings({ [el.dataset.key]: v }))) break;
                 if (el.dataset.key === 'maxPerIp') el.value = S.settings.maxPerIp;
                 if (el.dataset.key === 'shareStats') settingsDrawn = false;   // the extras follow it
                 break;
             }
+            case 'lookAccent': {
+                const look = LOOK.clean(S.settings.look);
+                const next = { ...look, accent: id, custom: id === 'custom' ? look.custom || LOOK.DEFAULT_CUSTOM : look.custom };
+                if (await saveSettings({ look: next })) { syncLook(); settingsDrawn = false; }
+                break;
+            }
+            case 'lookColor': {
+                if (e.type !== 'change') return;
+                if (await saveSettings({ look: lookCustomNow() })) { syncLook(); settingsDrawn = false; }
+                break;
+            }
+            case 'lookReset': {
+                if (await saveSettings({ look: { ...LOOK.clean(S.settings.look), accent: 'custom', custom: LOOK.DEFAULT_CUSTOM } })) { syncLook(); settingsDrawn = false; }
+                break;
+            }
+            case 'lookSet': {
+                const look = LOOK.clean(S.settings.look);
+                if (look[el.dataset.key] === id) break;
+                if (await saveSettings({ look: { ...look, [el.dataset.key]: id } })) { syncLook(); settingsDrawn = false; }
+                break;
+            }
             case 'shareMore': {
                 if (e.type !== 'change') return;
-                S.settings = await call('setSettings', { shareMore: { [el.dataset.key]: el.checked } });
+                await saveSettings({ shareMore: { [el.dataset.key]: el.checked } });
                 break;
             }
             case 'shareNameSave': {
                 const inp = $('#shareNameInput'), v = tidyName(inp && inp.value);
-                if (v && !NAME_RE.test(v)) { toast(T('settings.shareName.bad')); return; }
-                S.settings = await call('setSettings', { shareName: v });
-                if (inp) inp.value = S.settings.shareName || '';
+                if (v && !NAME_RE.test(v)) { toast(T('settings.shareName.bad'), 'bad'); return; }
+                if (!(await saveSettings({ shareName: v }))) return;
+                if (inp) { inp.value = S.settings.shareName || ''; inp.dataset.saved = inp.value; }
                 toast(T(v ? 'settings.shareName.saved' : 'settings.shareName.cleared'));
                 return;
             }
             case 'shareWalk': shareWalkthrough(); return;
             case 'web': if (e.type === 'change') { await saveWeb({ enabled: el.checked }); } break;
-            case 'webSave': await saveWeb({ enabled: true }); break;
+            case 'webSave': await saveWeb({}); break;   // port and password only: on/off stays as the switch has it
             case 'openDataFolder': await call('openDataFolder'); break;
             case 'tour': settingsDrawn = false; startTour(); return;
             case 'whatsNew': showWhatsNew(true); return;
@@ -1885,18 +2174,35 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
             case 'incomeChart': showIncome(); return;
             case 'checkUpdates': await call('checkUpdates'); break;
             case 'installUpdate': toast(T('update.restarting')); await call('installUpdate'); return;
-            case 'allAuto': await call('setAllType', 'auto'); toast(T('toast.allAuto')); break;
+            case 'allAuto':
+                if (!(await modal({ title: T('modal.allAuto.title'), body: T('modal.allAuto.body'), ok: T('modal.allAuto.ok') }))) return;
+                await call('setAllType', 'auto'); toast(T('toast.allAuto')); break;
             case 'quit': if (await MODALS.quit()) call('quit'); break;
             default: return;
         }
-        refresh();
+        await refresh();
+    }
+
+    // Saves app settings. A save that fails keeps what was there and says so.
+    // A button whose work threw (the hub went away, a refused call): say so instead of doing nothing.
+    function actFailed(e) { console.error(e); toast(T('toast.failed'), 'bad'); }
+
+    async function saveSettings(patch) {
+        let r = null;
+        try { r = await call('setSettings', patch); } catch (_) {}
+        if (!r || typeof r !== 'object' || r.ok === false || r.error) { toast(T('toast.saveFailed'), 'bad'); settingsDrawn = false; return false; }
+        S.settings = r;
+        return true;
     }
 
     async function saveWeb(patch) {
         const pass = $('#webPass').value, port = $('#webPort').value;
         if (patch.enabled && !pass && !S.settings.panelWeb.hasPassword) { toast(T('toast.web.needsPassword')); settingsDrawn = false; return; }
-        S.settings = await call('setSettings', { panelWeb: { ...patch, port, ...(pass ? { password: pass } : {}) } });
-        toast(S.settings.panelWeb.enabled ? T('toast.web.on', { port: S.settings.panelWeb.port }) : T('toast.web.off'));
+        if (!(await saveSettings({ panelWeb: { ...patch, port, ...(pass ? { password: pass } : {}) } }))) return;
+        toast(patch.enabled === false ? T('toast.web.off') : S.settings.panelWeb.enabled ? T('toast.web.on', { port: S.settings.panelWeb.port }) : T('toast.web.saved'));
+        // Saved: the typed port and password are no longer "unsaved", so the redraw shows what the hub now has.
+        $('#webPass').value = '';
+        for (const id of ['webPort', 'webPass']) $('#' + id).dataset.saved = $('#' + id).value;
         settingsDrawn = false;
     }
 
@@ -1906,7 +2212,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         try { await navigator.clipboard.writeText(text); toast(T('toast.report.web')); }
         catch (_) {   // plain http isn't a "secure context" for the clipboard API
             const ta = document.createElement('textarea'); ta.value = text; document.body.appendChild(ta); ta.select();
-            try { document.execCommand('copy'); toast(T('toast.report.web')); } catch (_) { toast(T('toast.report.failed')); }
+            try { document.execCommand('copy'); toast(T('toast.report.web')); } catch (_) { toast(T('toast.report.failed'), 'bad'); }
             ta.remove();
         }
     }
@@ -1915,7 +2221,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
     // Report (copy it, with what's wrong right now), Sessions (where each account is signed in, signing those out) and
     // Clicks (refused and missed batches per account, the likely cause, each connection). Sessions are asked for only
     // while that view is open, three accounts at a time.
-    const TR = { open: false, view: 'report', sess: new Map(), openRows: new Set(), clicks: null, busy: false, queue: null, testing: false };
+    const TR = { open: false, view: (() => { try { const v = localStorage.getItem('zsb.troubleView'); return ['report', 'sessions', 'clicks'].includes(v) ? v : 'report'; } catch (_) { return 'report'; } })(), sess: new Map(), openRows: new Set(), clicks: null, busy: false, queue: null, testing: false };
     const trBox = () => $('#trouble .modal-box');
     const plural = (n) => (n === 1 ? T('trouble.report.one') : T('trouble.report.many', { n }));
     const fmtDate = (t) => (t ? new Date(t).toLocaleDateString(undefined, { day: 'numeric', month: 'short', year: new Date(t).getFullYear() === new Date().getFullYear() ? undefined : 'numeric' }) : '—');
@@ -1962,7 +2268,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
             <span class="muted tr-count">${[c.app ? H('trouble.report.app') : '', c.n ? esc(plural(c.n)) : ''].filter(Boolean).join(' · ')}</span></li>`).join('');
         return `<p class="muted">${H('trouble.report.body')}</p>
             <div class="tr-sub">${H('trouble.report.problems')}</div>
-            ${rows ? `<ul class="tr-issues">${rows}</ul>` : `<div class="tr-empty">${H('trouble.report.none')}</div>`}
+            ${rows ? `<ul class="tr-issues">${rows}</ul>` : emptyHtml(H('trouble.report.none'))}
             <div class="btns"><button class="primary" data-tr="copy">${H('trouble.report.copy')}</button></div>`;
     }
 
@@ -1978,6 +2284,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
     }
 
     function troubleSessions() {
+        if (!S.accounts.length) return emptyHtml(H('trouble.sessions.none'), H('trouble.sessions.noneHint'));
         const earlier = [...TR.sess.values()].reduce((n, x) => n + (x.ok ? x.earlier : 0), 0);
         const rows = S.accounts.map(a => {
             const x = TR.sess.get(a.id), open = TR.openRows.has(a.id) && x && x.ok;
@@ -2022,7 +2329,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         const tested = new Map(((c.tested && c.tested.routes) || []).map(x => [x.id, x]));
         const routes = c.routes.map(r => {
             const t = tested.get(r.id), ip = (t && t.ip) || r.ip;
-            const test = !t ? '' : !t.ok ? `<span class="tr-bad">${H('trouble.routes.failed', { why: esc(t.error) })}</span>`
+            const test = !t ? '' : !t.ok ? `<span class="tr-bad">${H('trouble.routes.failed', { why: plainError(t.error) })}</span>`
                 : `<span class="${t.ms > 3000 ? 'tr-warn' : 'muted'}">${H(t.ms > 3000 ? 'trouble.routes.slow' : 'trouble.routes.ms', { ms: t.ms })}</span>`
                     + (t.sharedWith.length ? ` <span class="tr-warn">${H('trouble.routes.shared', { names: esc(t.sharedWith.map(routeName).join(', ')) })}</span>` : '');
             return `<li><b>${esc(routeName(r.id))}</b>
@@ -2032,12 +2339,13 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         return `<p class="muted">${H('trouble.clicks.body')}</p>
             ${live.length ? `<div class="table-wrap"><table class="tr-table"><thead><tr><th>${H('trouble.clicks.account')}</th><th>${H('trouble.clicks.route')}</th>
                 <th class="num">${H('trouble.clicks.refused')}</th><th class="num">${H('trouble.clicks.ip')}</th><th class="num">${H('trouble.clicks.missed')}</th><th>${H('trouble.clicks.cause')}</th></tr></thead>
-                <tbody>${rows}</tbody></table></div>` : `<div class="tr-empty">${H('trouble.clicks.none')}</div>`}
+                <tbody>${rows}</tbody></table></div>` : emptyHtml(H('trouble.clicks.none'))}
             <div class="tr-sub tr-subrow"><span>${H('trouble.routes.title')}</span><button class="small" data-tr="test" ${TR.testing ? 'disabled' : ''}>${H(TR.testing ? 'trouble.routes.testing' : 'trouble.routes.test')}</button></div><ul class="tr-routes">${routes}</ul>`;
     }
 
     function drawTrouble() {
         if (!TR.open || !S) return;
+        if (TR.savedView !== TR.view) { TR.savedView = TR.view; try { localStorage.setItem('zsb.troubleView', TR.view); } catch (_) {} }
         const tabs = ['report', 'sessions', 'clicks'].map(v => `<button role="tab" aria-selected="${TR.view === v}" class="${TR.view === v ? 'on' : ''}" data-tr="view" data-view="${v}">${H('trouble.tab.' + v)}</button>`).join('');
         const body = TR.view === 'sessions' ? troubleSessions() : TR.view === 'clicks' ? troubleClicks() : troubleReport();
         setHtml(null, `<div class="tr-head"><h3 id="troubleTitle">${H('trouble.title')}</h3><button class="small ghost" data-tr="close" aria-label="${H('trouble.close')}">${H('trouble.close')}</button></div>
@@ -2050,7 +2358,17 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         drawTrouble();
     }
 
-    // Every account's sessions, three at a time; the window redraws as each one comes in.
+    // One account's line in the Sessions list, updated in place (an open row needs the whole list drawn).
+    function sessRow(id) {
+        if (!TR.open || TR.view !== 'sessions') return;
+        const row = [...trBox().querySelectorAll('.tr-row')].find(b => b.dataset.id === id);
+        if (!row || TR.openRows.has(id)) { drawTrouble(); return; }
+        const x = TR.sess.get(id);
+        row.disabled = !(x && x.ok);
+        row.querySelector('.tr-sum').innerHTML = sessionSummary(x);
+    }
+
+    // Every account's sessions, three at a time; each line updates as its answer comes in.
     async function checkSessions(have) {   // have: an account whose list is already here
         const ids = S.accounts.map(a => a.id).filter(x => x !== have), queue = { ids: [...ids] };
         TR.queue = queue;
@@ -2060,9 +2378,9 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         const worker = async () => {
             while (TR.queue === queue && queue.ids.length) {
                 const id = queue.ids.shift();
-                TR.sess.set(id, { state: 'loading' }); drawTrouble();
+                TR.sess.set(id, { state: 'loading' }); sessRow(id);
                 const r = await call('troubleSessions', id).catch(() => ({ ok: false, why: 'net' }));
-                if (TR.queue === queue) { TR.sess.set(id, r); drawTrouble(); }
+                if (TR.queue === queue) { TR.sess.set(id, r); sessRow(id); }
             }
         };
         await Promise.all([worker(), worker(), worker()]);
@@ -2192,15 +2510,27 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         };
     }
 
+    function menuToggled(btn, m) {
+        btn.setAttribute('aria-expanded', String(!m.hidden));
+        if (m.hidden) { if (menuOpen && menuOpen.menu === m) menuOpen = null; } else menuOpen = { btn, menu: m };
+    }
+    // Esc closes an open ⋯ or tab menu and puts focus back on its button.
+    document.addEventListener('keydown', (e) => {
+        if (e.key !== 'Escape' || !$('#modal').hidden) return;
+        const btn = menuOpen ? menuOpen.btn : openGroup ? document.querySelector('[data-act="tabGroup"][aria-expanded="true"]') : null;
+        if (!btn) return;
+        closeMenus();
+        if (btn.isConnected) btn.focus();
+    });
     document.addEventListener('click', (e) => {
         if (!e.target.closest('.menu, [data-act="menu"], [data-act="folderMenu"], [data-act="tabGroup"]')) closeMenus();
         const el = e.target.closest('[data-act]');
         if (el && el.closest('.menu')) closeMenus();
         if (!el || el.tagName === 'INPUT') return;
-        act(el, e);
+        runAct(el, e);
     });
-    document.addEventListener('change', (e) => { const el = e.target.closest('[data-act]'); if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT')) act(el, e); });
-    $('#add').addEventListener('click', () => act({ dataset: { act: 'add' } }, {}));
+    document.addEventListener('change', (e) => { const el = e.target.closest('[data-act]'); if (el && (el.tagName === 'INPUT' || el.tagName === 'SELECT')) runAct(el, e); });
+    $('#add').addEventListener('click', () => runAct({ dataset: { act: 'add' } }, {}));
     $('#import').addEventListener('click', () => importModal());
 
     // Import accounts: paste a list, see what was understood as you type, then sign them in.
@@ -2208,7 +2538,8 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         let text = '', timer = null;
         const p = modal({ title: T('import.title'), wide: true, ok: T('import.ok'),
             html: `<div class="muted">${H('import.body')}</div><textarea id="importText" class="import-text" rows="8" spellcheck="false" autocomplete="off" placeholder="${H('import.placeholder')}"></textarea><div id="importPreview" class="muted import-preview"></div>` });
-        const box = $('#modal .modal-box'), out = box.querySelector('#importPreview');
+        const box = $('#modal .modal-box'), out = box.querySelector('#importPreview'), okBtn = box.querySelector('[data-m="ok"]');
+        okBtn.disabled = true;   // nothing to import until the list has an account the hub doesn't have yet
         box.querySelector('#importText').focus();
         box.oninput = (e) => {
             if (e.target.id !== 'importText') return;
@@ -2218,16 +2549,17 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
                 const r = await call('importPreview', text);
                 if (!r) return;
                 const fresh = r.found.filter(f => !f.already).length, already = r.found.length - fresh;
+                okBtn.disabled = !fresh;
                 setHtml(null, `<div><b>${H('import.found', { n: fresh })}</b>${already ? ` · ${H('import.already', { n: already })}` : ''}${r.skipped.length ? ` · ${H('import.skipped', { n: r.skipped.length })}` : ''}</div>`
                     + (r.skipped.length ? `<ul class="import-skips">${r.skipped.slice(0, 8).map(s => `<li>${esc(s.line)} — ${esc(s.why)}</li>`).join('')}</ul>` : ''), out);
             }, 250);
         };
         if (!(await p)) return;
         const r = await call('importStart', text);
-        toast(r && r.ok ? T('toast.import.started', { n: r.total }) : (r && r.error) || T('toast.plugin.failed'));
+        toast(r && r.ok ? T('toast.import.started', { n: r.total }) : plainError(r && r.error) || T('toast.failed'), r && r.ok ? '' : 'bad');
     }
-    $('#startAll').addEventListener('click', async () => { if (!(S.settings.main && S.settings.main.userId)) { await setMainModal(); return; } await call('startAll'); refresh(); });
-    $('#stopAll').addEventListener('click', async () => { await call('stopAll'); refresh(); });
+    $('#startAll').addEventListener('click', async () => { if (!(S.settings.main && S.settings.main.userId)) { await setMainModal(); return; } busyRun('startAll|', async () => { await call('startAll'); await refresh(); }); });
+    $('#stopAll').addEventListener('click', () => busyRun('stopAll|', async () => { await call('stopAll'); await refresh(); }));
     $('#report').addEventListener('click', () => openTrouble());
     {
         const t = $('#trouble');
@@ -2244,10 +2576,12 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
     (async () => {
         try { TX = await call('text'); } catch (_) {}
         applyStaticText();
+        // Back on the tab that was open last time (a plugin's tab that is gone falls back to Accounts in drawTabs).
+        if (!studio) try { const t = localStorage.getItem('zsb.tab'); if (t && (/^(accounts|overview|plugins|log|settings)$/.test(t) || t.startsWith('plugin:'))) tab = t; } catch (_) {}
         if (studio) window.parent.postMessage({ clickerStudio: 'ready' }, location.origin);
         refresh(); pullLogs();
         setInterval(refresh, 1500);
         setInterval(pullLogs, 2000);
-        setInterval(() => { if (tab === 'accounts') for (const c of cards.values()) tickCard(c); }, 250);
+        setInterval(() => { if (tab === 'accounts' && !document.hidden) for (const c of cards.values()) if (cardShows(c)) tickCard(c); }, 250);
     })();
 })();

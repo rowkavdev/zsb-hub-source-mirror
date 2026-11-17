@@ -773,20 +773,20 @@ module.exports = {
             } : {
                 type: 'hero',
                 title: !n ? 'Choose accounts to open on' : !ready.length ? 'Pick something to open' : `Ready to open ${itemsTxt}`,
-                text: !n ? 'Which accounts — below.' : !ready.length ? 'What to open — below.'
+                text: !n ? 'Accounts — below.' : !ready.length ? 'What to open — below.'
                     : `${anyBuy ? `Buys ${count(tBuy)} for ${money(tCost)}` : 'Opens what\'s in stock'} on ${ready.length} account${ready.length === 1 ? '' : 's'}, ${maxLanes_} at a time · drops ${dropsTxt}${S('exclusive') ? ' · other plugins wait until it\'s done' : ''}${ready.length < n ? ` · ${n - ready.length} with nothing chosen` : ''}`,
                 buttons: ready.length ? [
                     { label: 'Open now', action: 'open', primary: true, confirm: !setsOn
                         ? `${buying && !blockedBuy ? `${buyTxt} and open it` : `Open the ${item.name} in stock`} on ${n} account${n === 1 ? '' : 's'}? Drops are ${dropsTxt}.`
                         : `Open on ${ready.length} account${ready.length === 1 ? '' : 's'}: ${byItem.map(([nm, k]) => `${nm} on ${k}`).join(', ')}${anyBuy ? ` (buying about ${money(tCost)} in all)` : ''}? Drops are ${dropsTxt}.` },
-                    { label: 'Preview', action: 'preview' }] : [],
+                    { label: 'Practice run', action: 'preview' }] : [],
             };
 
             return { pin: act.length ? 'running' : undefined, blocks: [
                 hero,
                 ...(paused ? [{ type: 'notice', level: 'bad', text: 'Buying is stopped: ' + paused }] : []),
                 ...(n ? [{ type: 'table', columns: ['Account', ...(setsOn ? ['Opens'] : []), 'Status', 'Opened', 'Left', 'Speed', 'Time left', 'Cash', ''], rows }] : []),
-                ...(plans.length && !act.length ? [{ type: 'section', title: 'Preview — what Open now would do', blocks: [
+                ...(plans.length && !act.length ? [{ type: 'section', title: 'Practice run — what Open now would do', blocks: [
                     { type: 'table', wrap: true, columns: ['Account', 'Would', 'When'], rows: plans.slice(0, 10).map(x => [x.name, x.lines.join(' · '), new Date(x.t).toLocaleTimeString()]) }] }] : []),
                 ...(t.opened ? [{ type: 'stats', items: [
                     { label: 'Opened today', value: count(t.opened) },
@@ -808,7 +808,7 @@ module.exports = {
                                 { label: 'Total cost', value: money(planCost) },
                             ] },
                             ...(short ? [{ type: 'notice', level: 'warn', text: `${short} account${short === 1 ? '' : 's'} can't cover ${count(each)}${num(S('keepMoney')) > 0 ? ` and keep ${money(num(S('keepMoney')))}` : ''} — ${short === 1 ? 'it buys' : 'they buy'} what the cash allows.` }] : []),
-                            { type: 'table', columns: ['Account', 'Cash', 'Buys', 'Cost', 'Cash after'],
+                            { type: 'table', empty: 'No accounts chosen yet.', columns: ['Account', 'Cash', 'Buys', 'Cost', 'Cash after'],
                                 rows: [...plan.map(p => [p.name, money(p.cash), p.short ? `${count(p.buy)} (short)` : count(p.buy), money(p.cost), money(p.cash - p.cost)]),
                                     ...(plan.length > 1 ? [['Total', money(plan.reduce((s, p) => s + p.cash, 0)), count(planBuy), money(planCost), money(plan.reduce((s, p) => s + p.cash - p.cost, 0))]] : [])] },
                         ] : []),
@@ -817,7 +817,7 @@ module.exports = {
                             { label: 'Drops worth', value: price > 0 ? pct(measured.value || 0, measured.opened * price) + ' of the cost' : money(measured.value || 0) },
                             { label: 'XP per open', value: +(measured.xp / measured.opened).toFixed(2) + '' },
                         ] }] : []),
-                        { type: 'section', title: 'Sets — other accounts open something else', text: 'A set has its own item, buying and accounts. Its accounts open that even when not ticked under Which accounts; everyone else opens the item above.', blocks: [
+                        { type: 'section', title: 'Sets — other accounts open something else', text: 'A set has its own item, buying and accounts. Its accounts open that even when not ticked under Accounts; everyone else opens the item above.', blocks: [
                             ...(setClash.length ? [{ type: 'notice', level: 'warn', text: `On more than one set: ${setClash.join(', ')} — each opens its first set's item.` }] : []),
                             { type: 'list', key: 'sets', summaries: sets.map(s => {
                                 const it = itemOf(s.item), k = chosenOn(s);
@@ -826,7 +826,7 @@ module.exports = {
                             }) },
                         ] },
                     ] },
-                { type: 'card', id: 'accounts', open: !n, title: 'Which accounts', summary: n ? `${n} account${n === 1 ? '' : 's'}${n > nd ? ` (${n - nd} on sets)` : ''} · ${maxLanes_} at a time${maxLanes_ < setLanes ? ` (${PER_IP} per IP)` : ''}${S('exclusive') ? ' · other plugins wait until done' : ''}` : 'none yet',
+                { type: 'card', id: 'accounts', open: !n, title: 'Accounts', summary: n ? `${n} account${n === 1 ? '' : 's'}${n > nd ? ` (${n - nd} on sets)` : ''} · ${maxLanes_} at a time${maxLanes_ < setLanes ? ` (${PER_IP} per IP)` : ''}${S('exclusive') ? ' · other plugins wait until done' : ''}` : 'none yet',
                     keys: ['accounts', 'lanes', 'exclusive'], blocks: capNote ? [{ type: 'notice', level: 'warn', text: capNote }] : [] },
                 { type: 'card', id: 'drops', open: false, title: 'Drops', summary: dropsTxt, keys: keep ? ['drops'] : ['drops', 'keepOver'] },
                 { type: 'card', id: 'boosts', open: false, title: 'Boosts', summary: boostKinds().length ? `keeps ${boostKinds().map(k => ({ caseOpenCountBoost: 'open count', caseOpenMultiplierBoost: 'multiplier', caseOpenCashback: 'cashback' })[k]).join(', ')} running while opening${S('boostBuy') ? ' · buys with ammo' : ''}` : 'off — opens at the account’s own size',

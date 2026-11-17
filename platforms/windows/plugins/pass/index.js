@@ -75,7 +75,8 @@ module.exports = {
                 { type: 'stats', items: [{ label: 'Free tiers claimed', value: totals.free.toLocaleString() }, { label: 'Pro tiers claimed', value: totals.premium.toLocaleString() }] },
                 { type: 'card', id: 'accounts', open: !n, title: 'Accounts', summary: n ? `${n} account${n === 1 ? '' : 's'}` : 'none yet', keys: ['accounts'], bare: true,
                     blocks: n ? [{ type: 'table', columns: ['Account', 'Tier', 'Pro pass', 'Claimed', 'Ready now'], rows }] : [] },
-                { type: 'card', id: 'claim', open: false, title: 'What to claim', summary: `${track} track${track === 'Free' ? '' : ' · Pro only on accounts with the Pro pass'} · every ${ctx.settings.get('checkEveryMin')} min`, keys: ['track', 'checkEveryMin'] },
+                { type: 'card', id: 'claim', open: false, title: 'What to claim', summary: `${track} track${track === 'Free' ? '' : ' · Pro only on accounts with the Pro pass'}`, keys: ['track'] },
+                { type: 'card', id: 'schedule', open: false, title: 'Schedule', summary: `every ${ctx.settings.get('checkEveryMin')} min`, keys: ['checkEveryMin'] },
             ] };
         });
 
