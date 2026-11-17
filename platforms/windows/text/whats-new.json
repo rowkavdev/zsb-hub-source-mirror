@@ -1,5 +1,9 @@
 {
   "_how": "One entry per released version, newest first. Each line is one bullet; **bold** works. Shown once after an update, and used as the release notes on GitHub. npm run release refuses a version with no entry here.",
+  "1.2.15": [
+    "**Card menus no longer hide behind other cards** — with Fancy graphics on, a card's ⋯ menu could open under the card below it (most often with compact cards). It now always opens on top.",
+    "**No more sideways scrollbar on hover** — with Fancy graphics on, the glow round the edge of whatever is under the mouse could make the page a little too wide, so a sideways scrollbar came and went. The glow now stays drawn without taking up room."
+  ],
   "1.2.14": [
     "**Skin themes** — a new built-in plugin that styles the whole panel after a CS2 skin: AK-47 | Neon Rider, AWP | Asiimov, AWP | Dragon Lore, AWP | Gungnir, Karambit | Fade or M4A4 | Howl. Each brings its own colours, fonts and small details (Asiimov is a light look). Turn it on in Plugins, then pick it in **Settings > Theme**; the Look choice sits right under it.",
     "**Fancy follows the theme** — the moving background takes the theme's colours and changes with it straight away, instead of keeping the colours it started with.",
