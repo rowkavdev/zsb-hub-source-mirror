@@ -145,6 +145,7 @@ const GAMES = {
 let ctx = null;
 let state = null;    // saved: { last: { aid: t }, games: { id: { plays, bet, back, rewards, tiers } }, cash, items, runs, plans, practiceAt }
 const busy = new Set();
+let halt = false;    // Stop pressed: the running accounts end after their current play
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
 const count = (n) => Math.round(n).toLocaleString('en-US');
@@ -220,7 +221,8 @@ async function run(aid, name) {
     const rec = { t: Date.now(), acct: name, plays: 0, net: 0, rewards: 0, cash: 0, tiers: 0, result: '' };
     // Switched off during a live run: stop after the current play (a Play now run while off isn't cut short).
     const wasOn = ctx.power.live();
-    const offNow = () => ctx.stopping || (wasOn && !ctx.power.live());
+    const offNow = () => ctx.stopping || halt || (wasOn && !ctx.power.live());
+    const offWhy = () => (halt && !ctx.stopping ? 'stopped by you' : 'turned off');
     if (!practice && ctx.accounts.setBusy) ctx.accounts.setBusy(aid, 'playing games');   // the Opener waits its turn
     try {
         let tokens = num((await ctx.request(aid, '/api/me')).json?.tokens);
@@ -312,13 +314,13 @@ async function run(aid, name) {
             const G = GAMES[g], s = stats(g);
             let played = 0;
             for (let i = 0; i < n; i++) {
-                if (offNow()) throw new Stop('turned off');
+                if (offNow()) throw new Stop(offWhy());
                 if (tokens - keep < G.stake) throw new Stop(`${G.label}: down to ${tok(tokens)} tokens`);
                 if (Date.now() > runEnds) break;   // time's up: the rest next run
                 const other = ctx.accounts.busy && ctx.accounts.busy(aid, ALONGSIDE);
                 if (other) throw new Stop(`waiting — ${other.what} (${other.plugin})`);
                 await seatWait(aid, () => offNow() || Date.now() > runEnds);
-                if (offNow()) throw new Stop('turned off');
+                if (offNow()) throw new Stop(offWhy());
                 playedRun.set(g, (playedRun.get(g) || 0) + 1);
                 if (G.open && !sessions.has(g)) {
                     if (g === 'crash') { if (crashFull(aid)) throw new Full(); crashSeats.add(aid); }
@@ -348,7 +350,7 @@ async function run(aid, name) {
             for (let pass = 0; pass < MAX_STEPS && active.length && Date.now() < runEnds; pass++) {
                 let moved = false, full = false;
                 for (const g of [...active]) {
-                    if (offNow()) throw new Stop('turned off');
+                    if (offNow()) throw new Stop(offWhy());
                     const other = ctx.accounts.busy && ctx.accounts.busy(aid, ALONGSIDE);
                     if (other) throw new Stop(`waiting — ${other.what} (${other.plugin})`);
                     let more = false;
@@ -402,6 +404,7 @@ async function run(aid, name) {
         state.last[aid] = Date.now();
         state.runs = [rec, ...(state.runs || [])].slice(0, 30);
         busy.delete(aid);
+        if (!busy.size) halt = false;
         if (ctx.accounts.setBusy) ctx.accounts.setBusy(aid, null);
         ctx.data.set(state);
     }
@@ -426,7 +429,7 @@ const runsOn = (aid) => ctx.settings.runsOn('accounts', aid) || (farm() || { acc
 const signal = () => { if (ctx.shared) ctx.shared.set('live', ctx.power.live() ? true : null); };
 
 function tick(asked) {
-    if (!asked && !ctx.power.live()) return;
+    if (!asked && !ctx.power.live() || halt) return;
     const every = num(S('everyMs')) || Math.max(5, num(S('everyMin'))) * 60000;
     for (const a of ctx.accounts.list()) {
         if (!a.healthy || busy.has(a.id) || !runsOn(a.id)) continue;
@@ -451,6 +454,12 @@ module.exports = {
             tick(true);
             return { message: ctx.power.practice() ? 'Practice run started — the plan shows up here in a moment.' : 'Playing now.' };
         });
+        // Stop: every running account ends after its current play (a Crash round finishes first). The schedule goes on.
+        ctx.panel.action('stop', () => {
+            if (!busy.size) return { message: 'Nothing is playing.' };
+            halt = true;
+            return { message: `Stopping ${busy.size} account${busy.size === 1 ? '' : 's'} after the current play.` };
+        });
 
         ctx.panel.tab('Games', () => {
             const practice = ctx.power.practice(), live = ctx.power.live();
@@ -464,8 +473,10 @@ module.exports = {
             return { blocks: [
                 { type: 'card', id: 'power', toggle: 'on', toggleDisabled: practice ? 'Set the mode to Live first' : null, bodyWhenOff: true, open: !live,
                     title: live ? (busy.size ? 'Games — on, playing now' : 'Games — on') : 'Games — off',
-                    summary: !n && !xp ? 'choose accounts first' : practice ? 'practice: nothing is played unless you press Run' : `live on ${n} account${n === 1 ? '' : 's'}, every ${Math.max(5, num(S('everyMin')))} min`,
-                    keys: ['runMode'], blocks: n || xp ? [{ type: 'buttons', items: [{ label: practice ? 'Practice run' : 'Play now', action: 'run', primary: true }] }] : [] },
+                    summary: !n && !xp ? 'choose accounts first' : practice ? 'practice: nothing is played unless you press Practice run' : `live on ${n} account${n === 1 ? '' : 's'}, every ${Math.max(5, num(S('everyMin')))} min`,
+                    keys: ['runMode'], blocks: n || xp ? [{ type: 'buttons', items: busy.size && !practice
+                        ? [{ label: halt ? 'Stopping…' : busy.size === 1 ? 'Stop' : `Stop all ${busy.size}`, action: 'stop', danger: true, disabled: halt }]
+                        : [{ label: practice ? 'Practice run' : 'Run now', action: 'run', primary: true }] }] : [] },
                 ...(plans.length ? [{ type: 'table', wrap: true, columns: ['Account', 'The last practice run would', 'When'], rows: plans.slice(0, 10).map(x => [x.name, x.lines.join(' · '), new Date(x.t).toLocaleTimeString()]) }] : []),
                 ...(bet ? [{ type: 'stats', items: [
                     { label: 'Profit', value: tok(back - bet + rw) + ' tokens' + (cash ? ` · $${cash}` : '') },
@@ -480,7 +491,8 @@ module.exports = {
                         summary: s.plays ? `${count(s.plays)} plays · ${s.tiers} tiers · ${tok(lossPerPlay(g))} lost a play${s.plays < MIN_SAMPLE ? ' (guess)' : ''}` : 'not played yet',
                         blocks: s.plays ? [{ type: 'stats', items: [{ label: 'Bets', value: tok(s.bet) }, { label: 'Back', value: tok(s.back) }, { label: 'Reward tokens', value: tok(s.rewards) }] }] : [] };
                 }) },
-                { type: 'card', id: 'careful', open: false, title: 'How careful', summary: `loss ≤ ${num(S('maxLoss'))} a tier · keep ${tok(num(S('keepTokens')))} tokens`, keys: ['maxLoss', 'keepTokens', 'maxPlays', 'everyMin'] },
+                { type: 'card', id: 'careful', open: false, title: 'How careful', summary: `loss ≤ ${num(S('maxLoss'))} a tier · keep ${tok(num(S('keepTokens')))} tokens`, keys: ['maxLoss', 'keepTokens', 'maxPlays'] },
+                { type: 'card', id: 'schedule', open: false, title: 'Schedule', summary: `every ${Math.max(5, num(S('everyMin')))} min`, keys: ['everyMin'] },
                 { type: 'card', id: 'xp', toggle: xp ? null : 'xpMode', open: false, title: 'Armory XP',
                     summary: xp ? `follows the Armory: ${Object.entries(xp.games).filter(([, on]) => on).map(([g]) => GAMES[g] ? GAMES[g].label : g).join(', ') || 'no games'} on ${xp.accounts.length} account${xp.accounts.length === 1 ? '' : 's'}`
                         : 'after the tiers, keep playing at the smallest bets up to each daily limit' },

@@ -326,6 +326,28 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
             engine.emit('change');
             return { ok: true };
         },
+        // The account cards' select mode: one action on many accounts. what: start | stop | type (arg auto/money/cases)
+        // | folder (arg folder id, '' = none, or { name } for a new one) | remove. Accounts already in that state are
+        // skipped; results has each started account's answer (the per-IP limit, a duplicate, no main account).
+        async accountsBulk(ids, what, arg) {
+            const list = [...new Set([].concat(ids || []))].map(id => store.get(id)).filter(Boolean);
+            if (!list.length) return { ok: false, error: 'No accounts chosen' };
+            const out = {};
+            if (what === 'start') { for (const a of list) if (a.token && !engine.isRunning(a.id)) out[a.id] = engine.start(a.id); }
+            else if (what === 'stop') { for (const a of list) if (engine.isRunning(a.id)) engine.stop(a.id); }
+            else if (what === 'type') {
+                if (!['auto', 'money', 'cases'].includes(arg)) return { ok: false, error: 'No such click type' };
+                for (const a of list) store.update(a.id, { type: arg });
+                log.add(null, `${list.length} accounts set to ${arg}`);
+            } else if (what === 'folder') {
+                const fid = arg && typeof arg === 'object' ? store.addFolder(String(arg.name || '').trim() || 'New folder').id : arg || null;
+                if (fid && !store.folders.some(f => f.id === fid)) return { ok: false, error: 'No such folder' };
+                for (const a of list) store.move(a.id, { before: a.id, folder: fid });
+            } else if (what === 'remove') { for (const a of list) await rpc.remove(a.id); }
+            else return { ok: false, error: 'No such action' };
+            engine.emit('change');
+            return { ok: true, n: list.length, results: out };
+        },
         async remove(id) {
             const a = store.get(id);
             if (!a) return { ok: false };

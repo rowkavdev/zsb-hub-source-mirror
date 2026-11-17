@@ -226,8 +226,9 @@ function render() {
     });
 
     return { blocks: [
-        { type: 'card', id: 'power', toggle: 'on', open: false, title: on ? 'Effects — queue on' : 'Effects — queue off',
-            summary: !on ? 'queued effects wait until this is on' : queued ? `${queued} queued, each starts once nothing of its kind runs` : 'nothing queued' },
+        { type: 'card', id: 'power', toggle: 'on', toggleDisabled: ctx.power.practice() ? 'Set the mode to Live first' : null, bodyWhenOff: true, open: ctx.power.practice(), keys: ['runMode'],
+            title: on ? 'Effects — queue on' : 'Effects — queue off',
+            summary: ctx.power.practice() ? 'practice: the queue only runs in Live' : !on ? 'queued effects wait until this is on' : queued ? `${queued} queued, each starts once nothing of its kind runs` : 'nothing queued' },
         { type: 'stats', items: [
             { label: 'Accounts', value: scopeName }, { label: 'Ammo', value: count(ammo) },
             { label: 'Picked', value: String(names.length) }, { label: 'Queued', value: count(queued) },

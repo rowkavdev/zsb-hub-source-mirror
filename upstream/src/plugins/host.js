@@ -12,7 +12,7 @@
  * other types, e.g. trade routes; a list starts empty and holds up to 50 rows.
  * manifest.tab: the title of the plugin's own tab (ctx.panel.tab) — its setup lives there, and the
  * Plugins tab shows "Open" instead of a settings dialog. manifest.group (optional): the tab bar drop-down its
- * tabs go in ('farming', 'trading', or a name of its own); without one the panel picks, or "More". A tab's content
+ * tabs go in ('farming', 'trading', or a name of its own); without one, "More". A tab's content
  * may return pin: 'a few words' (e.g. 'running'): while set, the tab sits on the bar by itself with those words.
  * Any setting may have help (a line under it) and when: '<boolean key>' (shown only while that's on).
  * A choice with dynamic: true gets its options from the plugin (ctx.settings.setOptions), e.g. a
@@ -108,13 +108,14 @@ class PluginHost {
     // Any plugin's mark on the account (the first): { plugin, what, at } or null.
     busyOf(aid) { const m = this.busy.get(aid); return m && m.size ? { ...m.values().next().value } : null; }
 
-    // Runs fn when the exit IP of this account's route has a free lane (see PACE).
-    async paced(aid, fn) {
+    // Runs fn when the exit IP of this account's route has a free lane (see PACE). first: goes ahead of the queue
+    // (a short job the user is waiting on, like Skillmaps' Apply).
+    async paced(aid, fn, first = false) {
         const run = this.engine.run.get(aid);
         const key = this.engine.groupOf(run ? run.route : 'direct');
         let g = this.gates.get(key);
         if (!g) this.gates.set(key, g = { busy: 0, last: 0, q: [], t: null });
-        await new Promise(res => { g.q.push(res); this.pump(g); });
+        await new Promise(res => { if (first) g.q.unshift(res); else g.q.push(res); this.pump(g); });
         try { return await fn(); } finally { g.busy--; this.pump(g); }
     }
     pump(g) {
@@ -404,10 +405,10 @@ class PluginHost {
             power: { live: () => !!getSetting('on') && getSetting('runMode') === 'live', practice: () => getSetting('runMode') !== 'live' },
             on: (ev, fn) => { const g = host.guard(id, p, fn); engine.on(ev, g); r.listeners.push([ev, g]); },
             // A request as this account. Only for accounts that are clicking normally; a 401 goes
-            // through the clicker's re-login like any click would.
-            request: async (aid, pathname, opts = {}) => {
+            // through the clicker's re-login like any click would. opts.first: ahead of other plugins' queued requests.
+            request: async (aid, pathname, { first, ...opts } = {}) => {
                 if (!engine.isHealthy(aid)) return { kind: 'not-running', status: 0 };
-                return host.paced(aid, () => engine.isHealthy(aid) ? engine.call(engine.run.get(aid), pathname, { ...opts, caller: id }) : { kind: 'not-running', status: 0 });
+                return host.paced(aid, () => engine.isHealthy(aid) ? engine.call(engine.run.get(aid), pathname, { ...opts, caller: id }) : { kind: 'not-running', status: 0 }, !!first);
             },
             // The site's live socket (trades) as this account: { emit(ev, data), wait(events, ms) -> { ev, data } | null, close() }.
             // Closed by itself when the plugin stops.
@@ -496,7 +497,8 @@ class PluginHost {
             },
             panel: {
                 // render() -> { blocks: [ { type: 'stats', items: [{ label, value }] } | { type: 'table', columns, rows } | { type: 'text', text } ] }
-                tab: (title, render) => r.tabs.push({ title, render: host.guard(id, p, render) }),
+                // opts.group: this tab's drop-down, when it isn't the plugin's own (manifest.group).
+                tab: (title, render, opts = {}) => r.tabs.push({ title, render, group: opts.group ? String(opts.group) : null }),
                 // A button in the plugin's tab (block { type: 'buttons', items: [{ label, action }] }) runs fn(arg);
                 // it may return { ok, message } (message shows as a toast).
                 action: (name, fn) => { r.actions[name] = fn; },
@@ -550,7 +552,13 @@ class PluginHost {
         const out = [];
         for (const [id, p] of this.plugins) {
             if (!p.res) continue;
-            for (const t of p.res.tabs) { let content = null; try { content = t.render(); } catch (_) {} out.push({ plugin: id, title: t.title, group: p.manifest.group || null, content }); }
+            for (const t of p.res.tabs) {
+                // A page that throws says so on the page (with Reload) instead of looking empty; logged once per message.
+                let content = null, failed = null;
+                try { content = t.render(); t.failed = null; }
+                catch (e) { failed = String((e && e.message) || e).slice(0, 200); if (t.failed !== failed) this.crashed(id, e); t.failed = failed; }
+                out.push({ plugin: id, title: t.title, group: t.group || p.manifest.group || null, content, ...(failed ? { failed } : {}) });
+            }
         }
         return out;
     }
