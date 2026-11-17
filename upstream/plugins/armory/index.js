@@ -1039,11 +1039,14 @@ module.exports = {
             const plan = practice && state.plans && n ? state.plans : null;
             const levels = list.flatMap(a => ((state.passes[a.id] || {}).xp || []).map(x => Math.min(40, Math.floor(x / 100))));
             const lvl = levels.length ? Math.round(levels.reduce((x, y) => x + y, 0) / levels.length) : null;
-            return { blocks: [
+            // The account pills: tokens, then its passes (average level and credits).
+            const accountLines = Object.fromEntries(ctx.accounts.list().map(a => { const m = a.me || {}, p = state.passes[a.id], lv = p && p.xp.length ? Math.round(p.xp.reduce((t, x) => t + Math.min(40, Math.floor(x / 100)), 0) / p.xp.length) : null;
+                return [a.id, [m.tokens != null ? `${count(num(m.tokens))} tokens` : 'Tokens not read yet', p ? `${lv != null ? `Level ${lv}` : 'No passes'} · ${count(p.credits)} credits` : 'Passes not read yet']]; }));
+            return { accountLines, blocks: [
                 { type: 'card', id: 'power', toggle: 'on', toggleDisabled: practice ? 'Set the mode to Live first' : null, bodyWhenOff: true, open: practice || !S('on'),
                     title: S('on') && !practice ? (farming ? 'Star farming — on, farming now' : 'Star farming — on') : 'Star farming — off',
                     summary: !n ? 'choose the star farming accounts first' : practice ? 'practice: nothing runs unless you press Practice run' : `live on ${n} account${n === 1 ? '' : 's'} with ${on} game${on === 1 ? '' : 's'}`,
-                    keys: ['runMode'], blocks: n ? [{ type: 'buttons', items: [{ label: practice ? 'Practice run' : 'Run now', action: 'run', primary: true }, ...(farming ? [{ label: 'Stop', action: 'stop', danger: true }] : [])] }] : [] },
+                    keys: ['runMode'] },
                 ...(plan ? [{ type: 'table', wrap: true, columns: ['The last practice run would', 'When'], rows: plan.lines.map(l => [l, new Date(plan.t).toLocaleTimeString()]) }] : []),
                 ...(n ? [{ type: 'stats', items: [
                     { label: 'Battles today', value: `${count(t.battles)} · ${count(t.rounds)} rounds` },
@@ -1051,57 +1054,117 @@ module.exports = {
                     { label: 'Upgrades', value: count(t.upgrades || 0) },
                     { label: 'Guesses', value: count(t.gtr || 0) },
                 ] }] : []),
-                { type: 'card', id: 'accounts', open: n < 2, title: 'Accounts', summary: n ? `${n} account${n === 1 ? '' : 's'}` : 'none yet', keys: ['accounts'], bare: true },
-                { type: 'section', title: 'What to farm', blocks: GAME_CARDS.map(g => ({ type: 'card', id: g.id, toggle: g.key, open: false, title: g.title, summary: g.sum(), keys: g.keys })) },
-                { type: 'card', id: 'passes', open: false, title: 'Passes', summary: (S('passes') ? `all slots active${S('restart') ? ' · full ones redeemed, even with farming off' : ''}` : 'off') + (lvl != null ? ` · average level ${lvl}` : ''),
-                    keys: ['passes', 'restart'], blocks: n ? [{ type: 'table', columns: ['Account', 'Passes', 'Levels', 'Credits'], rows }] : [] },
-                { type: 'card', id: 'general', open: false, title: 'Turns and limits', summary: `${num(S('turnMin'))} min turns · keep ${count(num(S('keepTokens')))} tokens`, keys: ['turnMin', 'keepTokens'] },
-                { type: 'card', id: 'schedule', open: false, title: 'Schedule', summary: `checks every ${num(S('everyMin'))} min`, keys: ['everyMin'] },
+                // Who, which games, passes, then Run: one step at a time; each game's details sit under More options.
+                { type: 'wizard', id: 'farm', steps: [
+                    { id: 'accounts', title: 'Accounts', done: n > 0, warn: n ? null : 'choose the star farming accounts',
+                        summary: n ? (n > 3 ? `${list.slice(0, 3).map(a => a.name).join(', ')} and ${n - 3} more` : list.map(a => a.name).join(', ')) : '', keys: ['accounts'] },
+                    { id: 'games', title: 'What to farm', done: on > 0, warn: on ? null : 'no game switched on',
+                        summary: GAME_CARDS.filter(g => S(g.key)).map(g => g.title).join(', '),
+                        text: 'Each game earns pass XP. Blackjack, Crash, Dice and Plinko are played by the Games plugin when it is on, otherwise here.',
+                        keys: GAME_CARDS.map(g => g.key) },
+                    { id: 'passes', title: 'Passes', done: true,
+                        summary: (S('passes') ? `all slots active${S('restart') ? ' · full ones redeemed' : ''}` : 'off') + (lvl != null ? ` · average level ${lvl}` : ''),
+                        keys: ['passes', 'restart'], blocks: n ? [{ type: 'table', columns: ['Account', 'Passes', 'Levels', 'Credits'], rows }] : [] },
+                ],
+                extras: [
+                    ...GAME_CARDS.filter(g => g.keys).map(g => ({ id: g.id, title: g.title, summary: S(g.key) ? g.sum() : 'off', keys: g.keys })),
+                    { id: 'general', title: 'Turns and limits', summary: `${num(S('turnMin'))} min turns · keep ${count(num(S('keepTokens')))} tokens`, keys: ['turnMin', 'keepTokens'] },
+                    { id: 'schedule', title: 'Schedule', summary: `checks every ${num(S('everyMin'))} min`, keys: ['everyMin'] },
+                ],
+                finish: { title: farming ? 'Farming now' : !n ? 'Choose accounts first' : practice ? 'Practice run' : S('on') ? `Live on ${n} account${n === 1 ? '' : 's'}` : 'Run once',
+                    ready: n > 0 && on > 0, next: 'Run',
+                    text: !n ? '' : practice ? 'Shows what one check would do, without playing.' : S('on') ? `Checks every ${num(S('everyMin'))} min with ${on} game${on === 1 ? '' : 's'}; Run now checks straight away.` : 'Star farming is off: Run now does one check now.',
+                    buttons: n ? [{ label: practice ? 'Practice run' : 'Run now', action: 'run', primary: true }, ...(farming ? [{ label: 'Stop', action: 'stop', danger: true }] : [])] : [] } },
                 { type: 'section', title: 'Recent battles', blocks: [{ type: 'table', empty: 'No battles yet.', columns: ['When', 'Host', 'Players', 'Rounds', 'Each paid'],
                     rows: (state.history || []).slice(0, 10).map(h => [new Date(h.t).toLocaleTimeString(), h.host, String(h.players || 2), String(h.rounds), money(h.price)]) }] },
             ] };
         });
 
-        // Spending credits is never automatic: every armory item is laid out with an amount and a Buy button. A purchase
-        // takes the credits from the star accounts with the most first; items come 10 for an item's credit price.
+        // Spending credits is never automatic: the shop tab lays out every armory item; pick one, tick the accounts
+        // (only those whose credits cover a pack) and Buy an amount each, or Buy max (all each one's credits cover).
+        // Items come 10 for an item's credit price. Ticking Queue in Opener hands what was bought to the Opener, which
+        // opens it from stock on those accounts once each is free (ctx.shared "armory/openQueue"; the Opener lists the
+        // ones it took on "opener/taken").
+        const MAX_SELL_UNDER = 480000;
+        const pruneQueue = () => {
+            const taken = (ctx.shared && ctx.shared.get('opener/taken')) || [];
+            const q = (state.openQueue || []).filter(e => !taken.includes(e.qid));
+            if (q.length !== (state.openQueue || []).length) { state.openQueue = q; save(); }
+            if (ctx.shared) ctx.shared.set('openQueue', q.length ? q : null);
+        };
+        pruneQueue();
+        ctx.every(3000, pruneQueue);
+        const profileOf = (q) => {
+            if (!q || typeof q !== 'object') return null;
+            if (q.mode !== 'custom') return { mode: 'default' };
+            const drops = ['money', 'tokens', 'keep'].includes(q.drops) ? q.drops : 'money';
+            const f = q.fav && typeof q.fav === 'object' ? q.fav : {};
+            const fmode = ['opener', 'own', 'custom'].includes(f.mode) ? f.mode : 'opener';
+            const low = num(f.low), high = num(f.high);
+            const fav = fmode !== 'custom' ? { mode: fmode }
+                : { mode: 'custom', low: low > 0 ? Math.min(0.1, low) : 0, high: high > 0 ? Math.min(0.99999999, Math.max(0.9, high)) : 0, patterns: !!f.patterns };
+            return { mode: 'custom', drops, under: Math.min(MAX_SELL_UNDER, Math.max(0, num(q.under))), fav };
+        };
         ctx.panel.action('buy', async (arg) => {
             let want;
             try { want = typeof arg === 'string' ? JSON.parse(arg) : arg; } catch (_) { want = null; }
             const item = want && rewards && rewards.find(x => x.id === want.id);
             if (!item) return { ok: false, error: 'That item is not in the shop any more.' };
-            // The amount on each account picked in the panel's popup, with that account's own credits; only what it can afford.
-            const packs = Math.max(1, Math.floor(num(want.n) / 10));
-            const ids = Array.isArray(want.accounts) ? want.accounts : [];
-            const list = ctx.accounts.list().filter(x => ids.includes(x.id) && ctx.settings.runsOn('accounts', x.id));
+            const price = num(item.creditPrice), max = !!want.max;
+            // Each ticked account's own amount (whole packs of 10), or the older shape: one amount for every account.
+            const asked = new Map(Array.isArray(want.buys)
+                ? want.buys.map(b => [String(b && b.account), Math.max(1, Math.floor(num(b && b.n) / 10))])
+                : (Array.isArray(want.accounts) ? want.accounts : []).map(id => [String(id), Math.max(1, Math.floor(num(want.n) / 10))]));
+            const list = ctx.accounts.list().filter(x => asked.has(x.id) && ctx.settings.runsOn('accounts', x.id));
             if (!list.length) return { ok: false, error: 'Pick the accounts to buy on.' };
-            let bought = 0, done = 0;
-            const short = [];
+            let bought = 0;
+            const short = [], got = [];
             for (const a of list) {
                 if (!a.healthy) { short.push(a.name + ' (not clicking)'); continue; }
                 try {
                     const arm = await json(a.id, '/api/armory');
-                    const k = Math.min(packs, Math.floor(num(arm.credits) / num(item.creditPrice)));
-                    if (k < packs) short.push(a.name);
+                    const can = Math.floor(num(arm.credits) / price), packs = max ? can : asked.get(a.id);
+                    const k = Math.min(packs, can);
+                    if (k < packs || k <= 0) short.push(a.name);
                     if (k <= 0) continue;
                     await json(a.id, '/api/armory', { method: 'PATCH', body: { id: item.id, type: item.type, amount: k } });
-                    bought += k * 10; done++;
-                    const p = state.passes[a.id]; if (p) p.credits = num(arm.credits) - k * num(item.creditPrice);
-                    ctx.log(`spent ${k * item.creditPrice} credits on ${k * 10} ${item.name}`, 'ok', a.id);
+                    bought += k * 10; got.push(a.id);
+                    state.passes[a.id] = { ...(state.passes[a.id] || { name: a.name, xp: [] }), credits: num(arm.credits) - k * price };
+                    ctx.log(`spent ${k * price} credits on ${k * 10} ${item.name}`, 'ok', a.id);
                 } catch (e) { short.push(a.name); ctx.log('buying: ' + e.message, 'warn', a.id); }
+            }
+            const profile = profileOf(want.queue);
+            if (profile && got.length) {
+                const qid = Date.now().toString(36) + Math.random().toString(36).slice(2, 8);
+                state.openQueue = [...(state.openQueue || []), { qid, item: { id: item.id, type: item.type, name: item.name }, accounts: got, profile, t: Date.now() }];
+                if (ctx.shared) ctx.shared.set('openQueue', state.openQueue);
             }
             save();
             const note = short.length ? ` · short of credits: ${short.join(', ')}` : '';
-            return bought ? { message: `Bought ${count(bought)} ${item.name} on ${done} account${done === 1 ? '' : 's'}${note}.` } : { ok: false, error: 'Not enough credits on those accounts.' };
+            const queued = profile && got.length ? ' Queued in the Opener.' : '';
+            return bought ? { message: `Bought ${count(bought)} ${item.name} on ${got.length} account${got.length === 1 ? '' : 's'}${note}.${queued}` } : { ok: false, error: 'Not enough credits on those accounts.' };
         });
+        // The armory's kinds, in the shop's order; the pictures are the site's own (case-clicker.com/pictures/cases/).
+        const KINDS = [['capsule', 'Capsules'], ['case', 'Cases'], ['collectionCase', 'Collections'], ['keychainCollection', 'Charms']];
+        const pictureOf = (x) => { const f = String(x.iconUrl || ''); return !f ? '' : /^https:\/\//.test(f) ? f : 'https://case-clicker.com/pictures/cases/' + encodeURIComponent(f.replace(/^\/+/, '')); };
         ctx.panel.tab('Armory shop', () => {
             const list = chosen();
             const credits = list.map(a => (state.passes[a.id] || {}).credits || 0);
-            const total = credits.reduce((x, y) => x + y, 0), most = Math.max(0, ...credits);
+            const total = credits.reduce((x, y) => x + y, 0);
+            const known = KINDS.map(k => k[0]);
+            const groups = rewards ? [...KINDS, ...[...new Set(rewards.map(x => x.type).filter(t => !known.includes(t)))].map(t => [t, 'Other'])]
+                .map(([type, title]) => ({ title, items: rewards.filter(x => x.type === type).sort((a, b) => num(a.creditPrice) - num(b.creditPrice) || String(a.name).localeCompare(String(b.name)))
+                    .map(x => ({ id: x.id, name: x.name, image: pictureOf(x), price: num(x.creditPrice) })) })) : [];
+            const openerOn = !!(ctx.shared && ctx.shared.get('opener/taken'));
+            const waiting = (state.openQueue || []).length;
             return { blocks: [
-                { type: 'stats', items: [{ label: 'Credits on the star accounts', value: count(total) }, { label: 'Most on one account', value: count(Math.max(0, ...credits)) }] },
-                ...(rewards ? [{ type: 'shop', action: 'buy', unit: 'credit', items: rewards.map(x => ({ id: x.id, name: x.name, sub: x.type,
-                    price: num(x.creditPrice), pack: 10, max: Math.floor(most / num(x.creditPrice)) })),
-                    accounts: list.map((a, i) => ({ id: a.id, name: a.name, credits: credits[i] })) }] : [{ type: 'notice', text: 'The shop loads once a star account is clicking.' }]),
+                { type: 'stats', items: [{ label: 'Credits on the star accounts', value: count(total) }, { label: 'Most on one account', value: count(Math.max(0, ...credits)) }, { label: 'Accounts', value: count(list.length) }] },
+                ...(waiting ? [{ type: 'notice', level: openerOn ? '' : 'warn', text: openerOn ? `${waiting} purchase${waiting === 1 ? '' : 's'} going to the Opener…` : `${waiting} purchase${waiting === 1 ? ' waits' : 's wait'} for the Opener — turn the Opener plugin on and ${waiting === 1 ? 'it goes' : 'they go'} to its queue.` }] : []),
+                ...(rewards ? [{ type: 'shopgrid', action: 'buy', unit: 'credit', pack: 10, groups, empty: 'Nothing in the armory shop right now.',
+                    accounts: list.map((a, i) => ({ id: a.id, name: a.name, credits: credits[i] })),
+                    queue: { defaultText: (ctx.shared && ctx.shared.get('opener/drops')) || 'as the Opener is set', favText: (ctx.shared && ctx.shared.get('opener/favs')) || '', maxUnder: MAX_SELL_UNDER, off: openerOn ? null : 'Turn the Opener plugin on to queue opening.' } }]
+                    : [{ type: 'notice', text: 'The shop loads once a star account is clicking.' }]),
+                { type: 'text', text: 'Credits are read from each star farming account about once a minute; an account shows once its credits cover a pack.' },
                 { type: 'card', id: 'shop-accounts', open: false, title: 'Credits per account', summary: `${list.length} account${list.length === 1 ? '' : 's'}`,
                     blocks: [{ type: 'table', empty: 'No accounts chosen yet.', columns: ['Account', 'Credits'], rows: list.map((a, i) => [a.name, count(credits[i])]) }] },
             ] };

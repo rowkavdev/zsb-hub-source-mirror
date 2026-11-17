@@ -1,7 +1,7 @@
 {
   "id": "converter",
   "name": "Converter",
-  "version": "1.6.0",
+  "version": "1.7.0",
   "description": "Turns what accounts earn into tokens, in steps you choose: sell clicked cases, sell cheap skins, buy capsules with the cash, open them with every drop sold to tokens, upgrade the tokens into Dragon Lores. Starts in practice mode.",
   "minCore": "1.0.6",
   "main": "index.js",
@@ -94,15 +94,18 @@
       "options": [
         {
           "value": "basic",
-          "label": "Non-Pro only"
+          "label": "Non-Pro only",
+          "help": "Accounts without Pro."
         },
         {
           "value": "pro",
-          "label": "Pro only"
+          "label": "Pro only",
+          "help": "Accounts with Pro."
         },
         {
           "value": "both",
-          "label": "Both"
+          "label": "Both",
+          "help": "Every chosen account."
         }
       ]
     },

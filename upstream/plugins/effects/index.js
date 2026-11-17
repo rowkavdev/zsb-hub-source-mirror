@@ -225,7 +225,11 @@ function render() {
         return [a.name, !a.healthy ? 'not clicking' : v ? count(v.ammo) : '—', stock || (v ? 'none' : '—'), act || (v ? 'nothing' : '—'), q.length ? `${q.length}: ${q.slice(0, 3).join(', ')}${q.length > 3 ? ', …' : ''}` : '—'];
     });
 
-    return { blocks: [
+    // The account pills: ammo, then what is running or queued, once the account has been read.
+    const accountLines = Object.fromEntries(ctx.accounts.list().map(a => { const v = seen.get(a.id), q = (state.queues[a.id] || []).length;
+        const act = v ? v.active.filter(x => x.till > Date.now()).length : 0;
+        return [a.id, v ? [`${count(v.ammo)} ammo`, `${act ? `${act} running` : 'Nothing running'}${q ? ` · ${q} queued` : ''}`] : ['Ammo not read yet', 'Refresh reads it']]; }));
+    return { accountLines, blocks: [
         { type: 'card', id: 'power', toggle: 'on', toggleDisabled: ctx.power.practice() ? 'Set the mode to Live first' : null, bodyWhenOff: true, open: ctx.power.practice(), keys: ['runMode'],
             title: on ? 'Effects — queue on' : 'Effects — queue off',
             summary: ctx.power.practice() ? 'practice: the queue only runs in Live' : !on ? 'queued effects wait until this is on' : queued ? `${queued} queued, each starts once nothing of its kind runs` : 'nothing queued' },
@@ -233,35 +237,49 @@ function render() {
             { label: 'Accounts', value: scopeName }, { label: 'Ammo', value: count(ammo) },
             { label: 'Picked', value: String(names.length) }, { label: 'Queued', value: count(queued) },
         ] },
-        { type: 'card', id: 'who', open: false, title: 'Accounts and amounts', summary: `${scopeName} · ${qty} of each per account · keep ${count(num(S('keepAmmo')))} ammo`,
-            keys: ['scope', 'account', 'qty', 'keepAmmo', 'buyToUse', 'buyForQueue'] },
-        { type: 'card', id: 'act', title: 'Do it', summary: sel, text: names.length ? `On ${scopeName}: buy ${qty} of each (up to ${count(ammoCost)} ammo), sell ${qty} or all, start now, or queue ${qty} of each.` : 'Pick one or more effects below, then choose what to do with them.',
-            blocks: [
-                { type: 'buttons', items: [
-                    { label: `Buy ${qty} each`, action: 'buy', primary: true },
-                    { label: `Sell ${qty} each`, action: 'sell' },
-                    { label: 'Sell all picked', action: 'sellAll', danger: true, confirm: `Sell every one of the picked effects on ${scopeName}?` },
-                    { label: 'Use now', action: 'use' },
-                    { label: `Queue ${qty} each`, action: 'queue' },
+        ...(job ? [{ type: 'notice', text: `${job.what}: ${job.done} of ${job.of} accounts done…` }] : []),
+        ...(ctx.power.practice() ? [{ type: 'notice', level: 'warn', text: 'Practice mode: the buttons only show what they would do. Set the mode to Live to buy, sell or start effects.' }] : []),
+        // Pick, choose who and how many, then act: one step at a time instead of a card per family.
+        { type: 'wizard', id: 'fx', steps: [
+            { id: 'pick', title: 'Pick effects', done: names.length > 0,
+                summary: names.length ? (names.length > 3 ? `${names.slice(0, 3).join(', ')} and ${names.length - 3} more` : names.join(', ')) : 'none picked yet',
+                text: 'Tap an effect to pick it, tap again to drop it. Pick as many as you like.',
+                blocks: [
+                    { type: 'buttons', items: [
+                        { label: 'Pick what they own', action: 'pickOwned' },
+                        ...(names.length ? [{ label: 'Clear picks', action: 'clearPicks' }] : []),
+                    ] },
+                    ...FAMILIES.map(f => ({ type: 'section', title: f, blocks: [{ type: 'picker', action: 'pick', multi: true, grid: true, tag: 'Picked', items: CATALOG.filter(e => e.family === f).map(e => {
+                        const o = owned(e.name), r = running(e.name);
+                        return { id: e.name, on: pk.has(e.name), title: e.name, sub: describe(e),
+                            meta: `${e.rarity} · buy ${RARITY[e.rarity].buy} · sell ${RARITY[e.rarity].sell} ammo · own ${count(o)}${r ? ` · running on ${r}` : ''}` };
+                    }) }] })),
                 ] },
-                { type: 'buttons', items: [
-                    { label: 'Refresh', action: 'refresh' },
-                    { label: 'Pick what they own', action: 'pickOwned' },
-                    { label: 'Clear picks', action: 'clearPicks' },
-                    { label: 'Clear queue', action: 'clearQueue', confirm: `Empty the queue on ${scopeName}?` },
+            { id: 'who', title: 'Accounts and amounts', done: accts.length > 0, warn: accts.length ? null : (S('scope') === 'one' ? 'choose the account' : 'no accounts yet'),
+                summary: `${scopeName} · ${qty} of each per account · keep ${count(num(S('keepAmmo')))} ammo`,
+                keys: ['scope', ...(S('scope') === 'one' ? ['account'] : []), 'qty', 'keepAmmo', 'buyToUse', 'buyForQueue'] },
+        ],
+        extras: [
+            { id: 'accounts', title: 'Per account', summary: `${rows.length} account${rows.length === 1 ? '' : 's'} · ammo, owned, running, queued`,
+                blocks: [
+                    { type: 'buttons', items: [{ label: 'Refresh', action: 'refresh' }] },
+                    ...(rows.length ? [{ type: 'table', wrap: true, columns: ['Account', 'Ammo', 'Owned', 'Running', 'Queue'], rows }] : [{ type: 'notice', text: S('scope') === 'one' ? 'Choose the account in Accounts and amounts.' : 'No accounts yet.' }]),
                 ] },
-                ...(job ? [{ type: 'notice', text: `${job.what}: ${job.done} of ${job.of} accounts done…` }] : []),
-                ...(ctx.power.practice() ? [{ type: 'notice', level: 'warn', text: 'Practice mode: the buttons only show what they would do. Set the mode to Live to buy, sell or start effects.' }] : []),
-            ] },
-        ...FAMILIES.map(f => ({ type: 'card', id: 'f:' + f, open: CATALOG.some(e => e.family === f && pk.has(e.name)), title: f,
-            summary: CATALOG.filter(e => e.family === f && pk.has(e.name)).map(e => e.name.split(' ')[0]).join(', ') || describe(CATALOG.find(e => e.family === f)).replace(/^[^a-z]*/i, '').replace(/ for .*$/, ''),
-            blocks: [{ type: 'picker', action: 'pick', multi: true, grid: true, tag: 'Picked', items: CATALOG.filter(e => e.family === f).map(e => {
-                const o = owned(e.name), r = running(e.name);
-                return { id: e.name, on: pk.has(e.name), title: e.name, sub: describe(e),
-                    meta: `${e.rarity} · buy ${RARITY[e.rarity].buy} · sell ${RARITY[e.rarity].sell} ammo · own ${count(o)}${r ? ` · running on ${r}` : ''}` };
-            }) }] })),
-        { type: 'card', id: 'accounts', open: false, title: 'Per account', summary: `${rows.length} account${rows.length === 1 ? '' : 's'} · Refresh reads them`, bare: true,
-            blocks: rows.length ? [{ type: 'table', wrap: true, columns: ['Account', 'Ammo', 'Owned', 'Running', 'Queue'], rows }] : [{ type: 'notice', text: S('scope') === 'one' ? 'Choose the account in "Accounts and amounts".' : 'No accounts yet.' }] },
+            { id: 'queue', title: 'Queue', summary: queued ? `${queued} waiting · ${on ? 'runs' : 'waits until the queue is on'}` : 'empty',
+                text: 'Queued effects start one at a time, each once nothing of its kind is running on that account.',
+                blocks: [{ type: 'buttons', items: [{ label: 'Clear queue', action: 'clearQueue', danger: true, confirm: `Empty the queue on ${scopeName}?` }] }] },
+        ],
+        finish: { title: names.length ? `Do it: ${sel}` : 'Do it', ready: names.length > 0 && accts.length > 0, next: 'What to do',
+            text: names.length ? `On ${scopeName}: buy ${qty} of each (up to ${count(ammoCost)} ammo), start now, or queue ${qty} of each.` : 'Pick one or more effects first.',
+            buttons: [
+                { label: `Buy ${qty} each`, action: 'buy', primary: true },
+                { label: 'Use now', action: 'use' },
+                { label: `Queue ${qty} each`, action: 'queue' },
+            ],
+            blocks: [{ type: 'buttons', items: [
+                { label: `Sell ${qty} each`, action: 'sell' },
+                { label: 'Sell all picked', action: 'sellAll', danger: true, confirm: `Sell every one of the picked effects on ${scopeName}?` },
+            ] }] } },
     ] };
 }
 

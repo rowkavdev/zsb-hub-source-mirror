@@ -6,6 +6,7 @@
 // A refused claim is skipped for that check (the others are still claimed): the site refuses claims now and
 // then, e.g. while the account is opening cases. Only STRIKES checks in a row with a refusal count as a problem.
 const MAX_ROUNDS = 40, GAP_MS = 400, STRIKES = 3;
+const short = (n) => '$' + (n >= 1e6 ? +(n / 1e6).toFixed(1) + 'M' : n >= 1e3 ? +(n / 1e3).toFixed(1) + 'k' : Math.round(n));
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const latest = new Map();   // account id -> { at, claimed, items, value, ready }
 const busy = new Set();
@@ -61,7 +62,11 @@ module.exports = {
                     m ? m.items.toLocaleString() : '0', m ? '$' + Math.round(m.value).toLocaleString() : '$0'];
             });
             const n = chosen.length, on = !!ctx.settings.get('on');
-            return { blocks: [
+            // The account pills: reward tiers ready at the last check, and what's been claimed.
+            const accountLines = Object.fromEntries(ctx.accounts.list().map(a => { const m = latest.get(a.id);
+                if (!m) return [a.id, ['Rewards not read yet', ctx.settings.runsOn('accounts', a.id) ? 'Checks soon' : 'Read once chosen']];
+                return [a.id, [m.ready ? `${m.ready} tier${m.ready === 1 ? '' : 's'} ready` : 'Nothing ready', `${m.claimed.toLocaleString()} claimed · ${short(m.value)}`]]; }));
+            return { accountLines, blocks: [
                 { type: 'card', id: 'power', toggle: 'on', open: false, title: on ? 'Rewards — on' : 'Rewards — off',
                     summary: !on ? 'not claiming' : n ? `claims ready tiers on ${n} account${n === 1 ? '' : 's'}` : 'choose accounts first' },
                 { type: 'stats', items: [{ label: 'Tiers claimed', value: totals.claimed.toLocaleString() }, { label: 'Items', value: totals.items.toLocaleString() }, { label: 'Item value', value: '$' + Math.round(totals.value).toLocaleString() }] },

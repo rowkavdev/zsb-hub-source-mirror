@@ -1,0 +1,15 @@
+Fonts in this folder: SIL Open Font License 1.1 (each font's copyright below), via Fontsource (https://fontsource.org).
+Latin subset, one weight each. Full licence text: OFL.txt.
+
+cinzel-body.woff2 (variable): Copyright 2020 The Cinzel Project Authors (https://github.com/NDISCOVER/Cinzel)
+uncial-antiqua.woff2: Copyright (c) 2011 by Brian J. Bonislawsky DBA Astigmatic (AOETI) (astigma@astigmatic.com), with Reserved Font Name "Uncial Antiqua"
+black-ops-one.woff2: Copyright 2022 The PinyonScript Project Authors (https://github.com/SorkinType/Black-Ops)
+orbitron.woff2: Copyright 2018 The Orbitron Project Authors (https://github.com/theleagueof/orbitron)
+audiowide.woff2: Copyright (c) 2012 by Brian J. Bonislawsky DBA Astigmatic (AOETI) (astigma@astigmatic.com), with Reserved Font Name "Audiowide"
+
+Body fonts (variable, every weight in one file):
+alegreya-body.woff2: Copyright 2011 The Alegreya Project Authors (https://github.com/huertatipografica/Alegreya)
+saira-body.woff2: Copyright 2016 The Saira Project Authors (https://github.com/Omnibus-Type/Saira)
+exo-2-body.woff2: Copyright 2013 The Exo 2 Project Authors (https://github.com/NDISCOVER/Exo-2.0)
+quicksand-body.woff2: Copyright 2019 The Quicksand Project Authors (https://github.com/andrew-paglinawan/QuicksandFamily.git), with Reserved Font Name "Quicksand"
+oxanium-body.woff2: Copyright 2019 The Oxanium Project Authors (https://github.com/sevmeyer/oxanium)

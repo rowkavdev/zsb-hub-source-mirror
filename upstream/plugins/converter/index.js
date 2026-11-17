@@ -409,12 +409,16 @@ module.exports = {
             const plans = practice ? Object.values(state.plans || {}).filter(x => chosen.some(a => a.name === x.name)).sort((a, b) => b.t - a.t) : [];
             const steps = [S('sellCases') && 'sell cases', S('sellSkins') && 'sell skins', S('buy') && (cap ? `buy ${cap.name}` : 'buy capsules'), S('open') && 'open to tokens', S('dlore') && 'Dragon Lores'].filter(Boolean);
             const dl = chosen.filter(a => dloreOn(a.id)).length;
-            const step = (id, toggle, title, summary, keys) => ({ type: 'card', id, toggle, open: false, title, summary, keys });
-            return { blocks: [
+            // One wizard step per part of a run: its switch first, then its own settings; a switched-off part is skipped.
+            // The account pills: wallet (what buys capsules), then tokens (what it makes).
+            const accountLines = Object.fromEntries(ctx.accounts.list().map(a => { const m = a.me || {}, l = lanes.get(a.id);
+                return [a.id, [m.money != null ? `Wallet ${money(num(m.money))}` : 'Wallet not read yet', l ? `Converting: ${l.phase}` : m.tokens != null ? `${count(num(m.tokens))} tokens` : 'Tokens not read yet']]; }));
+            const step = (id, toggle, title, summary, keys) => ({ id, title, done: true, summary: S(toggle) ? summary : 'skipped', keys: [toggle, ...(S(toggle) ? keys : [])] });
+            return { accountLines, blocks: [
                 { type: 'card', id: 'power', toggle: 'on', toggleDisabled: practice ? 'Set the mode to Live first' : null, bodyWhenOff: true, open: !live,
                     title: live ? (lanes.size ? `Converter — on, converting ${lanes.size}` : 'Converter — on') : 'Converter — off',
                     summary: !n ? 'choose accounts first' : !steps.length ? 'switch on a step' : practice ? 'practice: nothing changes unless you press Practice run' : `live on ${n} account${n === 1 ? '' : 's'}, every ${every} min`,
-                    keys: ['runMode'], blocks: n ? [{ type: 'buttons', items: [{ label: practice ? 'Practice run' : 'Run now', action: 'run', primary: true }, ...(lanes.size ? [{ label: 'Stop', action: 'stop', danger: true }] : [])] }] : [] },
+                    keys: ['runMode'] },
                 ...(paused ? [{ type: 'notice', level: 'bad', text: 'Buying is stopped: ' + paused }] : []),
                 ...(plans.length ? [{ type: 'table', wrap: true, columns: ['Account', 'The last practice run would', 'When'], rows: plans.slice(0, 10).map(x => [x.name, x.lines.join(' · '), new Date(x.t).toLocaleTimeString()]) }] : []),
                 ...(t.sold || t.spent || t.opened || t.tries ? [{ type: 'stats', items: [
@@ -425,15 +429,22 @@ module.exports = {
                     ...(t.tries ? [{ label: 'Dragon Lores today', value: `${count(t.dlores || 0)} of ${count(t.tries)} tries` }] : []),
                 ] }] : []),
                 ...(lanes.size ? [{ type: 'table', columns: ['Converting now', 'Step', 'Open size', 'Opened'], rows: [...lanes].map(([id, l]) => [(ctx.accounts.get(id) || {}).name || id, l.phase, l.size || '—', (l.of ? `${count(l.opened)} / ${count(l.of)}` : count(l.opened)) + (l.unit === 'tries' ? ' tries' : ' cases')]) }] : []),
-                { type: 'card', id: 'accounts', open: !n, title: 'Accounts', summary: n ? `${n} account${n === 1 ? '' : 's'}` : 'none yet', keys: ['accounts'], bare: true },
-                { type: 'section', title: 'A run, in order', blocks: [
-                    step('s-cases', 'sellCases', 'Sell clicked cases', `for cash, when worth ≥ ${money(num(S('sellCasesMin')))}`, ['sellCasesMin']),
-                    step('s-skins', 'sellSkins', 'Sell skins', `up to ${money(num(S('sellSkinsMax')))}, for tokens · favourites stay`, ['sellSkinsMax']),
-                    step('s-buy', 'buy', 'Buy capsules', cap ? `${cap.name} · $${num(cap.price).toLocaleString('en-US')} each` : 'pick a capsule', ['capsule', 'maxPrice', 'keepMoney', 'keepPct', 'minSpend']),
-                    step('s-open', 'open', 'Open them', `every drop sold to tokens · non-Pro: into the inventory, sold up to ${money(dropMax())} at 90% full`, ['dropSellMax']),
-                    step('s-dlore', 'dlore', 'Upgrade into Dragon Lores', `5M tokens a try, 70% · ${WHO[S('dloreWho')] || WHO.basic}${S('dlore') && n ? ` (${dl} of ${n})` : ''} · no Armory upgrades on these`, ['dloreWho']),
-                ] },
-                { type: 'card', id: 'schedule', open: false, title: 'Schedule', summary: `every ${every} min · ${Math.max(1, num(S('lanes')))} at a time`, keys: ['everyMin', 'lanes'] },
+                { type: 'wizard', id: 'run', steps: [
+                    { id: 'accounts', title: 'Accounts', done: n > 0, warn: n ? null : 'choose accounts first',
+                        summary: n ? (n > 3 ? `${chosen.slice(0, 3).map(a => a.name).join(', ')} and ${n - 3} more` : chosen.map(a => a.name).join(', ')) : '', keys: ['accounts'] },
+                    step('s-cases', 'sellCases', 'Clicked cases', `sold for cash when worth ≥ ${money(num(S('sellCasesMin')))}`, ['sellCasesMin']),
+                    step('s-skins', 'sellSkins', 'Skins', `sold up to ${money(num(S('sellSkinsMax')))} for tokens · favourites stay`, ['sellSkinsMax']),
+                    { ...step('s-buy', 'buy', 'Capsules', cap ? `${cap.name} · $${num(cap.price).toLocaleString('en-US')} each` : 'pick a capsule', ['capsule', 'maxPrice', 'keepMoney', 'keepPct', 'minSpend']), done: !S('buy') || !!cap, warn: S('buy') && !cap ? 'pick a capsule' : null },
+                    step('s-open', 'open', 'Opening', `every drop sold to tokens · non-Pro: into the inventory, sold up to ${money(dropMax())} at 90% full`, ['dropSellMax']),
+                    step('s-dlore', 'dlore', 'Dragon Lores', `5M tokens a try, 70% · ${WHO[S('dloreWho')] || WHO.basic}${n ? ` (${dl} of ${n})` : ''} · no Armory upgrades on these`, ['dloreWho']),
+                ],
+                extras: [
+                    { id: 'schedule', title: 'Schedule', summary: `every ${every} min · ${Math.max(1, num(S('lanes')))} at a time`, keys: ['everyMin', 'lanes'] },
+                ],
+                finish: { title: lanes.size ? `Converting ${lanes.size} now` : !n ? 'Choose accounts first' : !steps.length ? 'Switch on a step' : practice ? 'Practice run' : live ? `Live: ${steps.join(', ')}` : 'Run once',
+                    ready: n > 0 && steps.length > 0, next: 'Run',
+                    text: !n || !steps.length ? '' : practice ? 'Shows what a run would do on each account, without changing anything.' : live ? `Every ${every} min on ${n} account${n === 1 ? '' : 's'}; Run now starts one straight away.` : `The Converter is off: Run now does one run of ${steps.join(', ')}.`,
+                    buttons: n ? [{ label: practice ? 'Practice run' : 'Run now', action: 'run', primary: true }, ...(lanes.size ? [{ label: 'Stop', action: 'stop', danger: true }] : [])] : [] } },
                 { type: 'section', title: 'Recent runs', blocks: [{ type: 'table', empty: 'No runs yet.', columns: ['When', 'Account', 'Cases sold', 'Spent', 'Open size', 'Opened', 'Tokens', 'Dragon Lores', 'Result'],
                     rows: (state.runs || []).slice(0, 10).map(r => [new Date(r.t).toLocaleTimeString(), r.acct, money(r.sold), money(r.spent), r.size || '—', r.size ? count(r.opened) : `${count(r.opened)} opens`, count(r.tokens), r.tries ? `${count(r.dlores)} / ${count(r.tries)}` : '—', r.result]) }] },
             ] };

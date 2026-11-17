@@ -1,0 +1,42 @@
+{
+  "id": "skinthemes",
+  "name": "Skin themes",
+  "version": "1.0.0",
+  "description": "Styles the whole panel after a CS2 skin: its colours, fonts and small details. Turn it on in Settings > Theme and pick a look there.",
+  "minCore": "1.2.14",
+  "main": "index.js",
+  "defaultEnabled": false,
+  "settings": {
+    "look": {
+      "type": "choice",
+      "label": "Look",
+      "default": "gungnir",
+      "options": [
+        {
+          "value": "neonrider",
+          "label": "AK-47 | Neon Rider"
+        },
+        {
+          "value": "asiimov",
+          "label": "AWP | Asiimov"
+        },
+        {
+          "value": "dragonlore",
+          "label": "AWP | Dragon Lore"
+        },
+        {
+          "value": "gungnir",
+          "label": "AWP | Gungnir"
+        },
+        {
+          "value": "fade",
+          "label": "Karambit | Fade"
+        },
+        {
+          "value": "howl",
+          "label": "M4A4 | Howl"
+        }
+      ]
+    }
+  }
+}

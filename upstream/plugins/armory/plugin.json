@@ -1,7 +1,7 @@
 {
   "id": "armory",
   "name": "Armory",
-  "version": "1.16.0",
+  "version": "1.19.0",
   "description": "Star farming for the Armory: one list of accounts and the games they farm XP with (battles, jackpot, upgrade, Guess the Rank, blackjack, crash, dice and plinko (by the Games plugin when it is on, otherwise by the Armory itself)). Keeps every pass going. Credits are spent by hand in the Armory shop tab. Starts off, in practice mode.",
   "minCore": "1.2.5",
   "main": "index.js",
@@ -26,21 +26,25 @@
     "farm_blackjack": {
       "type": "boolean",
       "label": "Blackjack",
+      "help": "10 XP a hand.",
       "default": true
     },
     "farm_crash": {
       "type": "boolean",
       "label": "Crash",
+      "help": "5 XP a bet.",
       "default": true
     },
     "farm_dice": {
       "type": "boolean",
       "label": "Dice",
+      "help": "5 XP a roll.",
       "default": true
     },
     "farm_plinko": {
       "type": "boolean",
       "label": "Plinko",
+      "help": "0.5 XP a drop.",
       "default": true
     },
     "coinflip": {
@@ -59,11 +63,13 @@
     "upgrade": {
       "type": "boolean",
       "label": "Upgrade",
+      "help": "1 token into a cheap skin, 10 XP each. Skipped on Dragon Lore accounts.",
       "default": true
     },
     "jackpot": {
       "type": "boolean",
       "label": "Jackpot",
+      "help": "50 XP a round. Its rooms are under More options.",
       "default": true
     },
     "jackpot_low": {
@@ -112,6 +118,7 @@
     "gtr": {
       "type": "boolean",
       "label": "Guess the Rank",
+      "help": "1-token guesses, 15 XP, 25 when right.",
       "default": true
     },
     "gtrBurst": {
@@ -148,6 +155,7 @@
     "battles": {
       "type": "boolean",
       "label": "Case battles",
+      "help": "1 XP a round. Its case, rounds and money limit are under More options.",
       "default": true
     },
     "battleCase": {

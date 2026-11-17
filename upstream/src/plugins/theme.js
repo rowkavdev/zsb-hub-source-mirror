@@ -4,10 +4,11 @@
  * A plugin can restyle the panel: theme({ vars, css }).
  *   vars: the panel's colour variables (VARS below), e.g. { bg: '#0b1020', text: '#e6e9ff' } — with or without
  *         the leading "--". Values are colours (or, for --radius, a length): anything else is dropped.
- *   css:  optional extra CSS. It may only load the plugin's own pictures, through the exact url() that
- *         ctx.panel.asset('file.png') gave; any other url(), @import, @font-face, image-set(), escapes (\)
+ *   css:  optional extra CSS. It may only load the plugin's own pictures and fonts, through the exact url() that
+ *         ctx.panel.asset('file.png') gave; any other url(), @import, image-set(), escapes (\)
  *         and the like refuse the whole CSS (no outside requests: no tracking pixels, no fonts from a CDN).
- * asset(file) reads a picture from the plugin's own folder (png, jpg, gif, webp, svg; 2 MB each, 8 MB per
+ *         @font-face is fine with the plugin's own font file (asset('font.woff2')) as its src, and nothing else.
+ * asset(file) reads a picture or a font from the plugin's own folder (png, jpg, gif, webp, svg, woff2; 2 MB each, 8 MB per
  * plugin) and returns a data: URL: it works the same in the app window (file://) and the browser panel, and
  * the panel's Content-Security-Policy already allows data: images and nothing else from outside.
  * Only one theme is shown at a time: the one picked in Settings > Theme (store.settings.theme). It goes away
@@ -22,7 +23,7 @@ const VARS = ['bg', 'surface', 'surface-2', 'surface-3', 'line', 'line-2', 'text
 const MAX_CSS = 100 * 1024;                 // the CSS itself, not counting the pictures in it
 const MAX_ASSET = 2 * 1024 * 1024;
 const MAX_ASSETS = 8 * 1024 * 1024;
-const TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml' };
+const TYPES = { '.png': 'image/png', '.jpg': 'image/jpeg', '.jpeg': 'image/jpeg', '.gif': 'image/gif', '.webp': 'image/webp', '.svg': 'image/svg+xml', '.woff2': 'font/woff2' };
 
 // A colour: #rgb[a] / #rrggbb[aa], rgb()/rgba()/hsl()/hsla() with plain numbers, or a CSS colour word.
 const COLOR = /^(#[0-9a-f]{3,4}|#[0-9a-f]{6}|#[0-9a-f]{8}|(?:rgba?|hsla?)\(\s*[\d.%\s,/+-]+\)|[a-z]{3,20})$/i;
@@ -54,7 +55,7 @@ function checkCss(css, assets) {
     s = s.replace(/\/\*[\s\S]*?\*\//g, '');
     const bad = [
         [/\\/, 'backslash escapes'],
-        [/@import|@font-face|@namespace|@charset/i, '@import / @font-face'],
+        [/@import|@namespace|@charset/i, '@import'],
         [/url\(\s*(?!__ZSB_ASSET_\d+__\))/i, 'url() other than the plugin\'s own pictures (ctx.panel.asset)'],
         [/(?:image-set|image|cross-fade|element|src|paint)\s*\(/i, 'image-set() / src() and the like'],
         [/expression\s*\(|javascript:|behavior\s*:|-moz-binding/i, 'scripts in CSS'],
@@ -70,7 +71,7 @@ function readAsset(dir, file, budget) {
     const parts = rel.split('/');
     if (!rel || rel.startsWith('/') || parts.some(x => !x || x === '.' || x === '..' || /:/.test(x))) throw new Error(`asset "${rel}": only files inside the plugin's folder`);
     const type = TYPES[path.extname(rel).toLowerCase()];
-    if (!type) throw new Error(`asset "${rel}": only png, jpg, gif, webp or svg pictures`);
+    if (!type) throw new Error(`asset "${rel}": only png, jpg, gif, webp or svg pictures, or woff2 fonts`);
     const buf = fs.readFileSync(path.join(dir, ...parts));
     if (buf.length > MAX_ASSET) throw new Error(`asset "${rel}" is over 2 MB`);
     if (budget.used + buf.length > MAX_ASSETS) throw new Error('the plugin\'s pictures are over 8 MB in all');

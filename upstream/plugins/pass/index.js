@@ -69,7 +69,12 @@ module.exports = {
             });
             const n = chosen.length, track = { free: 'Free', pro: 'Pro', both: 'Free + Pro' }[ctx.settings.get('track')] || 'Free';
             const on = !!ctx.settings.get('on');
-            return { blocks: [
+            // The account pills: where each is on the pass and what's ready to claim.
+            const accountLines = Object.fromEntries(ctx.accounts.list().map(a => { const m = latest.get(a.id), p = m && m.pass;
+                if (!p) return [a.id, ['Pass not read yet', ctx.settings.runsOn('accounts', a.id) ? 'Checks soon' : 'Read once chosen']];
+                const ready = tracksFor(ctx.settings.get('track')).reduce((t, k) => t + claimable(p, k).length, 0);
+                return [a.id, [`Tier ${p.tier ?? '—'} / ${p.totalTiers ?? '—'}${p.isPremium ? ' · Pro' : ''}`, ready ? `${ready} tier${ready === 1 ? '' : 's'} ready` : 'Nothing to claim']]; }));
+            return { accountLines, blocks: [
                 { type: 'card', id: 'power', toggle: 'on', open: false, title: on ? 'Monthly pass — on' : 'Monthly pass — off',
                     summary: !on ? 'not claiming' : n ? `claims ready tiers on ${n} account${n === 1 ? '' : 's'}` : 'choose accounts first' },
                 { type: 'stats', items: [{ label: 'Free tiers claimed', value: totals.free.toLocaleString() }, { label: 'Pro tiers claimed', value: totals.premium.toLocaleString() }] },
