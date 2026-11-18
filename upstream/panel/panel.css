@@ -167,7 +167,7 @@ main { padding: 18px var(--page-side) 48px; }
 .chip, .pchip, .ptag, .ppill { border: 1px solid var(--line-2); border-radius: var(--r-pill); }
 .chip { display: inline-flex; align-items: center; gap: 7px; font-size: var(--fs-s); color: var(--text-2); padding: 3px 10px 3px 8px; background: var(--surface); white-space: nowrap; }
 .chip::before { content: ""; width: 7px; height: 7px; border-radius: 50%; background: var(--muted); }
-.chip.clicking { display: none; }   /* working normally needs no badge */
+.chip.clicking, .chip.no-clicks { display: none; }   /* working normally (or on with clicks off, which the card's Off says) needs no badge */
 .chip.needs-you::before, .chip.reconnecting::before { background: var(--warn); }
 .chip.logged-out::before, .chip.problem::before { background: var(--bad); }
 
@@ -480,6 +480,9 @@ body.dragging-card, body.dragging-folder { user-select: none; cursor: grabbing; 
 .pfailed { display: grid; gap: 8px; justify-items: start; }
 .pfailed .code { white-space: normal; overflow-wrap: anywhere; }
 .pbtns { display: flex; gap: 8px; flex-wrap: wrap; }
+/* A count on a plugin button (unseen drops): like the tab counts, still, no glow. */
+.pbtn-badge { display: inline-block; font-size: var(--fs-xs); font-weight: 600; line-height: 16px; min-width: 16px; text-align: center; padding: 0 5px; margin-left: 6px; border-radius: var(--r-pill); background: var(--white); color: var(--on-white); }
+button.primary .pbtn-badge { background: var(--on-white); color: var(--white); }
 /* table cells from plugins: coloured text, a progress bar with its text, a small row button */
 .pcell-muted { color: var(--muted); }
 .pcell-bar { display: flex; align-items: center; gap: 10px; min-width: 150px; }
@@ -715,6 +718,8 @@ table.wrap td:first-child, table.wrap td:last-child { white-space: nowrap; }
 .pmodal-head h3 { min-width: 0; overflow-wrap: anywhere; }
 /* Items like the game's inventory: a grid of cards with the picture, name, wear and price, the rarity as a stripe. */
 .pitems { display: grid; grid-template-columns: repeat(auto-fill, minmax(118px, 1fr)); gap: 8px; }
+.pitems.reel { display: flex; overflow-x: auto; padding-bottom: 6px; scroll-snap-type: x proximity; }
+.pitems.reel > .pitem { flex: 0 0 132px; scroll-snap-align: start; }
 .pitem { position: relative; display: flex; padding: 0; border: 1px solid var(--line); border-bottom: 3px solid var(--rc, var(--line-2)); border-radius: var(--r-m); background: var(--surface); color: var(--text); min-width: 0; font-weight: 400; }
 .pitem:hover { background: var(--surface-3); }
 .pitem.on { border-color: var(--text); border-bottom-color: var(--rc, var(--text)); background: var(--surface-3); }

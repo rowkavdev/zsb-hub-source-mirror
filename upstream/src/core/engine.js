@@ -6,6 +6,9 @@
  *   vault   when it's half full: capacity ÷ $/min ÷ 2 (from /api/me), fallback until the first report
  *   report  every reportMs: /api/me for the panel's numbers and the vault timing
  *
+ * An account set to Off (type 'off') runs without clicking or collecting its vault: it stays signed in and reports, and
+ * plugins can use it, but no batch or vault collect goes out and it doesn't take one of its exit IP's clicking places (maxPerIp).
+ *
  * A 401 first tries a silent re-login (the login window's saved session); only if that fails is
  * the account stopped as logged out (CC-AUTH-01). It resumes by itself once the user logs in again.
  *
@@ -127,7 +130,11 @@ class Engine extends EventEmitter {
     routeDown(id) { const k = routeKey(id); return !!k && (this.errors.has(k, 'CC-PROXY-01') || this.errors.has(k, 'CC-PROXY-02')); }
     // Routes with the same exit IP count as one for the per-IP cap.
     groupOf(id) { const x = id !== 'direct' && this.routes && this.routes.get(id); return x && x.ip ? 'ip:' + x.ip : 'route:' + id; }
-    usedIn(group, except) { let n = 0; for (const r of this.run.values()) if (r.id !== except && this.groupOf(r.route) === group) n++; return n; }
+    usedIn(group, except) { let n = 0; for (const r of this.run.values()) if (r.id !== except && this.groupOf(r.route) === group && !this.noClicks(r.id)) n++; return n; }
+    // Off: runs without clicking (see the top).
+    noClicks(id) { const a = this.store.get(id); return !!a && a.type === 'off'; }
+    // Room to click on the account's exit IP (for turning Off back to a click type while it runs).
+    canClick(id) { const r = this.run.get(id); return !r || this.hasRoom(r.route, id); }
     // How many accounts can click at once: the per-IP limit for each working exit IP (this PC's and each proxy's;
     // proxies that share an exit IP share its 20).
     capacity() {
@@ -172,8 +179,9 @@ class Engine extends EventEmitter {
         }
         if (!acct.token) { this.errors.raise(id, 'CC-AUTH-01'); return { ok: false, code: 'CC-AUTH-01' }; }
         let route = this.routeFor(acct);
-        if (!this.hasRoom(route, id) && !(acct.routePin && acct.routePin === route)) route = this.pickRoute(id) || route;
-        if (!this.hasRoom(route, id)) {
+        const off = acct.type === 'off';   // no clicks: takes no clicking place on the IP
+        if (!off && !this.hasRoom(route, id) && !(acct.routePin && acct.routePin === route)) route = this.pickRoute(id) || route;
+        if (!off && !this.hasRoom(route, id)) {
             const n = this.usedIn(this.groupOf(route), id);
             this.errors.raise(id, 'CC-RATE-01', `${n}/${this.settings.maxPerIp} already running${route === 'direct' ? '' : ' on proxy ' + route}`);
             return { ok: false, code: 'CC-RATE-01' };
@@ -203,7 +211,7 @@ class Engine extends EventEmitter {
             vaultEveryMs: null, me: null, busy: {}, refreshing: false, route,
         });
         acct.wasRunning = true; this.store.saveAccounts();
-        this.log.add(id, 'Started clicking (' + (acct.type === 'auto' ? 'auto' : acct.type) + ')'
+        this.log.add(id, off ? 'Started without clicking or vault (Off): for plugins only' : 'Started clicking (' + (acct.type === 'auto' ? 'auto' : acct.type) + ')'
             + (waiting ? ` — last batch was ${Math.round((now - last) / 1000)} s ago, next in ${Math.ceil((last + s.clickIntervalMs - now) / 1000)} s` : ''), 'ok');
         if (!this.timer) this.timer = setInterval(() => this.tick(), 500);
         this.emit('started', id); this.emit('change');
@@ -256,6 +264,7 @@ class Engine extends EventEmitter {
     checkBehind() {
         for (const r of this.run.values()) {
             if (r.refreshing || r.held || this.errors.has(routeKey(r.route), 'CC-CF-01')) continue;
+            if (this.noClicks(r.id)) { if (this.errors.has(r.id, 'CC-SLOW-01')) this.errors.clear(r.id, 'CC-SLOW-01'); continue; }
             const { due, missed } = this.behind(r);
             const on = this.errors.has(r.id, 'CC-SLOW-01');
             if (missed >= 3) {
@@ -294,12 +303,16 @@ class Engine extends EventEmitter {
             // A Cloudflare check on its route: batches keep going out (the first one through clears it), but the ones
             // the check stops aren't "falling behind" — that read as CC-SLOW-01 and pointed at a busy test.
             if (this.errors.has(routeKey(r.route), 'CC-CF-01')) { r.firstDueAt = t + this.period(r); r.okTimes = []; }
+            // Off: no batches and no vault (the time off isn't "falling behind" once it clicks again); reports go on.
+            const off = this.noClicks(r.id);
+            if (off) { r.firstDueAt = t + this.period(r); r.okTimes = []; if (r.clickTimer) { clearTimeout(r.clickTimer); r.clickTimer = null; } }
             // A batch due before the next tick gets its own timer: firing on the 500 ms tick lost ~0.25 s per
             // batch, one whole batch every ~4 hours. The gap between sends is still never under the interval.
             const clickIn = r.lastClick + this.period(r) - t;
-            if (clickIn <= 0) this.sendDue(r);
-            else if (clickIn < 500 && !r.clickTimer) r.clickTimer = setTimeout(() => { r.clickTimer = null; if (this.run.get(r.id) === r && !r.refreshing && !r.held && !this.routeDown(r.route) && !this.maint) this.sendDue(r); }, clickIn);
-            if (t - r.lastVault >= (r.vaultEveryMs || s.vaultFallbackMs)) { r.lastVault = t;  this.once_(r, 'vault', () => this.vault(r)); }
+            if (off) { /* no clicks */ }
+            else if (clickIn <= 0) this.sendDue(r);
+            else if (clickIn < 500 && !r.clickTimer) r.clickTimer = setTimeout(() => { r.clickTimer = null; if (this.run.get(r.id) === r && !r.refreshing && !r.held && !this.routeDown(r.route) && !this.maint && !this.noClicks(r.id)) this.sendDue(r); }, clickIn);
+            if (!off && t - r.lastVault >= (r.vaultEveryMs || s.vaultFallbackMs)) { r.lastVault = t;  this.once_(r, 'vault', () => this.vault(r)); }
             if (t - r.lastReport >= s.reportMs)                           { r.lastReport = t; this.once_(r, 'report', () => this.report(r)); }
         }
     }
@@ -496,6 +509,7 @@ class Engine extends EventEmitter {
     // What an account actually clicks. 'auto' picks cases when the account's case click % (casesPerClick,
     // from /api/me) is above the threshold, money otherwise — money until the first report says.
     clickType(acct, me = null) {
+        if (acct.type === 'off') return 'off';
         if (acct.type !== 'auto') return acct.type === 'cases' ? 'cases' : 'money';
         me = me || (this.run.get(acct.id) || {}).me || this.lastMe.get(acct.id);
         return me && me.casesPerClick > this.settings.autoCasePct ? 'cases' : 'money';
@@ -574,7 +588,7 @@ class Engine extends EventEmitter {
         else if (this.errors.has(null, 'CC-SITE-02')) status = 'waiting';
         else if (this.routeDown(r.route)) status = 'proxy-down';
         else if (issues.some(i => (this.errors.codes[i.code] || {}).group !== 'notice')) status = 'problem';
-        else status = 'clicking';
+        else status = acct.type === 'off' ? 'no-clicks' : 'clicking';
         const me = (r && r.me) || this.lastMe.get(acct.id) || null;
         const clicks = this.clickType(acct, me), cv = this.caseValue(acct, me), caseValue = cv.value;
         const cases = clicks === 'cases' && me && me.casesPerClick ? casesPerClick(me.casesPerClick) * perHour : 0;
@@ -585,13 +599,13 @@ class Engine extends EventEmitter {
             vaultEveryMin: r && r.vaultEveryMs ? Math.round(r.vaultEveryMs / 6000) / 10 : null,
             // For the panel's live bars: when the next batch goes out, and how full the vault is
             // (last collect, from the site or our own collect if that's newer, plus its rate and size).
-            nextClickAt: r ? r.lastClick + this.period(r) : null, clickIntervalMs: s.clickIntervalMs,
-            vault: r && me && me.vaultCap > 0 && me.vaultPerMin > 0 ? { cap: me.vaultCap, perMin: me.vaultPerMin, lastAt: Math.max(me.vaultLastCollected || 0, r.lastVaultOkAt || 0) || null } : null,
+            nextClickAt: r && clicks !== 'off' ? r.lastClick + this.period(r) : null, clickIntervalMs: s.clickIntervalMs,
+            vault: r && clicks !== 'off' && me && me.vaultCap > 0 && me.vaultPerMin > 0 ? { cap: me.vaultCap, perMin: me.vaultPerMin, lastAt: Math.max(me.vaultLastCollected || 0, r.lastVaultOkAt || 0) || null } : null,
             me: me || null,
             // Rough, from the account's own rates: clicks run at a fixed pace; the vault fills at $/min;
             // cases count at their measured value. total is the account's income in $.
             perHour: r && me ? (() => {
-                const vault = me.vaultPerMin ? me.vaultPerMin * 60 : 0;
+                const vault = me.vaultPerMin && clicks !== 'off' ? me.vaultPerMin * 60 : 0;
                 const clickMoney = clicks === 'money' && me.moneyPerClick ? me.moneyPerClick * perHour : 0;
                 return { vault, clickMoney, cases, caseMoney: cases * caseValue, caseValue, caseValueMeasured: cv.measured, total: vault + clickMoney + cases * caseValue };
             })() : null,

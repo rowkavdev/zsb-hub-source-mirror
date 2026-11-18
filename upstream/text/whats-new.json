@@ -1,5 +1,11 @@
 {
   "_how": "One entry per released version, newest first. Each line is one bullet; **bold** works. Shown once after an update, and used as the release notes on GitHub. npm run release refuses a version with no entry here.",
+  "1.2.16": [
+    "**Clicks off** — each account's click switch has a new choice, **Off**: the account stays on and works with every plugin (Opener, Trader, Armory…), but sends no clicks and doesn't collect its vault. It doesn't take one of the IP's clicking places either, so you can run as many as you like. Select several accounts to set them all at once.",
+    "**Check drops** — the Opener page has a **Check drops** button once an account has kept a favourited drop. It shows how many you haven't looked at yet. It opens a window with each account's drops in a row, newest first. The same item from one open is one card (×2, ×3…); click it to see each one with its float and pattern.",
+    "**Faster opening** — the Opener no longer waits 300 ms after each open. When the site says the account is busy for a moment, it just tries again, and when it says too many opens, it waits as long as the site asks. Speed now shows in cases a second (/s), and the log says the open size and the time each open takes.",
+    "**Trader: accounts first** — a single trade now asks who sends before what to send. With one sender picked, **View inventory** sits next to Next; in the inventory, **Check another account** goes back to pick a different one, and **Confirm and trade now** sends what you picked straight away."
+  ],
   "1.2.15": [
     "**Card menus no longer hide behind other cards** — with Fancy graphics on, a card's ⋯ menu could open under the card below it (most often with compact cards). It now always opens on top.",
     "**No more sideways scrollbar on hover** — with Fancy graphics on, the glow round the edge of whatever is under the mouse could make the page a little too wide, so a sideways scrollbar came and went. The glow now stays drawn without taking up room."

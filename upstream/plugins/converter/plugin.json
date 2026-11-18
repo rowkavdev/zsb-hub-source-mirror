@@ -1,7 +1,7 @@
 {
   "id": "converter",
   "name": "Converter",
-  "version": "1.7.0",
+  "version": "1.7.2",
   "description": "Turns what accounts earn into tokens, in steps you choose: sell clicked cases, sell cheap skins, buy capsules with the cash, open them with every drop sold to tokens, upgrade the tokens into Dragon Lores. Starts in practice mode.",
   "minCore": "1.2.14",
   "main": "index.js",
@@ -129,6 +129,12 @@
     },
     "everyMs": {
       "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "sellStallMs": {
+      "type": "number",
+      "label": "Sell queue: give up after this long without progress (ms)",
       "hidden": true,
       "default": 0
     }

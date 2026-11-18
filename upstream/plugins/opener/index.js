@@ -25,7 +25,14 @@ const PRESET = 'ZSB Hub opener';
 // Drops' value as a share of what the opened cases cost (each case at its shop price, bought now or earlier).
 const pct = (value, cost) => Math.round(100 * value / cost) + '%';
 const NO_CAP = 999999;   // autosellAmount is a value cap: drops worth more are kept
-const OPEN_GAP_MS = 300;
+// Opens (from the site's API description, 2026-11-18): each runs under the account's lock, shared by every money and
+// inventory action (clicks too); one sent while it's held is refused with 400 "User is locked". The lock is free
+// once the answer is back, so the next open goes right then — there used to be a flat 300 ms pause after each one
+// (a tester at 42×2 ran at 77 cases/s, ~0.3 s of each 1.1 s open was that pause). A lock refusal (a click batch
+// landing at the same moment) is tried again after LOCK_RETRY_MS without counting as a failure, up to
+// MAX_LOCK_RETRIES in a row; a 429 waits the site's Retry-After (else RATE_WAIT_S), up to MAX_RATE_WAITS in a row.
+const LOCK_RETRY_MS = 250, MAX_LOCK_RETRIES = 40, RATE_WAIT_S = 30, MAX_RATE_WAITS = 10;
+const LOCKED = /user is locked/i;
 const CATALOG_MS = 30 * 60 * 1000;
 const MAX_OPEN_FAILS = 5;
 const INV_FILL = 0.9;           // non-Pro selling: sell the drops before the inventory passes this
@@ -83,9 +90,77 @@ const hookDrop = (s, acct, from, open) => ({
     // patternId is often the site's database id (24 hex), not a name; the name already says the pattern ('Blue Gem').
     pattern: s.hasPattern && s.patternId && !/^[0-9a-f]{24}$/i.test(String(s.patternId)) ? String(s.patternId).slice(0, 60) : '',
     from: String((s.origin && s.origin.name) || from || '').slice(0, 100), acct, open, t: Date.now(),
+    // An event skin (opened with event tickets): Skin.event { name, gradient } — its name, and the gradient's first colour.
+    event: s.event && s.event.name ? String(s.event.name).slice(0, 100) : '',
+    eventColor: s.event && (/#([0-9a-f]{6})\b/i.exec(String(s.event.gradient || '')) || [])[1] || '',
 });
 // The site's picture rule (its icon resolver): "-…" is a Steam economy image, "/…" and https are as they are,
 // anything else is under /pictures/skins/. Discord fetches it, so it must be a full https URL.
+// ---- Check drops: the favourited drops of each account, for the page's viewer ----
+// Kept in the plugin's data (DROPS_KEEP newest per account), each marked seen once the viewer has shown it; the
+// "Check drops" button counts the unseen ones. The viewer is the page's modal: a reel of cards per account, newest
+// first; the same item from one multi-open is one stack (×N), and a click on a card lists each of its items.
+const DROPS_KEEP = 200;
+const BOOT = Date.now().toString(36);   // hookOpenSeq starts again with the plugin: opens are BOOT.seq
+let dropsView = null;                   // null: closed | { pick: a stack's key or null, fresh: ids that were unseen when it opened }
+function keepDrop(aid, d) {
+    const all = state.drops || (state.drops = {});
+    const list = all[aid] || (all[aid] = []);
+    state.dropSeq = (state.dropSeq || 0) + 1;
+    list.unshift({ ...d, open: BOOT + '.' + d.open, id: state.dropSeq.toString(36), seen: false });
+    if (list.length > DROPS_KEEP) list.length = DROPS_KEEP;
+}
+const unseenDrops = () => Object.values(state.drops || {}).reduce((t, l) => t + l.filter(d => !d.seen).length, 0);
+const stackOf = (aid, d) => aid + '|' + d.open + '|' + d.name;
+// Hubs before 1.2.16 show no count on a button: there it goes in the label.
+const coreAtLeast = (v) => { const a = String(ctx.coreVersion || '0').split('-')[0].split('.').map(Number), b = v.split('.').map(Number); for (let i = 0; i < 3; i++) if ((a[i] || 0) !== b[i]) return (a[i] || 0) > b[i]; return true; };
+const priceText = (n) => '$' + num(n).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
+// A drop -> an item card (the panel's items block): weapon over skin name, wear and float, price, rarity stripe.
+function dropCard(d, id, n, fresh) {
+    const full = String(d.name || 'Item'), m = /^(.*?)\s*\(([^()]+)\)\s*$/.exec(full), base = m ? m[1] : full, wear = m ? m[2] : '';
+    const [title, sub] = base.includes(' | ') ? [base.slice(0, base.indexOf(' | ')), base.slice(base.indexOf(' | ') + 3)] : ['', base];
+    const fl = Number(d.float), one = n === 1;
+    return {
+        id, title, sub, image: iconUrl(d.icon), color: String(d.eventColor || d.color || '').replace(/^#/, ''),
+        price: one ? priceText(d.price) : priceText(d.price * n),
+        detail: [wear, one && d.float != null && Number.isFinite(fl) ? String(fl) : ''].filter(Boolean).join(' · '),
+        tags: [fresh ? 'New' : '', d.event || '', d.pattern || ''].filter(Boolean),
+        ...(one ? {} : { qty: { n: 0, of: n } }),
+        hint: `${full}${d.from ? ` — from ${d.from}` : ''}${one ? '' : ` — ${n} in one open, click to see each`}`,
+    };
+}
+function dropsModal() {
+    if (!dropsView) return null;
+    const names = (aid, l) => (ctx.accounts.get(aid) || {}).name || (l[0] && l[0].acct) || aid;
+    const all = Object.entries(state.drops || {}).filter(([, l]) => l.length);
+    const close = { title: 'Favourited drops', close: 'dropsClose' };
+    if (dropsView.pick) {
+        const aid = dropsView.pick.split('|')[0], l = (state.drops || {})[aid] || [];
+        const items = l.filter(d => stackOf(aid, d) === dropsView.pick);
+        if (!items.length) { dropsView.pick = null; return dropsModal(); }
+        const d0 = items[0];
+        return { ...close, blocks: [
+            { type: 'bar', items: [{ label: '← All drops', action: 'dropsBack' }], text: `${names(aid, l)} · ${items.length > 1 ? `${items.length}× ` : ''}${d0.name} · ${new Date(d0.t).toLocaleString()}` },
+            { type: 'items', action: 'dropsPick', items: items.map(d => dropCard(d, 'one|' + d.id, 1, dropsView.fresh.has(d.id))) },
+            { type: 'table', wrap: true, columns: ['Float', 'Price', 'Pattern', 'Event', 'From'],
+                rows: items.map(d => [d.float != null ? String(d.float) : '—', priceText(d.price), d.pattern || '—', d.event || '—', d.from || '—']) },
+        ] };
+    }
+    if (!all.length) return { ...close, blocks: [{ type: 'text', text: 'No favourited drops yet. They show up here as the Opener keeps them (Auto-favourite, step 3).' }] };
+    return { ...close, blocks: [
+        { type: 'bar', items: [{ label: 'Clear all', action: 'dropsClear', danger: true, confirm: 'Clear the list of favourited drops? The items stay in the accounts — only this list is emptied.' }],
+            text: 'Newest first. The same item from one open is one card (×N) — click a card to see each item.' },
+        ...all.sort((a, b) => num(b[1][0].t) - num(a[1][0].t)).map(([aid, l]) => {
+            const stacks = new Map();
+            for (const d of l) { const k = stackOf(aid, d); if (!stacks.has(k)) stacks.set(k, []); stacks.get(k).push(d); }
+            const fresh = l.filter(d => dropsView.fresh.has(d.id)).length;
+            const worth = l.reduce((t, d) => t + num(d.price), 0);
+            return { type: 'section', title: `${names(aid, l)} · ${count(l.length)} drop${l.length === 1 ? '' : 's'}${fresh ? ` (${count(fresh)} new)` : ''} · ${money(worth)}`,
+                blocks: [{ type: 'items', reel: true, action: 'dropsPick', items: [...stacks].map(([k, g]) => dropCard(g[0], k, g.length, g.some(d => dropsView.fresh.has(d.id)))) }] };
+        }),
+    ] };
+}
+
 function iconUrl(icon) {
     const s = String(icon || '');
     if (!s) return null;
@@ -99,13 +174,14 @@ const MAX_FLOAT_LINES = 15;
 function hookEmbed(g) {
     const d = g[0], lines = g.slice(0, MAX_FLOAT_LINES).map(x => `${x.float == null ? '—' : String(x.float)}  —  ${usd(x.price)}`);
     if (g.length > MAX_FLOAT_LINES) lines.push(`…and ${g.length - MAX_FLOAT_LINES} more (${usd(g.slice(MAX_FLOAT_LINES).reduce((s, x) => s + x.price, 0))})`);
-    const color = parseInt(String(d.color).replace(/^#/, ''), 16);
+    const color = parseInt(String(d.eventColor || d.color).replace(/^#/, ''), 16);   // an event drop: the event's colour
     const img = iconUrl(d.icon);
     return {
-        title: (d.name + (g.length > 1 ? `  ×${g.length}` : '')).slice(0, 256),
+        title: ((d.event ? `${d.event} · ` : '') + d.name + (g.length > 1 ? `  ×${g.length}` : '')).slice(0, 256),
         color: Number.isFinite(color) && color >= 0 && color <= 0xffffff ? color : 0xd4a017,
         fields: [
             { name: g.length > 1 ? `Floats (${g.length})` : 'Float', value: lines.join('\n').slice(0, 1024) },
+            ...(d.event ? [{ name: 'Event', value: d.event, inline: true }] : []),
             ...(d.rarity ? [{ name: 'Rarity', value: d.rarity, inline: true }] : []),
             ...(d.exterior ? [{ name: 'Exterior', value: d.exterior, inline: true }] : []),
             { name: d.souvenir ? 'Souvenir' : 'StatTrak', value: d.souvenir || d.statTrak ? 'Yes' : 'No', inline: true },
@@ -122,7 +198,7 @@ function hookEmbed(g) {
 function hookBatch() {
     const groups = new Map();
     for (const d of hookQ) {
-        const k = d.open + '\u0000' + d.acct + '\u0000' + d.name;
+        const k = d.open + '\u0000' + d.acct + '\u0000' + d.name + '\u0000' + d.event;   // event drops apart from plain ones
         if (!groups.has(k)) { if (groups.size >= 10) continue; groups.set(k, []); }
         groups.get(k).push(d);
     }
@@ -289,6 +365,69 @@ async function settled(aid, was) {
         last = n;
     }
     return m;
+}
+
+// Bulk sells go through the site's sell queue (seen 2026-11-17): DELETE /api/inventory answers 202 "queued" straight
+// away, then the sell waits its turn and runs. GET /api/queues/status shows it: { jobs: { 'bulk-sell': { state:
+// 'queued' (position, total) | 'running' (progress { sold, total, value }) | 'done' (count, value) | 'failed' (error) } } };
+// a settled result stays readable for 10 minutes. A tester (2026-11-18): the sell took over 20 minutes, the old fixed
+// 20-minute wait gave up and the account stopped "still 90% full" while it was still selling. Now it waits as long as
+// the job moves (its place in line or the items sold), giving up only after SELL_STALL_MS without a change (or
+// SELL_MAX_MS in all), and says how it's going every SELL_SAY_MS. fresh: a sell was just queued, so a settled job seen
+// before an active one may be the last sell's result — it takes a few more reads to count as this one. A site without
+// the queue (no such page) returns at once.
+const SELL_STALL_MS = 10 * 60000, SELL_MAX_MS = 2 * 3600000, SELL_SAY_MS = 5 * 60000;
+async function sellQueue(aid, lane, log, stopped, fresh = false) {
+    const t0 = Date.now();
+    let quiet = 0, said = false, job = null, seen = false, sig = '', moved = Date.now(), saidAt = Date.now();
+    const stall = num(S('sellStallMs')) || SELL_STALL_MS;
+    while (Date.now() - t0 < SELL_MAX_MS && (!seen || Date.now() - moved < stall)) {   // before it shows up, the quiet reads end the wait
+        if (stopped()) throw new Stop(ctx.stopping ? 'turned off' : 'stopped by you');
+        const r = await req(aid, '/api/queues/status');
+        if (r.status === 404 || r.status === 405) return null;   // no sell queue on this site
+        if (r.kind !== 'ok') { await ctx.sleep(5000); continue; }   // a read that failed: not the end of the sell
+        job = (r.json && r.json.jobs && r.json.jobs['bulk-sell']) || null;
+        if (job && (job.state === 'queued' || job.state === 'running')) {
+            seen = true; quiet = 0;
+            const now = JSON.stringify([job.state, num(job.position), job.progress ? num(job.progress.sold) : -1]);
+            if (now !== sig) { sig = now; moved = Date.now(); }
+            const where = job.state === 'queued' ? `place ${count(num(job.position))} of ${count(num(job.total))} in line`
+                : job.progress && num(job.progress.total) ? `${count(num(job.progress.sold))} of ${count(num(job.progress.total))} sold` : 'selling';
+            lane.phase = job.state === 'queued' ? `sell queued (${num(job.position)} of ${num(job.total)})` : `selling drops (${where})`;
+            if (job.state === 'queued' && !said) { said = true; saidAt = Date.now(); log(`the site queued the sell (${where}) — waiting for it`); }
+            else if (Date.now() - saidAt >= SELL_SAY_MS) { saidAt = Date.now(); log(`the site's sell is still going after ${Math.round((Date.now() - t0) / 60000)} min (${where}) — waiting for it`); }
+        } else if ((moved = Date.now()), ++quiet >= (fresh && !seen ? 5 : 2)) {   // a settled read is a change: the stall clock restarts
+            if (job && job.state === 'failed') log(`the site's sell failed${job.error ? ': ' + job.error : ''}`, 'warn');
+            return job;
+        }
+        await ctx.sleep(seen ? 2000 : 1000);
+    }
+    log(Date.now() - moved >= stall ? `the site's sell hasn't moved for ${Math.round(stall / 60000)} min — going on without it`
+        : `the site's sell is still going after ${SELL_MAX_MS / 3600000} h — going on without it`, 'warn');
+    return job;
+}
+// One bulk sell (DELETE /api/inventory with `type`), sent until the site takes it: 409 "already a sell in the queue"
+// waits that one out; 503 "queue full" and 429 (5 bulk sells a minute) wait the site's Retry-After (said once) — they
+// used to end as "selling failed" and then "still 90% full". Then waits for the job. -> its last status, or false: not taken.
+const SELL_SEND_MS = 30 * 60000;
+async function bulkSell(aid, body, lane, log, stopped, what = 'selling the drops') {
+    const t0 = Date.now();
+    let busySaid = false;
+    for (;;) {
+        if (stopped()) throw new Stop(ctx.stopping ? 'turned off' : 'stopped by you');
+        const r = await req(aid, '/api/inventory', { method: 'DELETE', body });
+        if (r.kind === 'ok') return sellQueue(aid, lane, log, stopped, r.status === 202);   // 202 "queued": a job is coming (an old result may show first)
+        if (r.status === 409) { await sellQueue(aid, lane, log, stopped); continue; }
+        if ((r.status === 503 || r.status === 429) && Date.now() - t0 < SELL_SEND_MS) {
+            const wait = Math.min(120, Math.max(1, Number.isFinite(r.retryAfter) ? r.retryAfter : r.status === 503 ? 30 : 15));
+            if (!busySaid) { busySaid = true; log(`${what}: the site's sell queue is ${r.status === 503 ? 'full' : 'busy'} — trying again in ${wait} s (and after that until it's taken)`, 'warn'); }
+            lane.phase = 'waiting for the sell queue';
+            await ctx.sleep(wait * 1000);
+            continue;
+        }
+        log(`${what} failed (${(r.json && r.json.error) || 'HTTP ' + r.status})`, 'warn');
+        return false;
+    }
 }
 
 async function stockOf(aid, id) {
@@ -467,14 +606,14 @@ async function run(aid, name, practice, cont, shop) {
                 if (auto) await ensureConfig(aid, log, !keep && !bySell, C);
                 const sellDrops = async () => {
                     lane.phase = 'selling drops';
-                    const r = await req(aid, '/api/inventory', { method: 'DELETE', body: { type: 'price', value: Math.min(capOf(C), 499999), currency: wantVariant(C) } });
-                    if (r.kind !== 'ok') log(`selling the drops failed (${(r.json && r.json.error) || 'HTTP ' + r.status})`, 'warn');
+                    const stopped = () => halted() || lane.halt;
+                    await bulkSell(aid, { type: 'price', value: Math.min(capOf(C), 499999), currency: wantVariant(C) }, lane, log, stopped);
                     const m = await settled(aid, inv.used);
                     inv.used = num(m.inventoryCount); inv.size = num(m.inventorySize) || inv.size;
                     rec.sells = (rec.sells || 0) + 1;
                     lane.phase = 'opening';
                 };
-                let fails = 0, full = 0;
+                let fails = 0, full = 0, locks = 0, rates = 0, sizeSaid = '';
                 const ends = S('exclusive') ? Infinity : Date.now() + (num(S('turnMs')) || RUN_MS);
                 // Boosts: checked when opening starts, every BOOST_EVERY_MS and right as one ends; the open size follows.
                 const boost = { at: 0, end: 0, said: new Set() };
@@ -495,6 +634,11 @@ async function run(aid, name, practice, cont, shop) {
                     // Fewer than a full open left (or fewer tickets): open what there is.
                     const can = useT ? Math.min(stock, tickets) : stock;
                     const c = Math.min(perCall, can), m = Math.max(1, Math.min(mult, Math.floor(can / c)));
+                    // The open size, said when the run starts and whenever a boost changes it.
+                    if (sizeSaid !== perCall + '×' + mult) {
+                        log(`${sizeSaid ? 'open size now' : `opening ${count(stock)} ${item.name},`} ${perCall}×${mult} at a time (${count(perCall * mult)} per open)`);
+                        sizeSaid = perCall + '×' + mult;
+                    }
                     if (bySell && room() < c * m) {
                         await sellDrops();
                         if (room() < c * m) throw new Stop(`the inventory is still ${Math.round(inv.used / inv.size * 100)}% full after selling the drops — make room, then run again`);
@@ -502,7 +646,8 @@ async function run(aid, name, practice, cont, shop) {
                     const body = { id: item._id, quickOpen: true, count: String(c), useEventTickets: useT, caseOpenMultiplier: m, autoOpen: auto };
                     const r = await ctx.request(aid, '/api/open/' + item.type, { method: 'POST', body });
                     if (r.kind === 'ok' && !(r.json && r.json.error)) {
-                        stock -= c * m; lane.opened += c * m; rec.opened += c * m; p.opened += c * m; p.left = stock; fails = 0; full = 0;
+                        stock -= c * m; lane.opened += c * m; rec.opened += c * m; p.opened += c * m; p.left = stock; fails = 0; full = 0; locks = 0; rates = 0;
+                        rec.calls = (rec.calls || 0) + 1; rec.ms = (rec.ms || 0) + (Date.now() - t0);
                         if (bySell) inv.used += c * m;
                         if (useT) { tickets -= c * m; rec.tickets += c * m; p.tickets = tickets; tix.set(aid, tickets); }
                         const j = r.json;
@@ -512,7 +657,8 @@ async function run(aid, name, practice, cont, shop) {
                         if (num(item.price) > 0) { rec.cost += c * m * (num(item.price) + (useT ? TICKET : 0)); rec.pv += v; }
                         if (j && !Array.isArray(j)) {
                             const oid = ++hookOpenSeq;
-                            for (const f of Array.isArray(j.favoritedSkins) ? j.favoritedSkins : []) { rec.favs++; hookPush(hookDrop(f, (ctx.accounts.get(aid) || {}).name || aid, item.name, oid)); log(`kept a favourited drop: ${f.name || 'a skin'}${f.price ? ` ($${num(f.price).toLocaleString('en-US')})` : ''}`, 'ok'); }
+                            if (Array.isArray(j.favoritedSkins) && j.favoritedSkins.length) setTimeout(save, 0);   // the drops list, once this open's are in
+                            for (const f of Array.isArray(j.favoritedSkins) ? j.favoritedSkins : []) { rec.favs++; const d = hookDrop(f, (ctx.accounts.get(aid) || {}).name || aid, item.name, oid); keepDrop(aid, d); hookPush(d); log(`kept a favourited drop: ${f.event && f.event.name ? f.event.name + ' ' : ''}${f.name || 'a skin'}${f.price ? ` ($${num(f.price).toLocaleString('en-US')})` : ''}`, 'ok'); }
                         }
                         if (lane.opened % (perOpen * 25) < c * m) {
                             stock = await stockOf(aid, item._id); p.left = stock; save();
@@ -531,11 +677,24 @@ async function run(aid, name, practice, cont, shop) {
                             if (++full > FULL_RETRIES) throw new Stop(`the site keeps refusing opens after selling the drops: ${msg}`);
                             inv.used = inv.size; continue;
                         }
+                        if (LOCKED.test(msg)) {   // something else held the account's lock for a moment: just send it again
+                            if (++locks > MAX_LOCK_RETRIES) throw new Stop(`the site kept the account locked for ${locks} opens in a row — something else is using it (opening on the site, a trade, another tool?)`);
+                            await ctx.sleep(LOCK_RETRY_MS);
+                            p.openMs += Date.now() - t0;
+                            continue;
+                        }
+                        if (r.kind === 'rate') {
+                            const wait = Math.min(120, Math.max(1, Number.isFinite(r.retryAfter) ? r.retryAfter : RATE_WAIT_S));
+                            if (++rates > MAX_RATE_WAITS) throw new Stop(`the site refused opens as too many ${rates}× in a row`);
+                            if (rates === 1) log(`the site says too many opens — waiting ${wait} s`, 'warn');
+                            await ctx.sleep(wait * 1000);
+                            continue;
+                        }
                         if (++fails >= MAX_OPEN_FAILS) throw new Stop(`opening failed ${fails}× in a row (${(r.json && r.json.error) || 'HTTP ' + r.status})`);
-                        await ctx.sleep(r.kind === 'rate' ? 30000 : 2000 * fails);
+                        await ctx.sleep(2000 * fails);
                         stock = await stockOf(aid, item._id); p.left = stock;
                     }
-                    await ctx.sleep(OPEN_GAP_MS);
+                    if (num(S('openGapMs'))) await ctx.sleep(num(S('openGapMs')));   // tests only: slows a run down to watch it
                     p.openMs += Date.now() - t0;
                 }
                 // Stock first: the stock is open — sell its drops (non-Pro) for the cash, buy the set amount, open that.
@@ -548,7 +707,7 @@ async function run(aid, name, practice, cont, shop) {
                 lane.of = lane.opened + stock; p.left = stock;
                 }
                 if (bySell && rec.opened) await sellDrops();
-                log(`opened ${count(rec.opened)} ${item.name}${rec.sells ? ` (no auto-sell: sold the drops ${rec.sells}×)` : ''}${rec.tickets ? ` with ${count(rec.tickets)} event tickets` : ''} — drops worth ${money(rec.value)}${rec.cost ? ` (${pct(rec.pv, rec.cost)} of what they cost${rec.tickets ? ', tickets included' : ''})` : ''}`, 'ok');
+                log(`opened ${count(rec.opened)} ${item.name}${rec.sells ? ` (no auto-sell: sold the drops ${rec.sells}×)` : ''}${rec.tickets ? ` with ${count(rec.tickets)} event tickets` : ''} — drops worth ${money(rec.value)}${rec.cost ? ` (${pct(rec.pv, rec.cost)} of what they cost${rec.tickets ? ', tickets included' : ''})` : ''}${rec.calls ? ` · ${count(Math.round(rec.ms / rec.calls))} ms per open` : ''}`, 'ok');
             }
         }
         rec.result = practice ? (plan.length ? 'practice' : 'practice — nothing to do') : rec.opened ? 'done' : 'nothing to open';
@@ -714,6 +873,18 @@ module.exports = {
         hookQ = []; hookDead = ''; hookWait = 0;
         if (state.hook && !hookUrl) ctx.log('Discord webhook: the saved one can\'t be read on this computer — paste it again', 'warn');
         ctx.every(HOOK_GAP_MS, hookFlush);
+        // Check drops: opening the viewer marks every drop seen (the ones that were new keep a New tag while it's open).
+        ctx.panel.action('dropsOpen', () => {
+            const fresh = new Set();
+            for (const l of Object.values(state.drops || {})) for (const d of l) if (!d.seen) { fresh.add(d.id); d.seen = true; }
+            dropsView = { pick: null, fresh };
+            if (fresh.size) save();
+            return {};
+        });
+        ctx.panel.action('dropsClose', () => { dropsView = null; return {}; });
+        ctx.panel.action('dropsPick', (arg) => { if (dropsView && !String(arg).startsWith('one|')) dropsView.pick = String(arg); return {}; });
+        ctx.panel.action('dropsBack', () => { if (dropsView) dropsView.pick = null; return {}; });
+        ctx.panel.action('dropsClear', () => { state.drops = {}; save(); if (dropsView) dropsView = { pick: null, fresh: new Set() }; return { message: 'Drops list cleared.' }; });
         ctx.panel.action('hookSave', () => {
             const u = String(S('hookPaste') || '').trim();
             ctx.settings.set('hookPaste', '');   // the URL doesn't stay in the box
@@ -929,7 +1100,7 @@ module.exports = {
                     status(a),
                     total ? { bar: p.opened / total, text: `${count(p.opened)} / ${count(total)}` } : { text: '—', level: 'muted' },
                     p && p.left != null ? count(p.left) : '—',
-                    r ? `${count(r * 60000)}/min` : '—',
+                    r ? `${r * 1000 < 10 ? (r * 1000).toFixed(1) : count(Math.round(r * 1000))}/s` : '—',
                     eta ? dur(eta) : on && p && p.left ? 'working it out' : '—',
                     ...(tixOn ? [ticketsOn(pl.C) ? tixOf(a) : { text: 'off', level: 'muted' }] : []),
                     money(num(me.money)),
@@ -1072,10 +1243,13 @@ module.exports = {
             // The account pills: wallet, then the open size (open count × multiplier, boosts included).
             const accountLines = Object.fromEntries(ctx.accounts.list().map(a => { const m = a.me || {};
                 return [a.id, [m.money != null ? `Wallet ${money(num(m.money))}` : 'Wallet not read yet', m.openCount ? `Opens ${count(num(m.openCount))} × ${count(num(m.openMult) || 1)}` : 'Open size not read yet']]; }));
-            return { pin: act.length ? 'running' : undefined, accountLines, blocks: [
+            const unseen = unseenDrops(), anyDrops = Object.values(state.drops || {}).some(l => l.length);
+            const dropsBtn = anyDrops ? [{ type: 'buttons', items: [{ label: 'Check drops' + (unseen && !coreAtLeast('1.2.16') ? ` (${count(unseen)} new)` : ''), action: 'dropsOpen', badge: unseen, primary: unseen > 0 }] }] : [];
+            return { pin: act.length ? 'running' : undefined, modal: dropsModal() || undefined, accountLines, blocks: [
                 ...(hero ? [hero] : []),
                 ...(paused ? [{ type: 'notice', level: 'bad', text: 'Buying is stopped: ' + paused }] : []),
                 ...(hero ? [] : [wizard]),
+                ...dropsBtn,
                 ...(rows.length ? [{ type: 'table', columns: ['Account', ...(setsOn ? ['Opens'] : []), 'Status', 'Opened', 'Left', 'Speed', 'Time left', ...(tixOn ? ['Tickets'] : []), 'Cash', ''], rows }] : []),
                 ...(shopRows.length ? [{ type: 'section', title: 'Queued from the Armory shop', text: 'Opens what the shop bought, from stock — nothing is bought here. Each starts when its account is free.', blocks: [
                     { type: 'table', columns: ['Account', 'Opens', 'Status', 'Opened', 'Left', 'Drops', ''], rows: shopRows }] }] : []),

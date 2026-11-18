@@ -4,7 +4,7 @@
  * accounts.json and settings.json in the app's data folder. Writes go to a temp file first and
  * are renamed into place, so a crash or power cut mid-save can't leave a half-written file.
  *
- * An account: { id, name, token, userId, type: 'money'|'cases', addedAt, wasRunning, lastClickAt }
+ * An account: { id, name, token, userId, type: 'auto'|'money'|'cases'|'off' (off: on without clicking), addedAt, wasRunning, lastClickAt }
  * The id is 4 random hex chars — it's what reports show instead of the name.
  */
 
@@ -148,7 +148,7 @@ class Store {
         const a = this.get(id);
         if (!a) return null;
         if (patch.name != null) a.name = String(patch.name).trim().slice(0, 40) || a.name;
-        if (['auto', 'money', 'cases'].includes(patch.type)) a.type = patch.type;
+        if (['auto', 'money', 'cases', 'off'].includes(patch.type)) a.type = patch.type;
         this.saveAccounts();
         return a;
     }
