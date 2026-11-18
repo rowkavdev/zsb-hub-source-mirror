@@ -1,7 +1,7 @@
 {
   "id": "opener",
   "name": "Opener",
-  "version": "1.14.0",
+  "version": "1.15.0",
   "description": "A tool for opening cases, capsules or collections on the accounts you choose: Preview shows what it would do, Open now buys a set amount (or what the spare cash covers, or uses what is in stock), opens it all and keeps or sells the drops. Tracks XP and rank-ups.",
   "minCore": "1.2.14",
   "main": "index.js",
@@ -340,6 +340,18 @@
     },
     "turnMs": {
       "type": "number",
+      "hidden": true,
+      "default": 0
+    },
+    "sellStallMs": {
+      "type": "number",
+      "label": "Sell queue: give up after this long without progress (ms)",
+      "hidden": true,
+      "default": 0
+    },
+    "openGapMs": {
+      "type": "number",
+      "label": "Pause after each open (ms, tests)",
       "hidden": true,
       "default": 0
     }

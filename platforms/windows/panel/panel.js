@@ -291,7 +291,7 @@
         $('#version').textContent = tb ? T('app.testBuild', { version: tb[1], n: tb[2] })
             : S.stage ? T('app.stage', { version: S.version.replace(/\.0$/, '') }) : 'v' + S.version;
         const t = S.totals;
-        setHtml('#summary', `<span class="kpi">${H('header.kpi.clicking', { n: t.clicking, max: S.capacity || S.maxPerIp })}<span class="mini"><i data-w="${Math.min(100, Math.round(S.running / (S.capacity || S.maxPerIp) * 100))}"></i></span></span>`
+        setHtml('#summary', `<span class="kpi">${H('header.kpi.clicking', { n: t.clicking, max: S.capacity || S.maxPerIp })}<span class="mini"><i data-w="${Math.min(100, Math.round((S.clickingRuns ?? S.running) / (S.capacity || S.maxPerIp) * 100))}"></i></span></span>`
             + (t.total ? `<button class="kpi kpi-btn" data-act="incomeChart" title="${H('income.open')}">${H('header.kpi.income', { money: money(t.total) })}</button>` : '')
             + (S.accounts.length > t.clicking ? `<span class="kpi">${H('header.kpi.idle', { n: S.accounts.length - t.clicking })}</span>` : '')
             + (S.update && S.update.status === 'ready' ? `<span class="kpi update">${H('update.ready', { version: S.update.version })}<button class="small primary" data-act="installUpdate">${H('update.restart')}</button></span>` : ''));
@@ -490,6 +490,7 @@
               <button data-act="type" data-id="${id}" data-type="auto" data-f="segAuto" title="${H('card.type.auto.tip')}">${H('card.type.auto')}</button>
               <button data-act="type" data-id="${id}" data-type="money" data-f="segMoney">${H('card.type.money')}</button>
               <button data-act="type" data-id="${id}" data-type="cases" data-f="segCases">${H('card.type.cases')}</button>
+              <button data-act="type" data-id="${id}" data-type="off" data-f="segOff" title="${H('card.type.off.tip')}">${H('card.type.off')}</button>
             </div>
             <span class="grow"></span>
             <button data-f="main" data-id="${id}"></button>
@@ -540,7 +541,7 @@
         if (running && !ph) { hero = '…'; label = T('card.label.waiting'); }
         else if (running) {
             hero = money(ph.total); unit = T('card.hero.unit');
-            label = a.clickType === 'cases'
+            label = a.clickType === 'off' ? T('card.label.off') : a.clickType === 'cases'
                 ? T(ph.caseValueMeasured ? 'card.label.cases' : 'card.label.casesEst', { cases: num(ph.cases), value: '$' + ph.caseValue.toFixed(2), vault: money(ph.vault) })
                 : T('card.label.money', { clicks: money(ph.clickMoney), vault: money(ph.vault) });
         }
@@ -560,7 +561,7 @@
         setText(f.clicks, running ? num(a.clicks) : '—');
         setText(f.cpc, me && me.casesPerClick != null ? +me.casesPerClick.toFixed(2) + '%' : '—');
         setText(f.mpc, me && me.moneyPerClick != null ? money(me.moneyPerClick) : '—');
-        setText(f.ctype, a.clickType === 'cases' ? T('card.type.cases') : T('card.type.money'));
+        setText(f.ctype, T('card.type.' + (a.clickType === 'cases' || a.clickType === 'off' ? a.clickType : 'money')));
         f.hero.classList.toggle('word', !running);
         f.money.closest('.kv').hidden = !running && !me;   // nothing known yet: no empty stats box
 
@@ -571,6 +572,7 @@
         f.segAuto.className = a.type === 'auto' ? 'on' : ''; f.segAuto.setAttribute('aria-pressed', String(a.type === 'auto'));
         f.segMoney.className = a.type === 'money' ? 'on' : ''; f.segMoney.setAttribute('aria-pressed', String(a.type === 'money'));
         f.segCases.className = a.type === 'cases' ? 'on' : ''; f.segCases.setAttribute('aria-pressed', String(a.type === 'cases'));
+        f.segOff.className = a.type === 'off' ? 'on' : ''; f.segOff.setAttribute('aria-pressed', String(a.type === 'off'));
         const main = running ? ['stop', T('card.btn.stop'), ''] : a.hasToken ? ['start', T('card.btn.start'), 'primary'] : ['relogin', T('card.btn.relogin'), 'primary'];
         f.main.dataset.act = main[0];
         f.main.className = main[2];
@@ -595,14 +597,14 @@
             const left = a.nextClickAt - t;
             f.nextBar.style.width = Math.min(100, Math.max(0, 100 - left / a.clickIntervalMs * 100)) + '%';
             setText(f.nextTxt, left > 0 ? T('card.next.in', { time: secs(left) }) : T('card.next.sending'));
-        } else { f.nextBar.style.width = '0%'; setText(f.nextTxt, '—'); }
+        } else { f.nextBar.style.width = '0%'; setText(f.nextTxt, a.startedAt && a.clickType === 'off' ? T('card.next.off') : '—'); }
         const v = a.vault;
         if (a.startedAt && v && v.lastAt) {
             const held = Math.max(0, Math.min(v.cap, (t - v.lastAt) / 60000 * v.perMin));
             const pct = held / v.cap * 100;
             f.vaultBar.style.width = pct + '%';
             setText(f.vaultTxt, T('card.vault.fill', { pct: Math.floor(pct), money: money(held) }));
-        } else { f.vaultBar.style.width = '0%'; setText(f.vaultTxt, a.startedAt ? T('card.vault.waiting') : '—'); }
+        } else { f.vaultBar.style.width = '0%'; setText(f.vaultTxt, a.startedAt && a.clickType === 'off' ? T('card.vault.off') : a.startedAt ? T('card.vault.waiting') : '—'); }
     }
 
     function drawAccounts() {
@@ -628,13 +630,13 @@
         let wrap = el.querySelector('.sections');
         if (!wrap) {
             lastHtml.delete(el);
-            el.innerHTML = `<p class="limit-note" hidden></p><div class="acct-tools"><input type="search" class="acct-search" placeholder="${H('cards.search')}" aria-label="${H('cards.search')}" hidden><div class="seg acct-filter" role="group" aria-label="${H('cards.filter.label')}" hidden>${FILTERS.map(k => `<button data-act="acctFilter" data-id="${k}" aria-pressed="false">${H('cards.filter.' + k)}</button>`).join('')}</div><span class="grow"></span><button class="small" data-act="selectMode" aria-pressed="false">${H('bulk.select')}</button><button class="small" data-act="compact" aria-pressed="false"></button><button class="small" data-act="folderNew">${H('folders.new')}</button></div><div class="bulk-bar" role="toolbar" aria-label="${H('bulk.label')}" hidden><span class="bulk-n" aria-live="polite"></span><button class="small" data-act="bulkAll"></button><button class="small" data-act="bulkNone">${H('bulk.none')}</button><span class="grow"></span><button class="small" data-act="bulk" data-what="start">${H('bulk.start')}</button><button class="small" data-act="bulk" data-what="stop">${H('bulk.stop')}</button><div class="seg" role="group" aria-label="${H('card.type.label')}"><button data-act="bulk" data-what="type" data-arg="auto">${H('card.type.auto')}</button><button data-act="bulk" data-what="type" data-arg="money">${H('card.type.money')}</button><button data-act="bulk" data-what="type" data-arg="cases">${H('card.type.cases')}</button></div><button class="small" data-act="bulk" data-what="folder">${H('bulk.folder')}</button><button class="small danger" data-act="bulk" data-what="remove">${H('bulk.remove')}</button><button class="small primary" data-act="selectMode">${H('bulk.done')}</button></div><div class="acct-none" hidden>${emptyHtml(H('cards.noMatch'), H('cards.noMatchHint'), `<button class="small" data-act="acctClear">${H('cards.clear')}</button>`)}</div><div class="sections"></div>`;
+            el.innerHTML = `<p class="limit-note" hidden></p><div class="acct-tools"><input type="search" class="acct-search" placeholder="${H('cards.search')}" aria-label="${H('cards.search')}" hidden><div class="seg acct-filter" role="group" aria-label="${H('cards.filter.label')}" hidden>${FILTERS.map(k => `<button data-act="acctFilter" data-id="${k}" aria-pressed="false">${H('cards.filter.' + k)}</button>`).join('')}</div><span class="grow"></span><button class="small" data-act="selectMode" aria-pressed="false">${H('bulk.select')}</button><button class="small" data-act="compact" aria-pressed="false"></button><button class="small" data-act="folderNew">${H('folders.new')}</button></div><div class="bulk-bar" role="toolbar" aria-label="${H('bulk.label')}" hidden><span class="bulk-n" aria-live="polite"></span><button class="small" data-act="bulkAll"></button><button class="small" data-act="bulkNone">${H('bulk.none')}</button><span class="grow"></span><button class="small" data-act="bulk" data-what="start">${H('bulk.start')}</button><button class="small" data-act="bulk" data-what="stop">${H('bulk.stop')}</button><div class="seg" role="group" aria-label="${H('card.type.label')}"><button data-act="bulk" data-what="type" data-arg="auto">${H('card.type.auto')}</button><button data-act="bulk" data-what="type" data-arg="money">${H('card.type.money')}</button><button data-act="bulk" data-what="type" data-arg="cases">${H('card.type.cases')}</button><button data-act="bulk" data-what="type" data-arg="off" title="${H('card.type.off.tip')}">${H('card.type.off')}</button></div><button class="small" data-act="bulk" data-what="folder">${H('bulk.folder')}</button><button class="small danger" data-act="bulk" data-what="remove">${H('bulk.remove')}</button><button class="small primary" data-act="selectMode">${H('bulk.done')}</button></div><div class="acct-none" hidden>${emptyHtml(H('cards.noMatch'), H('cards.noMatchHint'), `<button class="small" data-act="acctClear">${H('cards.clear')}</button>`)}</div><div class="sections"></div>`;
             wrap = el.querySelector('.sections');
             for (const s of sections.values()) s.el.remove();
             sections.clear();
         }
         const note = el.querySelector('.limit-note');
-        note.hidden = S.running < (S.capacity || S.maxPerIp);
+        note.hidden = (S.clickingRuns ?? S.running) < (S.capacity || S.maxPerIp);   // Off accounts take no place
         setText(note, T('accounts.limit', { max: S.capacity || S.maxPerIp, per: S.maxPerIp }));
         applyCompact();
         // Mid-drag the cards stay where the pointer put them; the numbers still update.
@@ -743,6 +745,7 @@
         }
         const r = await call('accountsBulk', ids, what, arg);
         if (!r || !r.ok) { toast(plainError(r && r.error) || T('toast.failed'), 'bad'); return; }
+        if (what === 'type' && Object.values(r.results || {}).some(x => x && x.code === 'CC-RATE-01')) return toast(T('toast.limit', { max: S.maxPerIp }));
         if (what === 'start') {
             const codes = Object.values(r.results || {}).map(x => x && !x.ok && x.code);
             if (codes.includes('CC-MAIN-01')) return setMainModal();
@@ -1535,6 +1538,9 @@
         try { r = await call('pluginAction', id, b.dataset.paction, b.dataset.arg || null); } catch (_) {}
         b.disabled = false;
         if (r && r.message) toast(r.message); else if (!r || !r.ok) toast(plainError(r && r.error) || T('toast.failed'), 'bad');
+        // wizard: { id, step }: the plugin moves its wizard's window to that step (null closes it), e.g. the Trader's
+        // "Check another account" going back to Send from.
+        if (r && r.wizard && r.wizard.id) { const k = id + ':' + r.wizard.id; if (r.wizard.step) wizOpen.set(k, String(r.wizard.step)); else wizOpen.delete(k); tabHtml = ''; }
         refresh();
         return r;
     }
@@ -1563,7 +1569,7 @@
         return `<div class="ppick-lines">${(many && !open ? lines.slice(0, 3) : lines).map(l => `<div class="desc">${esc(l)}</div>`).join('')}
             ${many ? `<span class="ppick-more" role="button" tabindex="0" data-plines="${esc(k)}" aria-expanded="${open}">${open ? H('block.picker.fewer') : H('block.picker.all', { n: lines.length })}</span>` : ''}</div>`;
     };
-    const btnsHtml = (items) => `<div class="pbtns">${(items || []).map(i => `<button class="${i.primary ? 'primary' : ''} ${i.danger ? 'danger' : ''}" data-paction="${esc(i.action)}" ${i.arg != null ? `data-arg="${esc(i.arg)}"` : ''} ${i.confirm ? `data-confirm="${esc(i.confirm)}"` : ''}${i.disabled ? ' disabled' : ''}>${esc(i.label)}</button>`).join('')}</div>`;
+    const btnsHtml = (items) => `<div class="pbtns">${(items || []).map(i => `<button class="${i.primary ? 'primary' : ''} ${i.danger ? 'danger' : ''}" data-paction="${esc(i.action)}" ${i.arg != null ? `data-arg="${esc(i.arg)}"` : ''} ${i.confirm ? `data-confirm="${esc(i.confirm)}"` : ''}${i.disabled ? ' disabled' : ''}>${esc(i.label)}${Number(i.badge) > 0 ? `<span class="pbtn-badge" title="${H('block.buttons.badge', { n: Number(i.badge).toLocaleString('en-US') })}">${esc(Number(i.badge) > 99 ? '99+' : String(Number(i.badge)))}</span>` : ''}</button>`).join('')}</div>`;
     // A shop grid (the Armory shop): pictures grouped by kind; picking one shows the accounts whose credits cover at least
     // one pack, each with a tickbox and an amount, Select all, Buy (the amounts) and Buy max (all each one's credits
     // cover), and optionally Queue in Opener with a drops profile. What's picked lives here (shopSel), across redraws.
@@ -1604,7 +1610,7 @@
     // A wizard: numbered steps, each a row with what it's set to; a click opens that step in a window over the page
     // with Back / Next, the last Next going to the finish (a review with the start buttons). Extras are rows under the
     // steps ("More options") that open the same kind of window with only Done. Which window is open lives here.
-    //   wizard { id, steps: [{ id, title, summary, image, done, warn, text, keys, blocks }], extras: [same],
+    //   wizard { id, steps: [{ id, title, summary, image, done, warn, text, keys, blocks, buttons (beside Next) }], extras: [same],
     //            extrasTitle, finish: { title, text, ready, next (the last Next's label), buttons, blocks } }
     const avatarHtml = (a) => { const ch = esc((String(a.name || a.id || '?').match(/[a-z0-9]/i) || ['?'])[0].toUpperCase());
         return `<span class="pick-av" aria-hidden="true" data-ch="${ch}">${a.me && a.me.image ? `<img src="${esc(a.me.image)}" alt="" loading="lazy" referrerpolicy="no-referrer">` : ch}</span>`; };
@@ -1637,7 +1643,7 @@
                 : `${x.text ? `<p class="muted">${esc(x.text)}</p>` : ''}${(x.keys || []).length ? settingsHtml(x.keys, false, false, x.title) : ''}${pluginBlocks(x.blocks, p)}`;
             const back = prev ? `<button type="button" data-wiz-open="${esc(prev.id)}">${H('block.wizard.back')}</button>` : '';
             const foot = fin ? `${back}<span class="pwiz-sp"></span>${btnsHtml(f.buttons || [])}`
-                : isStep ? `${back}<span class="pwiz-sp"></span>${next ? `<button type="button" class="primary" data-wiz-open="${esc(next)}">${next === '__finish' ? esc(f.next || T('block.wizard.review')) : H('block.wizard.next', { title: nextStep ? nextStep.title : '' })}</button>`
+                : isStep ? `${back}<span class="pwiz-sp"></span>${(x.buttons || []).length ? btnsHtml(x.buttons) : ''}${next ? `<button type="button" class="primary" data-wiz-open="${esc(next)}">${next === '__finish' ? esc(f.next || T('block.wizard.review')) : H('block.wizard.next', { title: nextStep ? nextStep.title : '' })}</button>`
                     : `<button type="button" class="primary" data-wiz-close>${H('block.wizard.done')}</button>`}`
                 : `<span class="pwiz-sp"></span><button type="button" class="primary" data-wiz-close>${H('block.wizard.done')}</button>`;
             ov = `<div class="pshopg-ov pwiz-ov"><div class="pshopg-detail pwiz-dlg" role="dialog" aria-modal="true" aria-labelledby="pwiz-title" tabindex="-1"${fin ? ' data-wiz-finish' : ''}>
@@ -1789,7 +1795,8 @@
             // buttons sit beside the card's own button (a button can't hold buttons), over its foot.
             const qtyBtn = (i, d, l, t) => `<button class="small" data-paction="${esc(i.qty.action)}" data-arg="${esc(i.id + '|' + d)}" title="${H(t)}">${l}</button>`;
             const qtyCtl = (i) => i.qty && i.on && !i.locked ? `<span class="pitem-ctl">${qtyBtn(i, '-1', '−', 'items.less')}<b class="pitem-ctl-n">${esc(String(i.qty.n))}/${esc(String(i.qty.of) + (i.qty.more ? "+" : ""))}</b>${qtyBtn(i, '+1', '+', 'items.more')}${qtyBtn(i, 'all', H('items.all'), 'items.all')}</span>` : '';
-            if (b.type === 'items') return (b.items || []).length ? `<div class="pitems">${b.items.map(i => `<div class="pitem${i.on ? ' on' : ''}${i.locked ? ' locked' : ''}${i.qty ? ' stack' : ''}" data-arg="${esc(i.id)}"${/^[0-9a-f]{6}$/i.test(i.color || '') ? ` data-color="${esc(i.color)}"` : ''}><button class="pitem-main" data-paction="${esc(b.action)}" data-arg="${esc(i.id)}"${i.locked ? ' disabled' : ''} title="${esc(i.hint || i.title || '')}">
+            // reel: one row that scrolls sideways (the Opener's drops), instead of a grid.
+            if (b.type === 'items') return (b.items || []).length ? `<div class="pitems${b.reel ? ' reel' : ''}">${b.items.map(i => `<div class="pitem${i.on ? ' on' : ''}${i.locked ? ' locked' : ''}${i.qty ? ' stack' : ''}" data-arg="${esc(i.id)}"${/^[0-9a-f]{6}$/i.test(i.color || '') ? ` data-color="${esc(i.color)}"` : ''}><button class="pitem-main" data-paction="${esc(b.action)}" data-arg="${esc(i.id)}"${i.locked ? ' disabled' : ''} title="${esc(i.hint || i.title || '')}">
                 <span class="pitem-img">${/^https:\/\//.test(i.image || '') ? `<img src="${esc(i.image)}" alt="" loading="lazy">` : ''}</span>
                 ${(i.tags || []).length || i.fav ? `<span class="pitem-tags">${i.fav ? `<svg class="pitem-star" viewBox="0 0 24 24" role="img" aria-label="${H('items.fav')}"><path d="M12 2.6l2.85 6.05 6.6.8-4.87 4.56 1.27 6.54L12 17.3l-5.85 3.25 1.27-6.54L2.55 9.45l6.6-.8z"/></svg>` : ''}${(i.tags || []).map(t => `<span>${esc(t)}</span>`).join('')}</span>` : ''}
                 <span class="pitem-title">${esc(i.title || '')}</span>${i.sub ? `<span class="pitem-sub">${esc(i.sub)}</span>` : ''}${i.detail ? `<span class="pitem-detail">${esc(i.detail)}</span>` : ''}
@@ -2334,7 +2341,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
             case 'stop': await call('stop', id); break;
             case 'busyTest': { const r = await call('troubleBusyTest', id); toast(r && r.ok ? T('busy.started') : busyWhy(r)); break; }
             case 'busyStop': await call('troubleBusyStop', id); break;
-            case 'type': await call('setType', id, el.dataset.type); break;
+            case 'type': { const r = await call('setType', id, el.dataset.type); if (r && r.ok === false && r.error) toast(plainError(r.error), 'bad'); break; }
             case 'rename': {
                 const acc = S.accounts.find(x => x.id === id);
                 const v = await MODALS.rename(acc && acc.name);

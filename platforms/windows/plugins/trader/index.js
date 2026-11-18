@@ -842,7 +842,7 @@ module.exports = {
         ctx.panel.action('invOpen', (arg) => {
             const ids = senderIds(), aid = String(arg || '') || (ids.length === 1 ? ids[0] : '');
             const a = ctx.accounts.get(aid);
-            if (!a) return { ok: false, error: ids.length > 1 ? 'Pick just one sender to view its inventory.' : 'Pick who sends first (3. Send from).' };
+            if (!a) return { ok: false, error: ids.length > 1 ? 'Pick just one sender to view its inventory.' : 'Pick who sends first (2. Send from).' };
             if (!a.healthy) return { ok: false, error: `${a.name} isn't clicking — start it first.` };
             if (!inv || inv.aid !== aid) inv = { aid, open: true, items: [], page: 0, pages: 1, count: 0, search: '', loading: false, error: '', sel: new Map() };
             inv.open = true;
@@ -852,6 +852,18 @@ module.exports = {
             return {};
         });
         ctx.panel.action('invClose', () => { if (inv) inv.open = false; return {}; });
+        // From the inventory: Check another account (back to Send from, with no sender picked, so one more click
+        // offers its View inventory), or send the trade now with what's picked.
+        ctx.panel.action('invAnother', () => { if (inv) inv.open = false; setSenders([]); return { wizard: { id: 'one', step: 'from' } }; });
+        ctx.panel.action('invSend', () => {
+            const ids = senderIds();
+            if (!inv || ids.length !== 1 || ids[0] !== inv.aid) return { ok: false, error: 'This inventory\'s account isn\'t the sender any more.' };
+            const why = oneProblem();
+            if (why) return { ok: false, error: why };
+            inv.open = false;
+            sendOne().catch(() => {});
+            return { wizard: { id: 'one', step: null }, message: ctx.power.practice() ? 'Practice — working out what it would send…' : 'Sending the trade…' };
+        });
         ctx.panel.action('invMore', () => { if (inv) invLoad(true); return {}; });
         ctx.panel.action('invClear', () => { if (inv) inv.sel.clear(); return {}; });
         // Reset: every filter back to Any and the search cleared (the sort stays), as the game's Reset does.
@@ -958,13 +970,16 @@ module.exports = {
                 ...(invPicked.length && invA ? [{ type: 'text', text: `Picked from ${invA.name}: ${count(invPicked.length)} item${invPicked.length === 1 ? '' : 's'} worth $${short(invValue)}${fromIds.includes(inv.aid) ? '' : ` — ${invA.name} isn't a sender now, so they don't go`}.` }] : []),
                 soleA ? { type: 'buttons', items: [{ label: `View ${soleA.name}'s inventory`, action: 'invOpen', arg: soleA.id, primary: !term && !oneTokens },
                     ...(invPicked.length ? [{ label: 'Clear picked', action: 'invClear' }] : [])] }
-                    : { type: 'text', text: fromIds.length > 1 ? 'View inventory works with one sender: pick just one below.' : 'Pick a sender below (3. Send from), then View inventory to click the items like in the game.' }];
+                    : { type: 'text', text: fromIds.length > 1 ? 'View inventory works with one sender: pick just one in 2. Send from.' : 'Pick one sender (2. Send from), then View inventory to click the items like in the game.' }];
             const invModal = inv && inv.open && invA ? (() => {
                 const cap = tradeCap(inv.aid), lockFavs = !withFavs;
+                const sendable = fromIds.length === 1 && fromIds[0] === inv.aid, sendWhy = sendable ? oneWhy : `${invA.name} isn't the sender now.`;
+                const sendBtn = { label: practice ? 'Confirm and practice send' : 'Confirm and trade now', action: 'invSend', primary: true, disabled: !!sendWhy || !!(one && one.running),
+                    ...(practice ? {} : { confirm: `Send ${oneWhat} from ${invA.name} to ${toA ? toA.name : '?'} now? A trade can't be undone.` }) };
                 return { title: `${invA.name}'s inventory`, close: 'invClose', blocks: [
                     // One bar: the search, then Done / Clear picked / Reset filters; under it the game's filters.
-                    { type: 'bar', keys: ['invSearch'], items: [{ label: 'Done', action: 'invClose', primary: true }, ...(invPicked.length ? [{ label: 'Clear picked', action: 'invClear' }] : []), ...(invFiltered() ? [{ label: 'Reset filters', action: 'invReset' }] : [])],
-                        text: [`${count(invPicked.length)} picked${invValue ? ` · $${short(invValue)}` : ''}`, `up to ${cap} in one trade`,
+                    { type: 'bar', keys: ['invSearch'], items: [sendBtn, { label: 'Check another account', action: 'invAnother' }, { label: 'Done', action: 'invClose' }, ...(invPicked.length ? [{ label: 'Clear picked', action: 'invClear' }] : []), ...(invFiltered() ? [{ label: 'Reset filters', action: 'invReset' }] : [])],
+                        text: [sendWhy && !(one && one.running) ? (/^Pick what to send/.test(sendWhy) ? 'Click items to pick them for the trade' : `To send: ${sendWhy.replace(/\.$/, '')}`) : '', `${count(invPicked.length)} picked${invValue ? ` · $${short(invValue)}` : ''}`, `up to ${cap} in one trade`,
                             inv.count ? `${count(inv.count)} item${inv.count === 1 ? '' : 's'}${invFiltered() ? ' match' : ''}` : '',
                             lockFavs ? 'favourited ones locked' : ''].filter(Boolean).join(' · ') },
                     { type: 'settings', keys: INV_KEYS.slice(1), filters: true },
@@ -985,16 +1000,8 @@ module.exports = {
                         keys: ['oneTo'], blocks: [
                             ...(mainA && oneTo !== mainA.id ? [{ type: 'buttons', items: [{ label: `Your main: ${mainA.name}`, action: 'oneToMain' }] }] : []),
                             ...(mainA && oneTo === mainA.id ? [{ type: 'text', text: 'Your main account.' }] : [])] },
-                    { id: 'what', title: 'What to send', done: !!oneWhat, summary: oneWhat ? `${oneWhat}${each}` : 'pick a preset, type an item, or tokens',
-                        text: 'Pick a preset, or Custom and type it. Each sender sends its own.',
-                        blocks: [
-                            { type: 'picker', action: 'onePreset', tag: 'Picked', grid: true, items: PRESETS.map(p => ({ id: p.id, on: p.id === preset, title: p.title, sub: p.sub })) },
-                            { type: 'settings', keys: ['oneItem', 'oneCount', 'oneFavs', 'oneTokens'] },
-                            { type: 'text', text: 'Items: type a name and press Enter (or click away), then the next. Click a name to take it out.' },
-                            { type: 'text', text: 'Tokens take 500K, 2.5M, 1B or "all", and only go from Pro senders (a basic sender still sends the item).' },
-                            ...invBlocks,
-                        ] },
-                    { id: 'from', title: 'Send from', done: fromIds.length > 0, warn: fromIds.length ? null : listed.length ? 'pick one or more senders' : 'add another account to trade between them',
+                    { id: 'from', title: 'Send from', done: fromIds.length > 0,
+                        buttons: soleA ? [{ label: 'View inventory', action: 'invOpen', arg: soleA.id }] : [], warn: fromIds.length ? null : listed.length ? 'pick one or more senders' : 'add another account to trade between them',
                         summary: fromIds.length ? (fromIds.length <= 3 ? fromIds.map(id => (accts.get(id) || {}).name).join(', ') : `${fromIds.length} accounts`) : '',
                         text: term ? `Pick one or more. Look up shows how many of ${terms.length > 1 ? 'the items' : 'the item'} each account has.` : "Pick one or more. Each account's tokens are shown.",
                         blocks: [
@@ -1008,6 +1015,15 @@ module.exports = {
                             ...(fromIds.length ? [{ type: 'text', text: `${fromIds.length} picked.` }] : []),
                             listed.length ? { type: 'picker', action: 'onePick', tag: 'Sender', grid: true, multi: true, items: listed.map(a => ({ id: a.id, on: picked.has(a.id), title: a.name, lines: itemLines(a), meta: meta(a) })) }
                                 : { type: 'text', text: 'Add another account to trade between them.' },
+                        ] },
+                    { id: 'what', title: 'What to send', done: !!oneWhat, summary: oneWhat ? `${oneWhat}${each}` : 'pick a preset, type an item, or tokens',
+                        text: 'Pick a preset, or Custom and type it. Each sender sends its own.',
+                        blocks: [
+                            { type: 'picker', action: 'onePreset', tag: 'Picked', grid: true, items: PRESETS.map(p => ({ id: p.id, on: p.id === preset, title: p.title, sub: p.sub })) },
+                            { type: 'settings', keys: ['oneItem', 'oneCount', 'oneFavs', 'oneTokens'] },
+                            { type: 'text', text: 'Items: type a name and press Enter (or click away), then the next. Click a name to take it out.' },
+                            { type: 'text', text: 'Tokens take 500K, 2.5M, 1B or "all", and only go from Pro senders (a basic sender still sends the item).' },
+                            ...invBlocks,
                         ] },
                 ],
                 finish: { title: one && one.running ? 'Sending…' : oneWhy ? 'Send' : `Send ${oneWhat}${each}`, ready: !oneWhy, next: 'Review and send',

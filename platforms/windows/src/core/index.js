@@ -27,6 +27,9 @@ const { clientId, parseUserId, USER_ID } = require('./client');
 const SESSION_CHECK_MS = 6 * 60 * 60 * 1000;
 const EXPIRY_WARN_DAYS = 7;
 
+// Click types: auto (cases or money by the case click %), money, cases, off (runs without clicking).
+const TYPES = ['auto', 'money', 'cases', 'off'];
+
 function createCore({ version, dataDir, bundledPluginsDir, transport, auth, crypt, retryDelayMs, whatsNewFile, stats: statsOpts = {},
     catalogUrl = null, pluginKey = PUBLIC_KEY, fetch: fetchFn, sockets = null, incomeSampleMs, busyTiming, extraTickMs: EXTRA_TICK_MS = 30000, pluginPace }) {
     const startedAt = Date.now();
@@ -256,7 +259,7 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
             return {
                 version, startedAt, accounts: views, appIssues: appIssues(), totals: totals(views),
                 importJob: importJob && { total: importJob.total, done: importJob.done, ok: importJob.ok, failed: importJob.failed, current: importJob.current, running: importJob.running, stopping: importJob.running && importJob.stop },
-                running: engine.run.size, maxPerIp: store.settings.maxPerIp, capacity: engine.capacity(),
+                running: engine.run.size, clickingRuns: engine.running().filter(id => !engine.noClicks(id)).length, maxPerIp: store.settings.maxPerIp, capacity: engine.capacity(),
                 folders: store.folders.map(f => ({ ...f })),
                 settings: publicSettings(), plugins: plugins.list(), tabs: plugins.tabs(), catalog: catalog.view(),
                 whatsNew: whatsNew.unseen().length > 0, stats: stats.info(false),
@@ -287,14 +290,21 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
         startAll: () => engine.startAll(),
         stopAll: () => { engine.stopAll(); return { ok: true }; },
         setType(id, type) {
+            if (!TYPES.includes(type)) return { ok: false, error: 'No such click type' };
+            const was = store.get(id);
+            if (!was) return { ok: false };
+            // Off -> clicking while it runs: it needs a clicking place on its IP (Off takes none).
+            if (was.type === 'off' && type !== 'off' && engine.isRunning(id) && !engine.canClick(id))
+                return { ok: false, error: `${store.settings.maxPerIp} accounts already click on this IP — stop one, or add a proxy, to click here too.` };
             const a = store.update(id, { type });
-            if (!a) return { ok: false };
-            log.add(id, type === 'auto' ? `Auto: clicks ${engine.clickType(a)} for now (cases above ${store.settings.autoCasePct}% case click)` : 'Clicks ' + type + ' from the next batch');
+            log.add(id, type === 'off' ? 'Clicks and vault off: it stays on for plugins' : type === 'auto' ? `Auto: clicks ${engine.clickType(a)} for now (cases above ${store.settings.autoCasePct}% case click)` : 'Clicks ' + type + ' from the next batch');
+            if (type === 'off') for (const x of store.accounts) errors.clear(x.id, 'CC-RATE-01');   // a clicking place freed up
             engine.emit('change');
             return { ok: true };
         },
         setAllType(type) {
-            for (const a of store.accounts) store.update(a.id, { type });
+            if (!TYPES.includes(type)) return { ok: false, error: 'No such click type' };
+            for (const a of store.accounts) if (!(a.type === 'off' && type !== 'off' && engine.isRunning(a.id) && !engine.canClick(a.id))) store.update(a.id, { type });
             log.add(null, 'All accounts set to ' + type);
             engine.emit('change');
             return { ok: true };
@@ -336,9 +346,13 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
             if (what === 'start') { for (const a of list) if (a.token && !engine.isRunning(a.id)) out[a.id] = engine.start(a.id); }
             else if (what === 'stop') { for (const a of list) if (engine.isRunning(a.id)) engine.stop(a.id); }
             else if (what === 'type') {
-                if (!['auto', 'money', 'cases'].includes(arg)) return { ok: false, error: 'No such click type' };
-                for (const a of list) store.update(a.id, { type: arg });
-                log.add(null, `${list.length} accounts set to ${arg}`);
+                if (!TYPES.includes(arg)) return { ok: false, error: 'No such click type' };
+                let full = 0;
+                for (const a of list) {
+                    if (a.type === 'off' && arg !== 'off' && engine.isRunning(a.id) && !engine.canClick(a.id)) { full++; out[a.id] = { ok: false, code: 'CC-RATE-01' }; continue; }
+                    store.update(a.id, { type: arg });
+                }
+                log.add(null, `${list.length - full} accounts set to ${arg}${full ? ` (${full} left Off: no clicking place left on their IP)` : ''}`);
             } else if (what === 'folder') {
                 const fid = arg && typeof arg === 'object' ? store.addFolder(String(arg.name || '').trim() || 'New folder').id : arg || null;
                 if (fid && !store.folders.some(f => f.id === fid)) return { ok: false, error: 'No such folder' };

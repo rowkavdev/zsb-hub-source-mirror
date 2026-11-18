@@ -152,6 +152,69 @@ async function settled(aid, was) {
     return m;
 }
 
+// Bulk sells go through the site's sell queue (seen 2026-11-17): DELETE /api/inventory answers 202 "queued" straight
+// away, then the sell waits its turn and runs. GET /api/queues/status shows it: { jobs: { 'bulk-sell': { state:
+// 'queued' (position, total) | 'running' (progress { sold, total, value }) | 'done' (count, value) | 'failed' (error) } } };
+// a settled result stays readable for 10 minutes. A tester (2026-11-18): the sell took over 20 minutes, the old fixed
+// 20-minute wait gave up and the account stopped "still 90% full" while it was still selling. Now it waits as long as
+// the job moves (its place in line or the items sold), giving up only after SELL_STALL_MS without a change (or
+// SELL_MAX_MS in all), and says how it's going every SELL_SAY_MS. fresh: a sell was just queued, so a settled job seen
+// before an active one may be the last sell's result — it takes a few more reads to count as this one. A site without
+// the queue (no such page) returns at once.
+const SELL_STALL_MS = 10 * 60000, SELL_MAX_MS = 2 * 3600000, SELL_SAY_MS = 5 * 60000;
+async function sellQueue(aid, lane, log, stopped, fresh = false) {
+    const t0 = Date.now();
+    let quiet = 0, said = false, job = null, seen = false, sig = '', moved = Date.now(), saidAt = Date.now();
+    const stall = num(S('sellStallMs')) || SELL_STALL_MS;
+    while (Date.now() - t0 < SELL_MAX_MS && (!seen || Date.now() - moved < stall)) {   // before it shows up, the quiet reads end the wait
+        if (stopped()) throw new Stop(ctx.stopping ? 'turned off' : 'stopped by you');
+        const r = await req(aid, '/api/queues/status');
+        if (r.status === 404 || r.status === 405) return null;   // no sell queue on this site
+        if (r.kind !== 'ok') { await ctx.sleep(5000); continue; }   // a read that failed: not the end of the sell
+        job = (r.json && r.json.jobs && r.json.jobs['bulk-sell']) || null;
+        if (job && (job.state === 'queued' || job.state === 'running')) {
+            seen = true; quiet = 0;
+            const now = JSON.stringify([job.state, num(job.position), job.progress ? num(job.progress.sold) : -1]);
+            if (now !== sig) { sig = now; moved = Date.now(); }
+            const where = job.state === 'queued' ? `place ${count(num(job.position))} of ${count(num(job.total))} in line`
+                : job.progress && num(job.progress.total) ? `${count(num(job.progress.sold))} of ${count(num(job.progress.total))} sold` : 'selling';
+            lane.phase = job.state === 'queued' ? `sell queued (${num(job.position)} of ${num(job.total)})` : `selling drops (${where})`;
+            if (job.state === 'queued' && !said) { said = true; saidAt = Date.now(); log(`the site queued the sell (${where}) — waiting for it`); }
+            else if (Date.now() - saidAt >= SELL_SAY_MS) { saidAt = Date.now(); log(`the site's sell is still going after ${Math.round((Date.now() - t0) / 60000)} min (${where}) — waiting for it`); }
+        } else if ((moved = Date.now()), ++quiet >= (fresh && !seen ? 5 : 2)) {   // a settled read is a change: the stall clock restarts
+            if (job && job.state === 'failed') log(`the site's sell failed${job.error ? ': ' + job.error : ''}`, 'warn');
+            return job;
+        }
+        await ctx.sleep(seen ? 2000 : 1000);
+    }
+    log(Date.now() - moved >= stall ? `the site's sell hasn't moved for ${Math.round(stall / 60000)} min — going on without it`
+        : `the site's sell is still going after ${SELL_MAX_MS / 3600000} h — going on without it`, 'warn');
+    return job;
+}
+// One bulk sell (DELETE /api/inventory with `type`), sent until the site takes it: 409 "already a sell in the queue"
+// waits that one out; 503 "queue full" and 429 (5 bulk sells a minute) wait the site's Retry-After (said once) — they
+// used to end as "selling failed" and then "still 90% full". Then waits for the job. -> its last status, or false: not taken.
+const SELL_SEND_MS = 30 * 60000;
+async function bulkSell(aid, body, lane, log, stopped, what = 'selling the drops') {
+    const t0 = Date.now();
+    let busySaid = false;
+    for (;;) {
+        if (stopped()) throw new Stop(ctx.stopping ? 'turned off' : 'stopped by you');
+        const r = await req(aid, '/api/inventory', { method: 'DELETE', body });
+        if (r.kind === 'ok') return sellQueue(aid, lane, log, stopped, r.status === 202);   // 202 "queued": a job is coming (an old result may show first)
+        if (r.status === 409) { await sellQueue(aid, lane, log, stopped); continue; }
+        if ((r.status === 503 || r.status === 429) && Date.now() - t0 < SELL_SEND_MS) {
+            const wait = Math.min(120, Math.max(1, Number.isFinite(r.retryAfter) ? r.retryAfter : r.status === 503 ? 30 : 15));
+            if (!busySaid) { busySaid = true; log(`${what}: the site's sell queue is ${r.status === 503 ? 'full' : 'busy'} — trying again in ${wait} s (and after that until it's taken)`, 'warn'); }
+            lane.phase = 'waiting for the sell queue';
+            await ctx.sleep(wait * 1000);
+            continue;
+        }
+        log(`${what} failed (${(r.json && r.json.error) || 'HTTP ' + r.status})`, 'warn');
+        return false;
+    }
+}
+
 async function stockOf(aid, id) {
     const cs = await getJson(aid, '/api/cases');
     const it = Array.isArray(cs) ? cs.find(c => c && c._id === id) : null;
@@ -200,8 +263,7 @@ async function run(aid, name) {
             if (practice) log(`would sell every unfavourited skin up to ${money(upTo)} for tokens`);
             else {
                 const before = num((await getJson(aid, '/api/me')).tokens);
-                const r = await req(aid, '/api/inventory', { method: 'DELETE', body: { type: 'price', value: upTo, currency: 'tokens' } });
-                if (r.kind !== 'ok') log(`selling skins failed (HTTP ${r.status})`, 'warn');
+                if ((await bulkSell(aid, { type: 'price', value: upTo, currency: 'tokens' }, lane, log, halted, 'selling skins')) !== false) await settled(aid, num(startMe.inventoryCount));
                 rec.skins = Math.max(0, num((await getJson(aid, '/api/me')).tokens) - before);
                 if (rec.skins) log(`sold skins → +${count(rec.skins)} tokens`, 'ok');
             }
@@ -259,8 +321,7 @@ async function run(aid, name) {
                 // Non-Pro: sell the drops for tokens, then read how full the inventory is again.
                 const sellDrops = async () => {
                     lane.phase = 'selling drops';
-                    const r = await req(aid, '/api/inventory', { method: 'DELETE', body: { type: 'price', value: dropMax(), currency: 'tokens' } });
-                    if (r.kind !== 'ok') log(`selling the drops failed (HTTP ${r.status})`, 'warn');
+                    await bulkSell(aid, { type: 'price', value: dropMax(), currency: 'tokens' }, lane, log, halted);
                     const m = await settled(aid, inv.used);
                     inv.used = num(m.inventoryCount); inv.size = num(m.inventorySize) || inv.size;
                     rec.sells = (rec.sells || 0) + 1;

@@ -18,7 +18,10 @@
  *            20 credits of Auto Racing capsules = 200 capsules, worth ~$2.36 each)
  *   1 credit per pass per level (100 XP): 5 passes = 5 credits per 100 XP.
  * Co-op splits the pot evenly as cash (checked live: both players got the same back, no skins to sell);
- * standard gives every skin to the winner, so each account swings a lot.
+ * standard gives the pot to the winner (team). Custom and community cases pay it in money, not skins (the user, 2026-11-18).
+ * Teams (the default since 1.20): 2 teams of our own accounts (2v2, 3v3 with the package), so every battle is one
+ * side's win and the other's loss and the "win/lose case battles" missions move along with the XP. 2 teams need 4 or 6
+ * players (createGame); with 2-3 of ours it's a free-for-all standard battle (one wins, the others lose).
  * Measured live (2026-11-05), XP per play on every pass: jackpot round 50, guess the rank 15 (25 when right), upgrade 10, blackjack 10, crash 5, dice 5,
  * coinflip 2, battle round 1 (credited when the battle ends), plinko 0.5. Daily limits: jackpot 200, upgrade 300,
  * coinflip 500 hosted + 500 joined, battles 200 hosted + 400 joined. (Coinflip is off for now: its flips are public.)
@@ -36,12 +39,20 @@ const ROUND_SECS = 8.6;         // how long a battle round takes (measured live)
 const ROUND_SECS_TS = 3.8;      // with timeshift (case battle package)
 const JOIN_WAIT_MS = 60000;     // a battle not started by then gets bots; still not started that much later, it's deleted
 const ROUND_MS = 12000;         // time allowed per round (they run ~8.6 s each) before giving up on a battle
+// Battles that got stuck (user reports 2026-11-18, after the site's maintenance on 2026-11-17): a dropped socket left the
+// host waiting blind for the whole allowance, and a battle the site stopped playing held its host for the whole turn.
+const SILENT_MS = 20000;               // no word about a running battle that long: ask the site about it (twice, then reconnect)
+const STUCK_MS = 5 * 60000;            // a battle whose round hasn't moved that long while the site answers is stuck
+const OFFLINE_MAX_MS = 45 * 60000;     // time out of touch (maintenance, a dropped socket) added to a battle's allowance, at most
+const STUCK_CANCEL_MS = 30 * 60000;    // stuck that long: the site is asked once to cancel it (everyone gets the price back)
+const PAUSE_WAIT_MS = 30000;           // the site paused (maintenance) or battles switched off: look again after this
 
 let ctx = null;
 let state = null;   // saved: { last, today: { day, battles, rounds, spent }, passes: { aid: {...} }, history: [...], plans, practiceAt }
 let cases = null;   // battle cases, cheapest first
 let casesAt = 0;
 let battling = false, halt = false, farming = false;   // farming: a check (battles, flips, jackpots) is running
+let recovering = false;   // the sweep after a restart (recoverHosting) is looking at battles left from before
 const passBusy = new Set();
 // Lending an account mid-turn (the Trader's routes, a tester 2026-11-14): another plugin asks for an account with
 // ctx.accounts.want(); the Armory starts nothing new on it, and once its requests, sockets and battles on it are done it
@@ -80,8 +91,41 @@ function today() {
 async function json(aid, path, opts) {
     const r = await ctx.request(aid, path, opts);
     if (r.kind === 'not-running' || r.kind === 'auth' || r.kind === 'cf') throw new Stop(r.kind === 'not-running' ? 'the account stopped clicking' : r.kind);
-    if (r.kind !== 'ok') throw new Stop(`${path.split('?')[0]}: ${(r.json && r.json.error) || 'HTTP ' + r.status}`);
+    if (r.kind !== 'ok') { const e = new Stop(`${path.split('?')[0]}: ${(r.json && r.json.error) || 'HTTP ' + r.status}`); e.kind = r.kind; throw e; }
     return r.json;
+}
+
+// Clicking but paused by the app: the site under maintenance, a Cloudflare check, its proxy down, a re-login. Its
+// requests answer not-running meanwhile; it isn't stopped, so the Armory waits for it instead of giving up.
+const paused = (id) => { const a = ctx.accounts.list().find(x => x.id === id); return !!a && a.running && !a.healthy; };
+const stoppedClicking = (id) => { const a = ctx.accounts.list().find(x => x.id === id); return !a || !a.running; };
+const SITE_DOWN = new Set(['maintenance', 'site', 'net', 'timeout', 'rate']);
+const ago = (ms) => (ms < 60000 ? `${Math.max(1, Math.round(ms / 1000))} s` : `${Math.round(ms / 60000)} min`);
+// Case battles switched off on the site (GET /api/games/status -> { disabledGames: ['Casebattle', ...] }), read at most
+// every 30 s for all hosts. Anything but a clear answer counts as on.
+let offRead = { at: 0, off: false };
+async function battlesOff(aid) {
+    if (Date.now() - offRead.at < 30000) return offRead.off;
+    const r = await ctx.request(aid, '/api/games/status');
+    offRead = { at: Date.now(), off: r.kind === 'ok' && !!r.json && Array.isArray(r.json.disabledGames) && r.json.disabledGames.includes('Casebattle') };
+    return offRead.off;
+}
+// Running battles per host, to tell a stuck one: { id, round, rounds, since (when its round last moved), said,
+// cancelAsked }. Kept on disk so the time counts across turns and restarts; the panel lists the ones past stuckMs.
+const stuckMs = () => num(S('stuckMs')) || STUCK_MS;
+const cancelMs = () => num(S('stuckCancelMs')) || STUCK_CANCEL_MS;
+function noteRunning(aid, b) {
+    const st = state.stuck || (state.stuck = {});
+    const s = st[aid];
+    if (!s || s.id !== b.id || s.round !== b.round) st[aid] = { id: b.id, round: b.round, rounds: b.rounds, since: b.since || Date.now() };
+    return st[aid];
+}
+function stuckEnded(aid, openIds) {
+    const s = (state.stuck || {})[aid];
+    if (!s || openIds.includes(s.id)) return;
+    delete state.stuck[aid];
+    if (s.said) ctx.log('the stuck battle has ended — hosting again', 'ok', aid);
+    save();
 }
 
 // Everything a battle can use, grouped as on the site: cases, custom cases, community cases (GET /api/communityCases
@@ -127,7 +171,36 @@ function publish() {
     ctx.shared.set('farm', { accounts: chosen().map(a => a.id), games: Object.fromEntries(VIA_GAMES.map(g => [g, !!S('farm_' + g)])) });
 }
 
-const battleCase = () => cases && (cases.find(c => c._id === S('battleCase')) || cases.find(c => c.name === 'Prisma Case' && c.group === 'Cases') || cases[0]);
+// The default: "dirt cheap", a $0.04 community case (gufrie01; the user, 2026-11-18): a full battle costs a few dollars.
+// A battle needs only the case's id: the site fills in the case and sets the price itself (checked live 2026-11-18: a
+// create with cases [{ _id, count }] and a wrong battlePrice made the right battle at the case's price). So a case
+// not in the lists (community cases past the pages read) is sent by id; its name and price come from the battle made.
+// One the site won't make a battle with (removed): Prisma Case instead, said once.
+const DEFAULT_CASE = '6aecdb06b58bea19eec26848';
+const learned = new Map();   // case id -> { name, price } read from a battle made with it
+const caseGone = new Set();  // case ids the site refused a battle with
+const battleCase = () => {
+    if (!cases) return null;
+    const id = S('battleCase') || DEFAULT_CASE;
+    if (!caseGone.has(id)) {
+        const c = cases.find(x => x._id === id);
+        if (c) return c;
+        const l = learned.get(id);
+        return { _id: id, byId: true, name: l ? l.name : 'case ' + id, price: l ? l.price : 0, group: 'Community cases' };
+    }
+    return cases.find(c => c.name === 'Prisma Case' && c.group === 'Cases') || cases[0];
+};
+const modeOf = () => ['coop', 'standard', 'teams'].includes(S('mode')) ? S('mode') : 'teams';
+// Seats for a battle with n of our accounts (host included) free to play it: teams play 2v2 or 3v3 (only ours, no bots
+// taking a share of the pot), otherwise every free account up to the host's maximum.
+function lineup(n, pkg) {
+    if (modeOf() === 'teams') {
+        if (pkg && n >= PACKAGE_PLAYERS) return { seats: PACKAGE_PLAYERS, teams: 2 };
+        if (n >= 4) return { seats: 4, teams: 2 };
+    }
+    return { seats: Math.max(2, Math.min(n, pkg ? PACKAGE_PLAYERS : PLAYERS)), teams: 1 };
+}
+const modeLabel = (players, teams) => teams === 2 ? `${players / 2}v${players / 2} standard` : `${players}-player ${modeOf() === 'coop' ? 'co-op' : 'standard'}`;
 
 // ---- passes ----
 
@@ -216,18 +289,68 @@ async function findOwnBattles(h, host) {
         h.emit('caseBattleInfo', id);
         const e = await h.wait(['caseBattleInfo', 'game'], 3000);
         const g = e && (Array.isArray(e.data) ? e.data[0] : e.data);
-        const status = g && (!g._id || g._id === id) ? g.status : (list.find(x => x._id === id) || {}).status;
-        if (status && status !== 'finished') out.push({ id, status, from });
+        const mine = g && (!g._id || g._id === id);
+        const status = mine ? g.status : (list.find(x => x._id === id) || {}).status;
+        // The round is known only from the battle's own answer (the lobby's list doesn't say).
+        if (status && status !== 'finished') out.push({ id, status, from, round: mine && g.currentRound != null ? num(g.currentRound) : null, rounds: mine ? num(g.rounds) || null : null });
     }
     return out;
 }
+// What the site says about one battle now (caseBattleInfo), or null: no answer, an error, or another battle's answer.
+async function battleInfo(h, id, ms = 3000) {
+    if (h.emit('caseBattleInfo', id) === false) return null;
+    const e = await h.wait(['caseBattleInfo', 'casebattleError'], ms);
+    const g = e && e.ev === 'caseBattleInfo' && (Array.isArray(e.data) ? e.data[0] : e.data);
+    return g && (!g._id || g._id === id) ? g : null;
+}
+const seatsTaken = (g) => (g.players || []).filter(Boolean).length;
+// Half-full battles left open for hours (a tester, 2026-11-18: 2/4 and 3/4 co-op battles "waiting" for 5-6 h): a refused
+// delete has no answer, so the hub forgot battles it thought it had deleted. A delete is now checked: still waiting
+// afterwards, bots take the empty seats so it plays out (everyone already in gets their XP, co-op pays the pot back).
+// -> 'gone' | 'bots' (playing now, with bots) | null (still waiting: the site refused both).
+async function deleteBattle(h, id) {
+    h.emit('deleteGame', id);
+    await ctx.sleep(700);
+    const g = await battleInfo(h, id);
+    if (!g || g.status !== 'waiting') return 'gone';
+    h.emit('joinBots', { gameId: id });
+    await ctx.sleep(700);
+    const g2 = await battleInfo(h, id);
+    return !g2 || g2.status !== 'waiting' ? 'bots' : null;
+}
 async function clearOwnBattle(h, host) {
-    for (const b of await findOwnBattles(h, host)) {
+    const open = await findOwnBattles(h, host);
+    stuckEnded(host.id, open.map(b => b.id));
+    for (const b of open) {
         if (b.status === 'waiting') {
-            h.emit('deleteGame', b.id);
-            ctx.log(`${host.name} still had a battle waiting from before — deleted it`, 'warn', host.id);
-            await ctx.sleep(500);
-        } else throw new Stop('its earlier battle is still running — waiting for it');
+            const r = await deleteBattle(h, b.id);
+            if (r === 'gone') { ctx.log(`${host.name} still had a battle waiting from before — deleted it`, 'warn', host.id); continue; }
+            if (r === 'bots') {
+                ctx.log(`${host.name} still had a battle waiting from before — the site didn't delete it, so bots filled it and it plays out`, 'warn', host.id);
+                const err = new Stop('its earlier battle is still running — waiting for it');
+                err.battle = { ...b, status: 'running' };
+                throw err;
+            }
+            const err = new Stop(`its battle from before is stuck waiting for players — the site refuses to delete it or add bots`);
+            err.refused = b;
+            throw err;
+        }
+        const err = new Stop('its earlier battle is still running — waiting for it');
+        err.battle = b;
+        // Stuck: its round hasn't moved for stuckMs, counted across checks (only when the site says the round).
+        if (b.round != null) {
+            const s = noteRunning(host.id, b);
+            const still = Date.now() - s.since;
+            if (still >= stuckMs()) {
+                err.stuck = s;
+                if (still >= cancelMs() && !s.cancelAsked) {
+                    h.emit('deleteGame', b.id);
+                    s.cancelAsked = Date.now(); save();
+                    ctx.log(`${host.name}'s battle has been stuck at round ${s.round} of ${s.rounds || '?'} for ${ago(still)} — asked the site to cancel it (everyone gets the price back)`, 'warn', host.id);
+                }
+            }
+        }
+        throw err;
     }
     setHosting(host.id, null);
 }
@@ -256,10 +379,10 @@ const seat = (ids, d) => {
 };
 const beingSeated = (id) => (seating.get(id) || 0) > 0;
 
-async function battle(host, joiners, cs, rounds, players, timeshift, announce) {
-    const price = +(num(cs.price) * rounds).toFixed(2);
+async function battle(host, joiners, cs, rounds, players, timeshift, announce, teams = 1) {
+    let price = +(num(cs.price) * rounds).toFixed(2);
     const socks = [];
-    let battleId = null, closed = false;   // closed: finished, or deleted by us
+    let battleId = null, closed = false, h = null;   // closed: finished, or deleted by us; h: the host's socket
     const sock = async (a) => { const x = await connectSocket(a.id); socks.push(x); return x; };
     for (const a of [host, ...joiners]) enter(a.id, 1);
     const seated = [host, ...joiners].map(a => a.id);
@@ -267,13 +390,13 @@ async function battle(host, joiners, cs, rounds, players, timeshift, announce) {
     seat(seated, 1);
     const doneSeating = () => { if (seatingNow) { seatingNow = false; seat(seated, -1); } };
     try {
-        const h = await sock(host);
+        h = await sock(host);
         h.emit('joinRoomCasebattle');
         await clearOwnBattle(h, host);
         if (announce) announce();
         const create = async () => {
-            h.emit('createGame', { teams: 1, playerCount: players, isPrivate: true, battlePrice: price, cases: [{ ...cs, count: rounds }],
-                mode: S('mode') === 'standard' ? 'standard' : 'coop', isCrazyMode: false, isTimeshift: !!timeshift });
+            h.emit('createGame', { teams, playerCount: players, isPrivate: true, battlePrice: price, cases: [cs.byId ? { _id: cs._id, count: rounds } : { ...cs, count: rounds }],
+                mode: teams === 2 || modeOf() !== 'coop' ? 'standard' : 'coop', isCrazyMode: false, isTimeshift: !!timeshift });
             return h.wait(['gameCreated', 'casebattleError'], 15000);
         };
         let c = await create();
@@ -289,18 +412,34 @@ async function battle(host, joiners, cs, rounds, players, timeshift, announce) {
             c = await create();
         }
         if (!c) throw new Stop('the site didn\'t answer the new battle');
-        if (c.ev === 'casebattleError') throw new Stop('battle not created: ' + (typeof c.data === 'string' ? c.data : JSON.stringify(c.data)));
+        if (c.ev === 'casebattleError') {
+            const why = typeof c.data === 'string' ? c.data : JSON.stringify(c.data);
+            if (cs.byId && !caseGone.has(cs._id) && /no game created|case/i.test(why)) {
+                caseGone.add(cs._id);
+                ctx.log(`the site won't make a battle with ${cs.name} (${why}) — Prisma Case from the next battle on`, 'warn', host.id);
+            }
+            throw new Stop('battle not created: ' + why);
+        }
         const id = typeof c.data === 'string' ? c.data : c.data && (c.data._id || c.data.gameId);
         battleId = id;
         setHosting(host.id, id);
+        // A case sent by id: its name and price as the site has them (for the logs, the cash check and the totals).
+        if (cs.byId && !learned.has(cs._id)) {
+            const g = await battleInfo(h, id);
+            const k = g && (g.cases || []).find(x => x && x._id === cs._id);
+            if (k) { learned.set(cs._id, { name: k.name || cs.name, price: num(k.price) }); cs.name = k.name || cs.name; cs.price = num(k.price); }
+            if (g && num(g.battlePrice)) price = num(g.battlePrice);
+        }
         // Out of the lobby once the battle exists (the user's ask, 2026-11-11): the host watches only its own battle.
         h.emit('exitRoomCasebattle');
         h.emit('watchGame', id);
         let joined = 0;
+        const uids = new Set();
         for (const [i, a] of joiners.entries()) {
             const g = await sock(a);
             g.emit('watchGame', id);
             const session = await sessionOf(a.id);
+            uids.add(session.user.id);
             g.emit('joinGame', { session, gameId: id, bot: false, index: i + 1 });
             let err = await g.wait(['casebattleError'], 1500);
             // Busy with a casino play already going (a crash round): it ends shortly and the next one waits (seating).
@@ -314,38 +453,116 @@ async function battle(host, joiners, cs, rounds, players, timeshift, announce) {
             else joined++;
         }
         doneSeating();
-        if (!joined && joiners.length) { h.emit('deleteGame', id); closed = true; throw new Stop('nobody could join — battle deleted'); }
+        // The seats as the site has them: a join can be refused after the moment waited for it, or taken without a seat
+        // (the half-full battles above). Our accounts actually seated count; with no answer, the joins without an error.
+        const now = await battleInfo(h, id);
+        if (now && now.status === 'waiting') {
+            const ours = (now.players || []).filter(p => p && uids.has(p.userId)).length;
+            if (ours < joined) ctx.log(`${joined - ours} of ${host.name}'s joiners didn't get a seat — bots take the empty ones`, 'warn', host.id);
+            joined = Math.min(joined, ours);
+        }
+        if (!joined && joiners.length) {
+            const r = await deleteBattle(h, id);
+            if (r === 'gone') { closed = true; throw new Stop('nobody could join — battle deleted'); }
+            if (!r) throw new Stop('nobody could join, and the site refuses to delete the battle or add bots — battle cancelled');
+            ctx.log(`nobody could join ${host.name}'s battle and the site didn't delete it — bots filled it`, 'warn', host.id);
+        }
         // Seats nobody of ours took (a joiner refused): bots, so the battle starts instead of waiting forever.
         let botsAt = 0;
-        if (joined < players - 1) { h.emit('joinBots', { gameId: id }); botsAt = Date.now(); }
+        if (now ? now.status === 'waiting' && seatsTaken(now) < players && joined < players - 1 : joined < players - 1) { h.emit('joinBots', { gameId: id }); botsAt = Date.now(); }
         // Watchdog (a tester, 2026-11-11): a battle that never started — a join the site took without seating the
         // account, or bots that never came — held its host and joiners until the time below ran out. Not started after
         // JOIN_WAIT_MS: bots take the empty seats; still not started JOIN_WAIT_MS later: the battle is deleted.
         const joinWait = num(S('joinWaitMs')) || JOIN_WAIT_MS;
+        const silentMs = num(S('silentMs')) || SILENT_MS;
         let last = null, started = false, deadline = Date.now() + joinWait;
-        const until = Date.now() + rounds * (timeshift ? ROUND_SECS_TS : ROUND_SECS) * 1500 + 60000;
+        let until = Date.now() + rounds * (timeshift ? ROUND_SECS_TS : ROUND_SECS) * 1500 + 60000;
+        const latest = until + OFFLINE_MAX_MS;
+        // heard: the last word about this battle; asked: questions since then; round/movedAt: the round and when it moved.
+        let heard = Date.now(), asked = 0, round = -1, movedAt = Date.now(), errSaid = false;
+        // Out of touch (a dropped socket, the site down for maintenance): the host's socket is opened again and watches the
+        // battle once more. The time away is added to the allowance (up to OFFLINE_MAX_MS): the battle plays on without us.
+        const reconnect = async () => {
+            const from = Date.now();
+            ctx.log(`lost touch with ${host.name}'s battle${paused(host.id) ? ' (the site is paused)' : ''} — reconnecting`, 'warn', host.id);
+            for (let i = 0; ; i++) {
+                if (ctx.stopping) throw new Stop('turned off');
+                if (stoppedClicking(host.id)) throw new Stop('the account stopped clicking');
+                if (Date.now() - from > OFFLINE_MAX_MS) throw new Stop(`lost touch with the battle for ${ago(Date.now() - from)} — left it`);
+                if (!paused(host.id)) {
+                    try {
+                        try { h.close(); } catch (_) {}
+                        h = await sock(host);
+                        h.emit('watchGame', id);
+                        h.emit('caseBattleInfo', id);
+                        ctx.log(`back in touch with ${host.name}'s battle after ${ago(Date.now() - from)}`, 'ok', host.id);
+                        return Date.now() - from;
+                    } catch (e) { if (e instanceof Stop) throw e; }
+                }
+                await ctx.sleep(Math.min(PAUSE_WAIT_MS, 2000 * 2 ** Math.min(i, 4)));
+            }
+        };
         while (Date.now() < until) {
             if (ctx.stopping) throw new Stop('turned off');
             if (!started && Date.now() >= deadline) {
-                if (botsAt) { h.emit('deleteGame', id); closed = true; throw new Stop(`the battle didn't start within ${Math.round(2 * joinWait / 1000)} s, even with bots — battle cancelled`); }
+                if (botsAt) {
+                    const r = await deleteBattle(h, id);
+                    if (r === 'bots') { started = true; continue; }   // the second bots call took: it plays out
+                    closed = r === 'gone';   // refused: its id stays, and the next check tries again
+                    throw new Stop(`the battle didn't start within ${Math.round(2 * joinWait / 1000)} s, even with bots — battle cancelled${closed ? '' : ' (the site refused the delete: tried again later)'}`);
+                }
                 ctx.log(`${host.name}'s battle hasn't started after ${Math.round(joinWait / 1000)} s — bots take the empty seats`, 'warn', host.id);
                 h.emit('joinBots', { gameId: id }); botsAt = Date.now(); deadline = botsAt + joinWait;
             }
-            const e = await h.wait(['game', 'caseBattleInfo', 'casebattleError'], started ? 15000 : Math.max(250, Math.min(15000, deadline - Date.now())));
-            if (!e) continue;
-            if (e.ev === 'casebattleError') throw new Stop('battle error: ' + (typeof e.data === 'string' ? e.data : JSON.stringify(e.data)));
+            const step = Math.max(250, Math.min(15000, silentMs / 2, started ? Infinity : deadline - Date.now()));
+            const e = await h.wait(['game', 'caseBattleInfo', 'casebattleError', 'gameFinished', 'gameDeleted'], step);
+            if (!e) {
+                if (Date.now() - heard < silentMs) continue;
+                // Quiet for a while: ask about it (an answer counts as word); a socket that can't send, or two questions
+                // without an answer, mean the connection is gone.
+                if (asked < 2 && h.emit('caseBattleInfo', id) !== false) { asked++; heard = Date.now() - silentMs / 2; continue; }
+                const away = await reconnect();
+                until = Math.min(latest, until + away + silentMs);
+                heard = movedAt = Date.now(); asked = 0;
+                if (!started) deadline = Date.now() + joinWait;
+                continue;
+            }
+            // An error on the host's socket isn't always about this battle (a bots call that came too late, "no empty
+            // slots"): said once, then the battle is looked at again; the watchdog and the stuck check do the rest.
+            if (e.ev === 'casebattleError') {
+                const msg = typeof e.data === 'string' ? e.data : JSON.stringify(e.data);
+                if (!errSaid) ctx.log(`${host.name}'s battle: the site said "${msg}" — checking on it`, 'warn', host.id);
+                errSaid = true; h.emit('caseBattleInfo', id); continue;
+            }
+            if (e.ev === 'gameFinished' || e.ev === 'gameDeleted') {
+                if ((typeof e.data === 'string' ? e.data : e.data && e.data._id) !== id) continue;
+                heard = Date.now(); asked = 0;
+                if (e.ev === 'gameDeleted') { closed = true; throw new Stop('the battle was cancelled on the site'); }
+                h.emit('caseBattleInfo', id);   // its final state, with the skins, comes next
+                continue;
+            }
             const game = Array.isArray(e.data) ? e.data[0] : e.data;
             if (!game || (game._id && game._id !== id)) continue;
+            heard = Date.now(); asked = 0;
             last = game;
             if (game.status && game.status !== 'waiting') started = true;
             if (game.status === 'finished') { closed = true; break; }
+            if (game.currentRound != null && num(game.currentRound) !== round) { round = num(game.currentRound); movedAt = Date.now(); }
+            // The site answers but the battle doesn't move: stuck on its side. The host and joiners are freed for other
+            // battles; the host's next battle waits for this one (clearOwnBattle), which keeps being looked at.
+            if (started && Date.now() - movedAt >= stuckMs()) {
+                const tot = num(game.rounds) || rounds;
+                const st = noteRunning(host.id, { id, round, rounds: tot, since: movedAt });
+                st.said = true; save();
+                throw new Stop(`stuck: ${host.name}'s battle hasn't moved past round ${round} of ${tot} for ${ago(Date.now() - movedAt)} — left it; ${host.name} keeps joining the others' battles`);
+            }
         }
         if (!last || last.status !== 'finished') throw new Stop('the battle didn\'t finish in time');
         const value = (last.openedSkins || []).reduce((t, x) => t + num(x.price), 0);
         return { id, rounds: num(last.rounds) || rounds, price, players: (last.players || []).length || players, joined, value };
     } finally {
         doneSeating();
-        if (battleId && socks[0]) { try { socks[0].emit('exitWatchGame', battleId); } catch (_) {} }
+        if (battleId && h) { try { h.emit('exitWatchGame', battleId); } catch (_) {} }
         if (closed && battleId) setHosting(host.id, null, battleId);
         for (const x of socks) { try { x.close(); } catch (_) {} }
         for (const a of [host, ...joiners]) enter(a.id, -1);
@@ -354,12 +571,25 @@ async function battle(host, joiners, cs, rounds, players, timeshift, announce) {
 
 // One account's hosting for the turn: battle after battle while it fits, with everyone else joining.
 async function hostLoop(host, others, cs, ends, practice, lines) {
-    let done = 0, waiting = false, busySaid = false, fails = 0;   // waiting: on its earlier battle, already said once; fails: in a row
+    let done = 0, waiting = false, busySaid = false, fails = 0, pausedSaid = false;   // waiting: on its earlier battle, already said once; fails: in a row
     if (practice) await previewOwnBattles(host, lines);
     while (Date.now() < ends && !halt && !ctx.stopping && !isOut(host.id)) {
         const keep = num(S('keepMoney'));
         let me;
-        try { me = await snapshot(host); } catch (e) { ctx.log('battle: ' + e.message, 'warn', host.id); return; }
+        try { me = await snapshot(host); }
+        catch (e) {
+            // The site down (maintenance) or the account paused for it: wait for it to come back, said once.
+            if (paused(host.id) || SITE_DOWN.has(e.kind)) {
+                if (!pausedSaid) ctx.log(`battles wait: the site isn't answering (${paused(host.id) ? 'paused' : e.message}) — hosting goes on when it's back`, 'warn', host.id);
+                pausedSaid = true; await ctx.sleep(PAUSE_WAIT_MS); continue;
+            }
+            ctx.log('battle: ' + e.message, 'warn', host.id); return;
+        }
+        if (!practice && await battlesOff(host.id)) {
+            if (!pausedSaid) ctx.log('case battles are switched off on the site right now — hosting waits', 'warn', host.id);
+            pausedSaid = true; await ctx.sleep(PAUSE_WAIT_MS); continue;
+        }
+        if (pausedSaid) { pausedSaid = false; ctx.log('the site is answering again — hosting goes on', 'ok', host.id); }
         if (me.host <= 0) { if (!done) lines.push(`${host.name}: no hosted battles left today`); return; }
         const pool = [];
         for (const a of others) { if (isOut(a.id)) continue; try { const x = await sharedSnapshot(a); if (x.guest > 0) pool.push(x); } catch (_) {} }
@@ -367,14 +597,15 @@ async function hostLoop(host, others, cs, ends, practice, lines) {
         // The accounts in the fewest battles right now first (then the most joins left today), taken at once (no wait
         // between choosing and counting them in) so the next host sees them as busier.
         pool.sort((x, y) => ((inBattle.get(x.id) || 0) - (inBattle.get(y.id) || 0)) || (y.guest - x.guest));
-        const joiners = pool.slice(0, (pkg ? PACKAGE_PLAYERS : PLAYERS) - 1);
+        const lu = lineup(Math.min(pool.length, (pkg ? PACKAGE_PLAYERS : PLAYERS) - 1) + 1, pkg);
+        const joiners = pool.slice(0, lu.seats - 1);
         for (const j of joiners) { enter(j.id, 1); const c = snaps.get(j.id); if (c) c.v = { ...c.v, guest: c.v.guest - 1 }; }
         let held = true;
         const release = () => { if (held) { held = false; for (const j of joiners) enter(j.id, -1); } };
         try {
         // A lone star account battles the site's bot (joinBots fills the seat); with others, only they join.
         if (!joiners.length && others.length) { if (!done) lines.push(`${host.name}: nobody left to join today`); return; }
-        const players = Math.max(2, joiners.length + 1), timeshift = pkg;
+        const players = Math.max(2, joiners.length + 1), timeshift = pkg, teams = players === lu.seats ? lu.teams : 1;
         // Always full battles (the host's maximum: 100, 200 with the package; joiners don't need it): a battle's XP lands
         // only when it ends, and the other games fill the passes meanwhile (full ones restart within a minute, battles or
         // not), so the room at the start says nothing about the room at the end. A short battle wastes a daily host and
@@ -387,12 +618,12 @@ async function hostLoop(host, others, cs, ends, practice, lines) {
         if (broke.length) { if (!done) lines.push(`${host.name}: not enough cash for a ${rounds}-round battle (${broke.map(a => a.name).join(', ')})`); return; }
         // Only a battle that fits in the turn: the other plugins wait while battles run.
         if (!practice && done && Date.now() + rounds * (timeshift ? ROUND_SECS_TS : ROUND_SECS) * 1000 > ends) return;
-        const what = `${host.name} hosts ${joiners.length ? joiners.map(a => a.name).join(', ') : 'the site bot'}: ${players}-player ${S('mode') === 'standard' ? 'standard' : 'co-op'}, ${rounds} rounds of ${cs.name} (${money(cost)} each)${timeshift ? ', timeshift' : ''}`;
+        const what = `${host.name} hosts ${joiners.length ? joiners.map(a => a.name).join(', ') : 'the site bot'}: ${modeLabel(players, teams)}, ${rounds} rounds of ${cs.name} (${money(cost)} each)${timeshift ? ', timeshift' : ''}`;
         if (practice) { lines.push('battle — ' + what + ` · ${host.name} can host ${me.host} more today`); return; }
         try {
             // battle() counts everyone in itself (before its first wait), so the hold is handed over in the same moment.
             release();
-            const r = await battle(me, joiners, cs, rounds, players, timeshift, () => { waiting = false; ctx.log('battle: ' + what, 'info', host.id); });
+            const r = await battle(me, joiners, cs, rounds, players, timeshift, () => { waiting = false; ctx.log('battle: ' + what, 'info', host.id); }, teams);
             const t = today();
             t.battles++; t.rounds += r.rounds; t.spent += r.price * (r.joined + 1);
             state.history = [{ t: Date.now(), host: host.name, guest: joiners.map(a => a.name).join(', ') || 'bot', players: r.players, rounds: r.rounds, price: r.price, value: r.value }, ...(state.history || [])].slice(0, 40);
@@ -404,6 +635,9 @@ async function hostLoop(host, others, cs, ends, practice, lines) {
             // then sits out the turn. It never ends the turn for everyone (that freed the accounts while jackpots still ran).
             // Slow connects come in bursts of a minute or two (all the proxies' check windows busy at once, seen live
             // 2026-11-12): waiting longer each time gets past one (one quick retry left 22 hosts out of a turn).
+            // Turned off mid-call (a socket opened as it stopped says "plugin stopped"): that's the stop, not a failure to retry.
+            if (!(e instanceof Stop) && ctx.stopping) e = new Stop('turned off');
+            if (!(e instanceof Stop) && paused(host.id)) { await ctx.sleep(PAUSE_WAIT_MS); continue; }   // the site paused: not this host's failure
             if (!(e instanceof Stop)) {
                 if (++fails > CONNECT_RETRY_MS.length) { ctx.log('battle stopped for this turn: ' + e.message, 'warn', host.id); return; }
                 ctx.log(`battle: ${e.message} — trying again in ${Math.round(CONNECT_RETRY_MS[fails - 1] / 1000)} s`, 'warn', host.id);
@@ -411,6 +645,12 @@ async function hostLoop(host, others, cs, ends, practice, lines) {
             }
             // Waiting out its earlier battle: said once, then quiet until it ends (the user, 2026-11-11).
             if (/still running/.test(e.message)) {
+                // Stuck (its round hasn't moved for minutes): the host stops hosting for now and keeps joining.
+                if (e.stuck) {
+                    const s = e.stuck;
+                    if (!s.said) { s.said = true; save(); ctx.log(`${host.name}'s earlier battle looks stuck: round ${s.round} of ${s.rounds || '?'}, no progress for ${ago(Date.now() - s.since)} — ${host.name} skips hosting until it ends and keeps joining the others' battles`, 'warn', host.id); }
+                    return;
+                }
                 if (!waiting) ctx.log(`${host.name}'s earlier battle is still running — waiting for it to end before hosting again`, 'warn', host.id);
                 waiting = true;
                 await ctx.sleep(num(S('joinWaitMs')) || 30000); continue;
@@ -418,7 +658,7 @@ async function hostLoop(host, others, cs, ends, practice, lines) {
             // The account busy with another of its actions (making skins, an upgrade): try again in a moment, said once.
             if (BUSY.test(e.message)) { if (!busySaid) ctx.log('battle waits: ' + e.message.replace(/^battle not created: /, ''), 'warn', host.id); busySaid = true; await ctx.sleep(3000); continue; }
             ctx.log('battle stopped: ' + e.message, 'warn', host.id);
-            if (/not created|nobody could join|battle cancelled/.test(e.message)) return;
+            if (/not created|nobody could join|battle cancelled|^stuck|lost touch|refuses to delete/.test(e.message)) return;
         }
         } finally { release(); }
     }
@@ -436,7 +676,10 @@ async function battleTurn(practice, lines, list, ends) {
         // Started a little apart (all within the first half of the turn, however short), not all in the same instant.
         const step = Math.min(HOST_STAGGER_MS, Math.max(0, (ends - Date.now()) / (2 * list.length)));
         await Promise.all(list.map((h, i) => (practice || !i ? Promise.resolve() : ctx.sleep(i * step))
-            .then(() => hostLoop(h, list.filter(a => a.id !== h.id), cs, ends, practice, lines))));
+            .then(() => hostLoop(h, list.filter(a => a.id !== h.id), cs, ends, practice, lines))
+            // A battle it still has open when its hosting ends (out of hosted battles today, out of cash, nobody to
+            // join): looked at now, not on the next day it hosts.
+            .then(() => { if (!practice && !ctx.stopping && savedBattle(h.id) && !isOut(h.id)) return tidyOne(h, 'tidying up'); })));
     } finally {
         battling = false;
     }
@@ -905,8 +1148,39 @@ async function jackpotTurn(list, practice, lines, ends) {
     await watcher;
 }
 
+// After a restart or an update: the battles the hub was hosting when it closed (state.hosting) are looked at as soon as
+// their accounts are clicking again, not at the next turn (which can be a while off): still waiting for players, they're
+// deleted (the cash back); still running, they're noted so a stuck one is told apart; ended, they're forgotten.
+let recoverLeft = null;   // account ids still to look at; null until the plugin starts
+const savedBattle = (aid) => ({ ...diskHosting(), ...(state.hosting || {}) })[aid];
+// One account's leftover battle: deleted if still waiting, noted if running. false: it couldn't be looked at.
+async function tidyOne(a, why) {
+    let x = null;
+    try {
+        x = await connectSocket(a.id);
+        x.emit('joinRoomCasebattle');
+        try { await clearOwnBattle(x, a); }
+        catch (e) {
+            if (!(e instanceof Stop)) throw e;
+            if (e.battle) { if (!e.stuck) ctx.log(`${why}: ${a.name}'s battle is still running${e.battle.round != null ? ` (round ${e.battle.round} of ${e.battle.rounds || '?'})` : ''} — its next battle waits for it`, 'info', a.id); }
+            else if (e.refused) ctx.log(`${why}: ${a.name}: ${e.message}`, 'warn', a.id);
+            else throw e;
+        }
+        x.emit('exitRoomCasebattle');
+        return true;
+    } catch (e) { ctx.log(`${why}: couldn't look at ${a.name}'s last battle (${e.message})`, 'warn', a.id); return false; }
+    finally { if (x) { try { x.close(); } catch (_) {} } }
+}
+async function recoverHosting() {
+    const now = chosen().filter(a => a.healthy && recoverLeft.has(a.id));
+    for (const a of now) {
+        recoverLeft.delete(a.id);
+        if (savedBattle(a.id) && !(await tidyOne(a, 'after the restart'))) recoverLeft.add(a.id);
+    }
+}
+
 async function check() {
-    if (farming) return;
+    if (farming || recovering) return;
     farming = true;
     const practice = practiceMode();
     const lines = [], held = [];
@@ -1000,15 +1274,26 @@ module.exports = {
             }
         }
         publish();
+        // Battles left from before the restart: looked at for the first 10 minutes, as each account comes back.
+        const startedAt = Date.now();
+        const due = () => S('on') && !practiceMode() && !battling && !farming && !recovering
+            && Date.now() - (state.last || 0) >= (num(S('everyMs')) || Math.max(1, num(S('everyMin'))) * 60000);
+        recoverLeft = new Set(Object.keys({ ...diskHosting(), ...(state.hosting || {}) }));
         ctx.every(15000, () => {
             publish();
             fill();
-            const every = num(S('everyMs')) || Math.max(1, num(S('everyMin'))) * 60000;
-            if (S('on') && !practiceMode() && !battling && !farming && Date.now() - (state.last || 0) >= every) check();
+            if (recoverLeft.size && Date.now() - startedAt > 10 * 60000) recoverLeft.clear();
+            if (recoverLeft.size && S('on') && !practiceMode() && !farming && !battling && !recovering) {
+                recovering = true;
+                // A turn that's due starts right after (not a tick later).
+                recoverHosting().catch(e => ctx.log('after the restart: ' + e.message, 'warn')).finally(() => { recovering = false; if (!ctx.stopping && due()) check(); });
+                return;
+            }
+            if (due()) check();
         });
         ctx.panel.action('run', () => {
             if (!chosen().length) return { ok: false, error: 'Choose accounts first.' };
-            if (farming) return { message: 'Already running.' };
+            if (farming || recovering) return { message: 'Already running.' };
             check();
             return { message: practiceMode() ? 'Practice run started — the plan shows up here in a moment.' : 'Checking now.' };
         });
@@ -1032,6 +1317,13 @@ module.exports = {
             { id: 'g-dice', key: 'farm_dice', title: 'Dice', sum: () => `${gamesLive() ? 'played by Games' : 'played here (Games is off)'} · 5 XP a roll` },
             { id: 'g-plinko', key: 'farm_plinko', title: 'Plinko', sum: () => `${gamesLive() ? 'played by Games' : 'played here (Games is off)'} · 0.5 XP a drop` },
         ];
+        // Battles the site stopped playing: which host, where it stopped, for how long (none: nothing shown).
+        const stuckNotice = () => {
+            const names = new Map(ctx.accounts.list().map(a => [a.id, a.name]));
+            const rows = Object.entries(state.stuck || {}).filter(([, s]) => Date.now() - s.since >= stuckMs())
+                .map(([aid, s]) => `${names.get(aid) || 'an account'} (round ${s.round} of ${s.rounds || '?'}, ${ago(Date.now() - s.since)}${s.cancelAsked ? ', cancel asked' : ''})`);
+            return rows.length ? [{ type: 'notice', level: 'warn', text: `Stuck battle${rows.length === 1 ? '' : 's'} on the site: ${rows.join(', ')}. ${rows.length === 1 ? 'That account skips' : 'Those accounts skip'} hosting until ${rows.length === 1 ? 'it ends' : 'they end'} and keep joining the others' battles.` }] : [];
+        };
         ctx.panel.tab('Armory', () => {
             const t = today(), practice = practiceMode(), list = chosen(), n = list.length;
             const on = GAME_CARDS.filter(g => S(g.key)).length;
@@ -1048,6 +1340,7 @@ module.exports = {
                     summary: !n ? 'choose the star farming accounts first' : practice ? 'practice: nothing runs unless you press Practice run' : `live on ${n} account${n === 1 ? '' : 's'} with ${on} game${on === 1 ? '' : 's'}`,
                     keys: ['runMode'] },
                 ...(plan ? [{ type: 'table', wrap: true, columns: ['The last practice run would', 'When'], rows: plan.lines.map(l => [l, new Date(plan.t).toLocaleTimeString()]) }] : []),
+                ...stuckNotice(),
                 ...(n ? [{ type: 'stats', items: [
                     { label: 'Battles today', value: `${count(t.battles)} · ${count(t.rounds)} rounds` },
                     { label: 'Jackpot rounds', value: count(t.jackpots || 0) },
