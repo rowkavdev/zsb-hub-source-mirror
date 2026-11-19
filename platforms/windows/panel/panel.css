@@ -115,13 +115,13 @@ button.small { padding: 4px 10px; font-size: var(--fs-m); border-radius: var(--r
 /* banners */
 #banners { padding: 0 var(--page-side); }
 .banner { display: flex; align-items: center; gap: 12px; flex-wrap: wrap; margin-top: 14px; padding: 12px 16px; border-radius: var(--r-l); border: 1px solid var(--line-2); background: var(--surface); }
-/* Alerts: banners, plugin notices and the plugin status header share the tinted outline and the side bar. */
+/* Alerts: banners, plugin notices and the plugin status header share the tinted outline and a faint wash (no side bar). */
 .banner.warn, .pnotice.warn { border-color: var(--warn-line); }
 .banner.bad, .pnotice.bad { border-color: var(--bad-line); }
 .pnotice.ok { border-color: var(--ok-line); }
-.banner.warn, .pnotice.warn, .phero.warn { box-shadow: inset 3px 0 0 var(--warn); }
-.banner.bad, .pnotice.bad { box-shadow: inset 3px 0 0 var(--bad); }
-.pnotice.ok, .phero.ok { box-shadow: inset 3px 0 0 var(--ok); }
+.banner.warn, .pnotice.warn, .phero.warn { background: color-mix(in srgb, var(--warn) 6%, var(--surface)); }
+.banner.bad, .pnotice.bad { background: color-mix(in srgb, var(--bad) 6%, var(--surface)); }
+.pnotice.ok, .phero.ok { background: color-mix(in srgb, var(--ok) 5%, var(--surface)); }
 .banner .text { flex: 1; min-width: 200px; }
 .banner.closable { position: relative; padding-right: 52px; }
 .banner .close-x { position: absolute; top: 50%; right: 10px; transform: translateY(-50%); min-width: 32px; padding-left: 0; padding-right: 0; font-size: calc(18px * var(--fs-scale)); line-height: 1; }
@@ -155,7 +155,9 @@ main { padding: 18px var(--page-side) 48px; }
 @keyframes rise { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
 
 .c-head { display: flex; align-items: center; gap: 12px; }
-.c-title { flex: 1; min-width: 0; }
+.c-title { flex: 1; min-width: min(10ch, 45%); }   /* the name always keeps room; the status chip gives way first */
+.c-head .chip:not(.clicking):not(.no-clicks):not(.slot) { display: block; flex: 0 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; }
+.c-head .chip::before { display: inline-block; margin-right: 7px; vertical-align: 1px; }
 .c-title .name { font-weight: 650; font-size: calc(16px * var(--fs-scale)); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; letter-spacing: -.01em; }
 /* Premier rating, tinted with its rank colour (--pc, "r, g, b"); the text stays in the normal ink for contrast. */
 .premier { flex: none; font-size: var(--fs-s); font-weight: 650; font-variant-numeric: tabular-nums; line-height: 1; padding: 5px 8px 5px 7px;
@@ -170,11 +172,15 @@ main { padding: 18px var(--page-side) 48px; }
 .chip.clicking, .chip.no-clicks { display: none; }   /* working normally (or on with clicks off, which the card's Off says) needs no badge */
 .chip.needs-you::before, .chip.reconnecting::before { background: var(--warn); }
 .chip.logged-out::before, .chip.problem::before { background: var(--bad); }
+.chip.attention::before { background: var(--warn); }
+/* Waiting for a slot: a queue, not a fault. The card's big text says it, so no chip (the name keeps its room). */
+.chip.slot { display: none; }
 
 .hero { display: flex; flex-direction: column; gap: 2px; }
 .hero-num { font-size: calc(32px * var(--fs-scale)); font-weight: 700; letter-spacing: -.03em; line-height: 1.1; font-variant-numeric: tabular-nums;
-  background: linear-gradient(180deg, var(--text) 30%, color-mix(in srgb, var(--text-2) 80%, var(--text))); -webkit-background-clip: text; background-clip: text; color: transparent; }
-.hero-num.word { font-size: calc(22px * var(--fs-scale)); background: none; color: var(--text-2); -webkit-text-fill-color: var(--text-2); }
+  color: var(--text); }
+.hero-num.word { font-size: calc(22px * var(--fs-scale)); color: var(--text-2); }
+.card.s-slot .hero-num.word { color: var(--muted); }
 .card.off .meters { display: none; }
 .hero-num small { font-size: calc(15px * var(--fs-scale)); font-weight: 600; letter-spacing: 0; }
 .hero-label { font-size: var(--fs-s); color: var(--muted); }
@@ -189,7 +195,7 @@ main { padding: 18px var(--page-side) 48px; }
 
 .kv { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 10px 8px; margin: 0; padding: 12px; border-radius: var(--r-m); background: rgba(255,255,255,.025); border: 1px solid var(--line); }
 .kv div { min-width: 0; }
-.kv dt { font-size: var(--fs-xs); color: var(--muted); text-transform: uppercase; letter-spacing: .06em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.kv dt { font-size: var(--fs-s); color: var(--muted); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .kv dd { margin: 2px 0 0; font-weight: 600; font-variant-numeric: tabular-nums; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 
 .badges { display: flex; gap: 6px; flex-wrap: wrap; }
@@ -246,13 +252,17 @@ input:focus, select:focus, textarea:focus, .ptags:focus-within { border-color: v
 .tag { font-size: var(--fs-xs); border-radius: 6px; padding: 1px 7px; border: 1px solid var(--line-2); color: var(--text-2); }
 .tag.ok { color: var(--ok); border-color: var(--ok-line); }
 .tag.bad { color: var(--bad); border-color: var(--bad-line); }
-.plug-head { margin: 4px 0 10px; font-size: var(--fs-xs); font-weight: 500; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+.plug-head { margin: 4px 0 10px; font-size: var(--fs-m); font-weight: 600; color: var(--text-2); }
 .rows + .plug-head { margin-top: 26px; }
 .plug .plug-btns { display: flex; gap: 8px; align-items: center; }
 .plug .runs-on { margin-top: 4px; }
 .warn-text { color: var(--warn) !important; }
 .bad-text { color: var(--bad) !important; }
-.section-title { margin: 26px 0 8px; font-size: var(--fs-xs); text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
+.section-title { margin: 26px 0 8px; font-size: var(--fs-m); font-weight: 600; color: var(--text-2); }
+.section-title:focus { outline: none; }
+#tab-settings .section-title { scroll-margin-top: 12px; }
+.set-jump { display: flex; flex-wrap: wrap; gap: 6px; margin: 0 0 4px; }
+.set-jump [data-help] { color: var(--text); border-color: var(--line-2); }
 
 /* switch */
 .switch { position: relative; display: inline-block; width: 40px; height: 23px; flex: none; }
@@ -339,10 +349,10 @@ tr:last-child td { border-bottom: none; }
 .pset-foot { font-size: var(--fs-s); display: flex; gap: 10px; align-items: center; justify-content: space-between; border-top: 1px solid var(--line); padding-top: 12px; }
 .stats-json { margin: 0; max-height: 45vh; overflow: auto; background: var(--bg); border: 1px solid var(--line); border-radius: var(--r-m); padding: 10px 12px; font: var(--fs-s)/1.5 var(--mono); color: var(--text-2); }
 .whatsnew { display: grid; gap: 6px; max-height: 50vh; overflow-x: hidden; overflow-y: auto; }
-.whatsnew .wn-version { color: var(--muted); font-size: var(--fs-s); text-transform: uppercase; letter-spacing: .06em; }
+.whatsnew .wn-version { color: var(--muted); font-size: var(--fs-s); font-weight: 600; }
 .whatsnew ul { margin: 0 0 6px; padding-left: 18px; display: grid; gap: 6px; line-height: 1.45; }
 .toast { position: fixed; bottom: 20px; left: 50%; transform: translateX(-50%); background: var(--white); color: var(--on-white); font-weight: 500; border-radius: var(--r-m); padding: 10px 16px; z-index: var(--z-pop); max-width: calc(100% - 32px); box-shadow: var(--shadow-toast); animation: rise .2s ease-out; }
-.toast.bad { box-shadow: inset 4px 0 0 var(--bad), var(--shadow-toast); }
+.toast.bad { box-shadow: 0 0 0 2px var(--bad), var(--shadow-toast); }
 
 /* walkthrough */
 .tour-veil { position: fixed; inset: 0; z-index: var(--z-tour); }
@@ -460,6 +470,8 @@ body.dragging-card, body.dragging-folder { user-select: none; cursor: grabbing; 
 .pcard-head .pset { display: flex; flex: none; padding-top: 1px; }
 .pcard-head .title { font-weight: 600; }
 .pcard-head .desc { font-size: var(--fs-m); color: var(--muted); margin-top: 2px; }
+/* Why the switch can't be used now: said in the card, not only in a hover tip. */
+.pcard-head .desc.pcard-why { color: var(--text-2); }
 .pcard-body { display: grid; gap: 12px; padding-left: 2px; }
 .ptab .psets { grid-template-columns: repeat(auto-fill, minmax(220px, 1fr)); align-items: start; }
 .ptab .pset[data-type="accounts"], .ptab .pset[data-type="list"] { grid-column: 1 / -1; }
@@ -495,7 +507,7 @@ td.pcell-btn { text-align: right; width: 1%; }
 .phero-main { display: grid; gap: 4px; min-width: 0; flex: 1 1 260px; }
 .phero-title { font-size: calc(17px * var(--fs-scale)); font-weight: 600; letter-spacing: -.01em; }
 .phero-text { font-size: var(--fs-m); color: var(--text-2); }
-.ppill { justify-self: start; font-size: var(--fs-xs); font-weight: 600; letter-spacing: .04em; text-transform: uppercase; padding: 2px 9px; color: var(--text-2); }
+.ppill { justify-self: start; font-size: var(--fs-s); font-weight: 600; padding: 2px 9px; color: var(--text-2); }
 .ppill.warn { color: var(--warn); border-color: var(--warn-line); }
 .ppill.ok { color: var(--ok); border-color: var(--ok-line); }
 .pflow { display: flex; align-items: stretch; gap: 6px; flex-wrap: wrap; }
@@ -574,6 +586,7 @@ table.wrap td:first-child, table.wrap td:last-child { white-space: nowrap; }
 .pshopg-tile:hover { background: var(--surface-2); }
 .pshopg-tile.on { border-color: var(--text); box-shadow: inset 0 0 0 1px var(--text); background: var(--surface-3); }
 .pshopg-img { display: block; aspect-ratio: 4 / 3; }
+.pshopg-img.none { display: none; }
 .pshopg-img img { width: 100%; height: 100%; object-fit: contain; display: block; }
 .pshopg-name { font-size: var(--fs-s); font-weight: 600; line-height: 1.3; overflow-wrap: anywhere; }
 .pshopg-price { font-size: var(--fs-s); color: var(--text-2); font-variant-numeric: tabular-nums; }
@@ -671,9 +684,13 @@ table.wrap td:first-child, table.wrap td:last-child { white-space: nowrap; }
 /* Overview tab */
 /* The seven tiles: one row on a wide window, 4 + 3 on a medium one, two a row on a phone (never one left alone).
    A number stays on one line and gets a little smaller in a narrow tile instead of breaking. */
-#tab-overview .statrow { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); }
-@media (max-width: 999px) { #tab-overview .statrow { grid-template-columns: repeat(4, minmax(0, 1fr)); } }
+#tab-overview .statrow { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); }
 @media (max-width: 559px) { #tab-overview .statrow { grid-template-columns: repeat(2, minmax(0, 1fr)); } }
+/* The 8th tile takes turns (Need a look / Exit IPs / Vault); it's a button so a click shows the next one. */
+#tab-overview .stat-rot { display: block; width: 100%; text-align: left; background: var(--panel-grad); border: 1px solid var(--line); border-radius: var(--r-l); padding: 12px 16px; min-width: 0; }
+#tab-overview .stat-rot:hover { border-color: var(--line-2); }
+#tab-overview .stat-rot:active { transform: none; }
+#tab-overview .stat-rot small { display: block; }
 #tab-overview .stat { min-width: 0; padding: 12px 14px; container-type: inline-size; }
 #tab-overview .stat b { display: block; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; font-size: clamp(16px, 21cqi, 22px); }
 #tab-overview .stat small { display: block; font-size: var(--fs-s); margin-top: 2px; }
@@ -684,7 +701,8 @@ table.wrap td:first-child, table.wrap td:last-child { white-space: nowrap; }
 .ov-sort:focus-visible { outline: 2px solid var(--text-2); outline-offset: 2px; border-radius: 4px; }
 .ov-ranks { display: flex; flex-wrap: wrap; gap: 8px; }
 .ov-rank { border: 1px solid var(--line); border-radius: var(--r-m); padding: 6px 10px; background: var(--surface-2); color: var(--text-2); }
-.ov-rank b { color: var(--text); font-variant-numeric: tabular-nums; margin-right: 4px; }
+.ov-rank-n { color: var(--muted); }
+.ov-rank-n b { color: var(--text); font-variant-numeric: tabular-nums; }
 .ov-note { margin-top: 10px; font-size: var(--fs-s); }
 .pchip-detail { color: var(--text-2); font-size: var(--fs-s); font-variant-numeric: tabular-nums; margin-left: 2px; }
 .ppicker.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
@@ -966,3 +984,22 @@ html:not([data-graphics="fancy"]) .fx-edge { display: none; }
 .pick-mark { flex: none; width: 14px; height: 14px; border-radius: 50%; border: 1.5px solid var(--line); }
 .pick-pill:has(.pick-cb:checked) .pick-mark { border: 4px solid var(--text); }
 @media (max-width: 520px) { .pick-list.pick-pills { grid-template-columns: 1fr; } }
+
+/* Dialog lists: the accounts a bulk Remove takes away. */
+.modal-names { margin: 4px 0 10px; padding-left: 18px; max-height: 40vh; overflow: auto; display: grid; gap: 2px; }
+.num-in { font-variant-numeric: tabular-nums; }
+
+@media (max-width: 560px) {
+  .top { gap: 8px 4px; padding: 10px var(--page-side); }
+  .top .brand { order: 0; flex: 1 0 auto; min-width: calc(100% - 11rem); }   /* fills row 1 beside Add, so the other buttons wrap */
+  .top .actions { display: contents; }
+  .top #add { order: 1; padding: 6px 12px; }
+  .top .actions .ghost { order: 2; padding: 5px 8px; font-size: var(--fs-s); }
+  .top .summary { order: 3; flex: 1 0 100%; flex-wrap: nowrap; overflow-x: auto; scrollbar-width: none; }
+  .top .kpi { flex: none; padding: 4px 9px; font-size: var(--fs-s); }
+  .tabs { margin-top: 12px; padding: 3px; gap: 0; }
+  .tabs button { padding: 5px 8px; font-size: var(--fs-s); }
+}
+
+/* Read out by screen readers, not shown. */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }

@@ -17,7 +17,7 @@
  * once the account's rank reaches its rankNeeded. XP and rank-ups are read from /api/me before and after.
  * What the drops were worth comes from each open's answer: { totalValue, favoritedSkins } with auto-open,
  * the list of dropped skins (each with its price) without. Cash read from /api/me would also count clicks.
- * A tool, not a schedule: Preview shows what it would do; Open now buys once and opens all of it, in turns of
+ * A tool, not a schedule: Practice run shows what it would do; Open now buys once and opens all of it, in turns of
  * RUN_MS with a short break between them so other plugins get the account (later turns only open, never buy again).
  */
 
@@ -34,6 +34,12 @@ const NO_CAP = 999999;   // autosellAmount is a value cap: drops worth more are 
 const LOCK_RETRY_MS = 250, MAX_LOCK_RETRIES = 40, RATE_WAIT_S = 30, MAX_RATE_WAITS = 10;
 const LOCKED = /user is locked/i;
 const CATALOG_MS = 30 * 60 * 1000;
+// The shop's lists: read once for every account at a time (a dozen runs starting together each read it and got
+// refused, a tester 2026-11-19), tried CATALOG_TRIES times with a fresh build id (a site update changes it).
+const CATALOG_TRIES = 3, CATALOG_RETRY_MS = 5000;
+// An account that stops clicking normally for a while (a Cloudflare check, its proxy down, a re-login, the site
+// paused, a busy test) is waited for up to BACK_WAIT_MS before its run stops; one stopped by the user stops at once.
+const BACK_WAIT_MS = 5 * 60000, BACK_POLL_MS = 2000;
 const MAX_OPEN_FAILS = 5;
 const INV_FILL = 0.9;           // non-Pro selling: sell the drops before the inventory passes this
 const INV_FULL = /inventory (is )?full|full inventory|no (more |free )?(space|slots?)|not enough (inventory )?(space|slots?)/i;   // the site's "inventory full" answers
@@ -49,7 +55,7 @@ const lanes = new Map();     // aid -> { phase, opened, of, halt }
 // spent opening (for the speed and the ETA), drops' value, and how it ended. Not saved: a restart starts it over.
 const tix = new Map();       // aid -> event tickets it had when last read
 const prog = new Map();      // aid -> { item, opened, left, openMs, value, t0, result, at }
-const jobs = new Map();      // aid -> { practice, cont, at }: an Open now / Preview still to run (cont: only open, don't buy)
+const jobs = new Map();      // aid -> { practice, cont, at }: an Open now / Practice run still to run (cont: only open, don't buy)
 const catalog = { build: null, items: null, at: 0 };
 let paused = null;           // why buying stopped (the price moved) — cleared by changing the item or its max price
 let halt = false;            // "Stop" pressed: running lanes end after their current request
@@ -237,30 +243,66 @@ function today() {
     return state.today;
 }
 
+// Waits for the account to click normally again (see BACK_WAIT_MS): true when it's back, else a Stop saying why.
+async function waitBack(aid) {
+    const limit = num(S('backWaitMs')) || BACK_WAIT_MS, from = Date.now();
+    let said = false;
+    for (;;) {
+        if (halted()) throw new Stop(ctx.stopping ? 'turned off' : 'stopped by you');
+        const a = ctx.accounts.get(aid);
+        if (!a || !a.running) throw new Stop('the account stopped clicking');
+        if (a.healthy) { if (said) ctx.log(`the account is back after ${Math.round((Date.now() - from) / 1000)} s — going on`, 'ok', aid); return true; }
+        if (Date.now() - from >= limit) throw new Stop(`the account wasn't clicking normally for ${Math.round(limit / 60000)} min (a Cloudflare check, its proxy down or a re-login) — run it again when it's back`);
+        if (!said) { said = true; ctx.log(`the account isn't clicking normally right now (a Cloudflare check, its proxy or a re-login?) — waiting up to ${Math.round(limit / 60000)} min for it`, 'warn', aid); }
+        await ctx.sleep(BACK_POLL_MS);
+    }
+}
+
 async function req(aid, path, opts) {
-    const r = await ctx.request(aid, path, opts);
-    if (r.kind === 'not-running') throw new Stop('the account stopped clicking');
-    if (r.kind === 'auth') throw new Stop('logged out');
-    if (r.kind === 'cf') throw new Stop('Cloudflare check');
-    return r;
+    for (;;) {
+        const r = await ctx.request(aid, path, opts);
+        if (r.kind === 'not-running' || r.kind === 'cf') { await waitBack(aid); continue; }
+        if (r.kind === 'auth') throw new Stop('logged out');
+        return r;
+    }
 }
 const getJson = async (aid, path) => { const r = await req(aid, path); if (r.kind !== 'ok') throw new Stop(`HTTP ${r.status} on ${path.split('?')[0]}`); return r.json; };
 
 // The shop's page data. pageProps.cases is a JSON string of { _id, name, price, rankNeeded, isNonBuyable, ... }.
+// What came back instead of the list, for the message: the status and the start of a body that isn't JSON.
+const answerOf = (r) => `HTTP ${r.status || r.kind}${r.json ? '' : r.body ? ': ' + String(r.body).replace(/<[^>]*>/g, ' ').replace(/\s+/g, ' ').trim().slice(0, 60) : ''}`;
+let catalogJob = null;
 async function refreshCatalog(aid, force) {
-    if (!force && catalog.items && Date.now() - catalog.at < CATALOG_MS) return;
-    const home = await req(aid, '/');
-    const m = /"buildId"\s*:\s*"([^"]+)"/.exec(home.body || '');
-    if (!m) throw new Stop('could not read the shop (no build id)');
-    catalog.build = m[1];
-    const items = [];
-    for (const [file, type, kind] of LISTS) {
-        const r = await req(aid, `/_next/data/${catalog.build}/en/cases/${file}.json?cases=${file}`);
-        const raw = r.json && r.json.pageProps && r.json.pageProps.cases;
-        const list = typeof raw === 'string' ? JSON.parse(raw) : raw;
-        if (!Array.isArray(list)) throw new Stop(`could not read the shop's ${file}`);
-        for (const c of list) if (c && c._id && num(c.price) > 0) items.push({ ...c, type: c.type || type, kind });
+    if (!force && catalog.items && Date.now() - catalog.at < (num(S('catalogMs')) || CATALOG_MS)) return;
+    const own = !catalogJob;
+    if (own) catalogJob = readCatalog(aid).finally(() => { catalogJob = null; });
+    try { return await catalogJob; }
+    catch (e) { if (own || e.shop) throw e; return refreshCatalog(aid, force); }   // the reading account stopped (not the shop failing): read it as this one
+}
+async function readCatalog(aid) {
+    let why = '';
+    for (let i = 0; i < CATALOG_TRIES; i++) {
+        if (i) await ctx.sleep(num(S('catalogRetryMs')) || CATALOG_RETRY_MS * i);
+        const home = await req(aid, '/');
+        const m = /"buildId"\s*:\s*"([^"]+)"/.exec(home.body || '');
+        if (!m) { why = `the shop page had no build id (${answerOf(home)})`; continue; }
+        catalog.build = m[1];
+        const items = [];
+        why = '';
+        for (const [file, type, kind] of LISTS) {
+            const r = await req(aid, `/_next/data/${catalog.build}/en/cases/${file}.json?cases=${file}`);
+            const raw = r.json && r.json.pageProps && r.json.pageProps.cases;
+            let list = null;
+            try { list = typeof raw === 'string' ? JSON.parse(raw) : raw; } catch (_) {}
+            if (!Array.isArray(list)) { why = `the shop's ${file} didn't come back (${answerOf(r)})`; break; }
+            for (const c of list) if (c && c._id && num(c.price) > 0) items.push({ ...c, type: c.type || type, kind });
+        }
+        if (why) continue;
+        return setCatalog(items);
     }
+    throw Object.assign(new Stop(`could not read the shop: ${why}, ${CATALOG_TRIES}× in a row`), { shop: true });
+}
+function setCatalog(items) {
     catalog.items = items;
     catalog.at = Date.now();
     const order = { Case: 0, Capsule: 1, Collection: 2 };
@@ -669,7 +711,8 @@ async function run(aid, name, practice, cont, shop) {
                             }
                         }
                     } else {
-                        if (r.kind === 'not-running' || r.kind === 'auth' || r.kind === 'cf') throw new Stop(r.kind === 'not-running' ? 'the account stopped clicking' : r.kind);
+                        if (r.kind === 'not-running' || r.kind === 'cf') { await waitBack(aid); p.openMs += Date.now() - t0; continue; }   // paused: wait for it (see BACK_WAIT_MS)
+                        if (r.kind === 'auth') throw new Stop('logged out');
                         const msg = String((r.json && r.json.error) || '');
                         // The site won't open with tickets (none left, no event on): this account stops.
                         if (useT && TICKET_ERR.test(msg)) throw new Stop('event tickets: ' + msg);
@@ -793,7 +836,7 @@ async function keepBoosts(aid, log, said) {
     return { perCall: Math.max(1, parseInt(me.caseOpenCount) || 1), mult: Math.max(1, parseInt(me.maxCaseOpenMultiplier) || 1), nextEnd: ends.length ? Math.min(...ends) : 0 };
 }
 
-// Runs the jobs started from the page (Open now / Preview), a few accounts at a time.
+// Runs the jobs started from the page (Open now / Practice run), a few accounts at a time.
 // At most PER_IP accounts open at once on one exit IP (the site gets angry from 4 at once on one connection with a
 // bad ping): more than that at once needs accounts on proxies. ipOf(aid): the account's exit-IP group ('direct' is
 // this PC's connection; proxies with the same exit IP are one group).
@@ -923,7 +966,7 @@ module.exports = {
                 if (!practice && S('exclusive') && ctx.accounts.setBusy) ctx.accounts.setBusy(a.id, 'waiting to open cases (others paused until done)');
             }
             tick();
-            return { message: practice ? 'Previewing — what it would do shows up here in a moment.' : `Opening on ${chosen.length} account${chosen.length === 1 ? '' : 's'}.` };
+            return { message: practice ? 'Practice run — what it would do shows up here in a moment.' : `Opening on ${chosen.length} account${chosen.length === 1 ? '' : 's'}.` };
         };
         ctx.panel.action('preview', () => start(true));
         ctx.panel.action('open', () => start(false));
@@ -1067,8 +1110,8 @@ module.exports = {
             const active = (id) => lanes.has(id) || (jobs.has(id) && !jobs.get(id).practice);
             const status = (a) => {
                 const l = lanes.get(a.id), j = jobs.get(a.id), p = prog.get(a.id);
-                if (l) return { text: (j && j.practice) || !p ? 'Previewing' : PHASE[l.phase] || l.phase, level: 'ok' };
-                if (j && j.practice) return { text: 'Preview waiting', level: 'muted' };
+                if (l) return { text: (j && j.practice) || !p ? 'Practice run' : PHASE[l.phase] || l.phase, level: 'ok' };
+                if (j && j.practice) return { text: 'Practice run waiting', level: 'muted' };
                 if (j && j.cont) return { text: `On a break · back in ${dur(j.at - Date.now())}` };
                 if (j) return { text: !a.healthy ? 'Waiting · not clicking' : ctx.accounts.busy && ctx.accounts.busy(a.id) ? 'Waiting · another plugin is using it' : ipFull(a.id) && maxLanes_ < setLanes ? `Waiting · ${PER_IP} at a time on this IP` : lanes.size >= maxLanes_ ? `Waiting · ${maxLanes_} at a time` : 'Waiting', level: 'muted' };
                 if (!a.healthy) return { text: 'Not clicking', level: 'muted' };
@@ -1117,7 +1160,7 @@ module.exports = {
                     return [a.name, e.name || 'item', { text: active(e.aid) ? 'Queued · after its current job' : 'Queued', level: 'muted' }, { text: '—', level: 'muted' }, { text: '—', level: 'muted' }, dropsText(shopCfg(e)), { label: 'Remove', action: 'shopDrop', arg: e.qid + '|' + e.aid }]; }),
             ];
 
-            // The top: running (how far, how long, Stop all) or ready (what Open now will do, Open now / Preview).
+            // The top: running (how far, how long, Stop all) or ready (what Open now will do, Open now / Practice run).
             const act = ctx.accounts.list().filter(a => active(a.id) && (opensHere(a.id) || shopNow(a.id))), running = act.filter(a => lanes.has(a.id)).length;
             const ps = act.map(a => prog.get(a.id)).filter(Boolean);
             const done = ps.reduce((s, p) => s + p.opened, 0), left = ps.reduce((s, p) => s + (p.left || 0), 0), worth = ps.reduce((s, p) => s + p.value, 0);

@@ -1040,10 +1040,6 @@ module.exports = {
             const others = [...accts.values()].filter(a => a.id !== fanFrom);
             const fanCard = { type: 'section', title: 'Send to many', blocks: [
                 { type: 'wizard', id: 'fan', steps: [
-                    { id: 'from', title: 'Send from', done: !!fanA, warn: fanA ? null : 'pick the account that sends', summary: fanA ? [fanA.name, meta(fanA)].filter(Boolean).join(' · ') : '',
-                        keys: ['fanFrom'] },
-                    { id: 'tokens', title: 'Tokens each', done: fanTk > 0, warn: fanTk > 0 ? null : 'how many tokens each', summary: fanTk > 0 ? `${count(fanTk)} to every receiver` : '',
-                        text: 'Every receiver gets this many: 500K, 2.5M, 1B. Only Pro accounts can send tokens.', keys: ['fanTokens'] },
                     { id: 'to', title: 'Send to', done: fanTo.length > 0, warn: fanTo.length ? null : 'pick the receivers',
                         summary: fanTo.length ? (fanTo.length <= 3 ? fanTo.map(id => (accts.get(id) || {}).name).join(', ') : `${fanTo.length} accounts`) : '',
                         blocks: [
@@ -1051,6 +1047,10 @@ module.exports = {
                             ...(fanTo.length ? [{ type: 'text', text: `${fanTo.length} picked.` }] : []),
                             { type: 'picker', action: 'fanPick', tag: 'Receiver', grid: true, multi: true, items: others.map(a => ({ id: a.id, on: fanSet.has(a.id), title: a.name, meta: meta(a) })) },
                         ] },
+                    { id: 'from', title: 'Send from', done: !!fanA, warn: fanA ? null : 'pick the account that sends', summary: fanA ? [fanA.name, meta(fanA)].filter(Boolean).join(' · ') : '',
+                        text: 'The account that pays. If it is also ticked as a receiver, it is left out of them.', keys: ['fanFrom'] },
+                    { id: 'tokens', title: 'Tokens each', done: fanTk > 0, warn: fanTk > 0 ? null : 'how many tokens each', summary: fanTk > 0 ? `${count(fanTk)} to every receiver` : '',
+                        text: 'Every receiver gets this many: 500K, 2.5M, 1B. Only Pro accounts can send tokens.', keys: ['fanTokens'] },
                 ],
                 finish: { title: fan && fan.running ? 'Sending…' : fanWhy ? 'Send' : `Send ${count(fanTotal)} tokens`, ready: !fanWhy, next: 'Review and send',
                     text: fanWhy && !(fan && fan.running) ? fanWhy : `${count(fanTk)} tokens to each of ${fanTo.length} account${fanTo.length === 1 ? '' : 's'} from ${fanA ? fanA.name : '?'} — ${count(fanTotal)} in all, ${fanTo.length} trade${fanTo.length === 1 ? '' : 's'} one after another.`,
