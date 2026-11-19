@@ -1,7 +1,7 @@
 {
   "id": "pass",
   "name": "Monthly pass",
-  "version": "1.5.0",
+  "version": "1.6.0",
   "description": "Claims ready monthly pass tiers on the accounts you choose — the free track, the Pro track or both.",
   "minCore": "1.0.6",
   "main": "index.js",

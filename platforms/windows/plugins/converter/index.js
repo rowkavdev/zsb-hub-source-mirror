@@ -445,6 +445,22 @@ function tick(asked) {
     }
 }
 
+// The Schedule tab (hub 1.2.18+): the next accounts due, with Run now / Skip next.
+function plan() {
+    if (!ctx.schedule) return;
+    const ids = ctx.power.live() ? ctx.accounts.list().filter(a => ctx.settings.runsOn('accounts', a.id) && !lanes.has(a.id)).map(a => a.id) : [];
+    if (!ids.length) { ctx.schedule.set('run', null); return; }
+    const every = num(S('everyMs')) || Math.max(5, num(S('everyMin'))) * 60000;
+    const max = Math.max(1, Math.min(5, num(S('lanes')) || 1));
+    const dueOf = (id) => (state.last[id] || 0) + every;
+    const at = Math.min(...ids.map(dueOf)), soon = ids.filter(id => dueOf(id) - at < 60000);
+    const later = ids.length - soon.length;
+    ctx.schedule.set('run', { what: 'Convert run', at: Math.max(at, Date.now()), accounts: soon,
+        why: `each chosen account every ${Math.round(every / 60000)} min, ${max} at a time${paused ? ' · buying is stopped: ' + paused : ''}${later ? ` · ${later} more later` : ''}`,
+        runNow: () => { for (const id of soon) state.last[id] = 0; tick(true); plan(); return { message: 'Running now.' }; },
+        skip: () => { const now = Date.now(); for (const id of soon) state.last[id] = Math.max(dueOf(id), now); save(); plan(); return { message: 'Skipped: those accounts go one run later.' }; } });
+}
+
 module.exports = {
     start(c) {
         ctx = c;
@@ -464,7 +480,8 @@ module.exports = {
             publish();
         };
         publish(); members();
-        ctx.every(15000, () => { fill(); members(); publish(); tick(); });
+        ctx.every(15000, () => { fill(); members(); publish(); tick(); plan(); });
+        plan();
         ctx.settings.onChange((k) => { if (k === 'dlore' || k === 'dloreWho' || k === 'accounts') { publish(); members(); } });
         ctx.panel.action('run', () => {
             const chosen = ctx.accounts.list().filter(a => ctx.settings.runsOn('accounts', a.id));

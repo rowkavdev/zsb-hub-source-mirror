@@ -14,6 +14,7 @@ const { startWebPanel } = require('./src/app/web');
 const { createUpdater } = require('./src/app/updater');
 const { createSockets } = require('./src/app/sockets');
 const dev = require('./src/app/dev');
+const watchdog = require('./src/app/watchdog');
 const { t } = require('./src/core/text');
 
 const { version: VERSION, releaseStage: STAGE, statsUrl: STATS_URL, pluginCatalogUrl: CATALOG_URL } = require('./package.json');
@@ -186,8 +187,22 @@ function migrateFromClicker(dataDir) {
     return true;
 }
 
+let wd = null;   // the heartbeat / watchdog (src/app/watchdog.js)
+
+// The watchdog process: Electron in Node mode running watchdog.js (unpacked from the asar). Packaged builds only. On
+// Linux under the launcher it only ends a frozen app (the launcher restarts it); elsewhere it restarts the app too.
+function spawnWatchdog(dataDir, relaunch) {
+    const { spawn } = require('child_process');
+    const script = path.join(__dirname, 'src', 'app', 'watchdog.js').replace(/app\.asar([\\/])/, 'app.asar.unpacked$1');
+    const args = process.argv.slice(1).filter(a => a !== '--updated' && a !== '--hidden');
+    const byLauncher = process.platform === 'linux' && process.env.ZSB_HUB_LAUNCHER === '1';
+    spawn(process.execPath, [script, dataDir, relaunch && !byLauncher ? '1' : '0', process.execPath, ...args, '--hidden'],
+        { detached: true, stdio: 'ignore', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } }).unref();
+}
+
 app.whenReady().then(() => {
     const dataDir = app.getPath('userData');
+    const lastRun = watchdog.lastRunEnded(dataDir);
     tagSession(require('electron').session.defaultSession);
     let migrated = false;
     try { migrated = migrateFromClicker(dataDir); } catch (_) {}
@@ -254,6 +269,10 @@ app.whenReady().then(() => {
     let pending = null;
     core.engine.on('change', () => { if (!pending) pending = setTimeout(() => { pending = null; onChange(); }, 300); });
     core.boot();
+    // How the last run ended (a crash or freeze the watchdog restarted, or just stopped): logged and sent to Alerts.
+    if (lastRun) core.lastRunEnded(lastRun);
+    const recover = core.store.settings.autoRecover || {};
+    wd = watchdog.startWatchdog({ dataDir, spawn: app.isPackaged && recover.relaunch !== false ? () => spawnWatchdog(dataDir, true) : null });
     // Source runs only, with CLICKER_DEV_CMD=1: <data>/dev-cmd.json { rpc, args } calls one panel function and writes
     // the answer to dev-out.json, so a test hub can be driven without its panel password. Packaged builds never do this.
     if (!app.isPackaged && process.env.CLICKER_DEV_CMD === '1') {
@@ -351,6 +370,6 @@ app.whenReady().then(() => {
 });
 
 app.on('second-instance', () => showPanel());
-app.on('before-quit', () => { quitting = true; if (core) core.shutdown(); if (transport) transport.close(); if (web) web.close(); });
+app.on('before-quit', () => { quitting = true; if (wd) wd.clean(); if (core) core.shutdown(); if (transport) transport.close(); if (web) web.close(); });
 // Closing every window doesn't quit: the clicker lives in the tray.
 app.on('window-all-closed', () => {});

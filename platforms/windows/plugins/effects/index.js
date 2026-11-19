@@ -292,7 +292,7 @@ module.exports = {
         let tickAt = 0;
         ctx.every(1000, () => { if (Date.now() - tickAt >= (num(S('everyMs')) || 15000)) { tickAt = Date.now(); tick(); } });
         // Fresh numbers for the table now and then (one account at a time, not all at once).
-        ctx.everyAccount(10 * 60000, async (a) => { if (targets().some(x => x.id === a.id)) { try { await look(a.id); } catch (_) {} } });
+        ctx.everyAccount(10 * 60000, async (a) => { if (targets().some(x => x.id === a.id)) { try { await look(a.id); } catch (_) {} } }, { what: 'Look at effects', only: (aid) => targets().some(x => x.id === aid) });
 
         ctx.panel.action('pick', (name) => {
             if (!BY_NAME.has(name)) return { ok: false };

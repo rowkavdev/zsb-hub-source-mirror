@@ -1290,7 +1290,22 @@ module.exports = {
                 return;
             }
             if (due()) check();
+            plan();
         });
+        // The Schedule tab (hub 1.2.18+): the next star farming turn, with Run now / Skip next.
+        const plan = () => {
+            if (!ctx.schedule) return;
+            const ids = chosen().map(a => a.id);
+            if (!S('on') || practiceMode() || !ids.length) { ctx.schedule.set('turn', null); return; }
+            const every = num(S('everyMs')) || Math.max(1, num(S('everyMin'))) * 60000;
+            const turn = Math.round((num(S('turnMs')) || Math.max(5, num(S('turnMin'))) * 60000) / 60000);
+            ctx.schedule.set('turn', { what: farming ? 'Star farming turn (running)' : 'Star farming turn', at: farming ? Date.now() : Math.max((state.last || 0) + every, Date.now()), accounts: ids,
+                why: `checks every ${Math.round(every / 60000)} min; a turn holds the accounts up to ${turn} min (Games and the Opener wait) for pass XP and credits`,
+                ...(farming ? {} : {
+                    runNow: () => { if (recovering) return { message: 'Already running.' }; check(); plan(); return { message: 'Checking now.' }; },
+                    skip: () => { state.last = Math.max((state.last || 0) + every, Date.now()); save(); plan(); return { message: 'Skipped: the next turn is one interval later.' }; } }) });
+        };
+        plan();
         ctx.panel.action('run', () => {
             if (!chosen().length) return { ok: false, error: 'Choose accounts first.' };
             if (farming || recovering) return { message: 'Already running.' };

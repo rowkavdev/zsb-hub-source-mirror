@@ -784,6 +784,7 @@ table.wrap td:first-child, table.wrap td:last-child { white-space: nowrap; }
 .share-choice span { font-size: var(--fs-m); color: var(--text-2); line-height: 1.4; }
 .share-choice.primary span { color: color-mix(in srgb, var(--on-white) 75%, transparent); }
 .share-hint { font-size: var(--fs-m); }
+.share-hint.good { color: var(--ok); }
 .share-list { display: grid; }
 .share-row { display: flex; gap: 12px; align-items: flex-start; padding: 10px 0; border-top: 1px solid var(--line); cursor: pointer; }
 .share-row:first-child { border-top: 0; padding-top: 0; }
@@ -1003,3 +1004,21 @@ html:not([data-graphics="fancy"]) .fx-edge { display: none; }
 
 /* Read out by screen readers, not shown. */
 .sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); clip-path: inset(50%); white-space: nowrap; border: 0; }
+
+/* Schedule tab: Now and Next, one row each; no backgrounds (the shards show through) */
+.sched-list { display: grid; }
+.sched-row { display: grid; grid-template-columns: 120px minmax(0, 1fr) auto; gap: 14px; align-items: start; padding: 12px 0; border-top: 1px solid var(--line); }
+.sched-row:first-child { border-top: 0; padding-top: 2px; }
+.sched-when { display: grid; gap: 2px; font-size: var(--fs-m); }
+.sched-when .muted { font-size: var(--fs-s); }
+.sched-main { display: grid; gap: 3px; min-width: 0; }
+.sched-what b { font-weight: 600; }
+.sched-acc { font-size: var(--fs-m); color: var(--text-2); overflow-wrap: anywhere; }
+.sched-why { font-size: var(--fs-m); line-height: 1.4; }
+.sched-btns { display: flex; gap: 6px; flex-wrap: wrap; justify-content: flex-end; }
+.plug-head.sched-gap { margin-top: 26px; }
+@media (max-width: 620px) {
+  .sched-row { grid-template-columns: 1fr; gap: 6px; }
+  .sched-when { grid-auto-flow: column; justify-content: start; gap: 8px; align-items: baseline; }
+  .sched-btns { justify-content: flex-start; }
+}

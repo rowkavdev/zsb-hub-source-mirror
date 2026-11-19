@@ -279,7 +279,7 @@ class PluginHost {
         const main = path.join(p.dir, p.manifest.main || 'index.js');
         // Drop every cached module from this plugin's folder so a reload runs the new code.
         for (const k of Object.keys(require.cache)) if (k.startsWith(p.dir + path.sep)) delete require.cache[k];
-        p.res = { listeners: [], timers: [], perAccount: [], tabs: [], badges: [], codes: [], settingsListeners: [], sockets: new Set(), sleeps: new Set(), stopping: false, actions: {}, theme: null, assets: new Set(), assetUrls: new Map(), assetBudget: { used: 0 } };
+        p.res = { listeners: [], timers: [], perAccount: [], tabs: [], badges: [], codes: [], settingsListeners: [], sockets: new Set(), sleeps: new Set(), stopping: false, actions: {}, sched: new Map(), theme: null, assets: new Set(), assetUrls: new Map(), assetBudget: { used: 0 } };
         try {
             p.mod = require(main);
             const ctx = this.makeCtx(id, p);
@@ -463,7 +463,9 @@ class PluginHost {
             sleep: (ms) => new Promise(res => { const t = setTimeout(() => { r.sleeps.delete(t); res(); }, ms); r.sleeps.add(t); }),
             every: (ms, fn) => { const t = setInterval(host.guard(id, p, fn), Math.max(1000, ms)); r.timers.push(t); return t; },
             // fn(account) for each healthy account every ms, first runs spread over one interval.
-            everyAccount: (ms, fn) => {
+            // opts.what: how the Schedule tab names one of these checks (default "Check"); opts.only(aid): the accounts it
+            // really does something on (it's called for every clicking account), so the tab lists just those.
+            everyAccount: (ms, fn, opts = {}) => {
                 ms = Math.max(5000, ms);
                 const g = host.guard(id, p, fn), due = new Map();
                 const timer = setInterval(() => {
@@ -474,7 +476,18 @@ class PluginHost {
                     }
                     for (const aid of due.keys()) if (!engine.isRunning(aid)) due.delete(aid);
                 }, 1000);
-                r.perAccount.push({ timer });
+                r.perAccount.push({ timer, due, ms, what: String(opts.what || 'Check'), only: typeof opts.only === 'function' ? opts.only : null });
+            },
+            // What's coming up, for the Schedule tab: set(key, { what, at, accounts, why, runNow, skip }) — at: when (ms),
+            // accounts: account ids it's for, why: one line on why it runs (then), runNow / skip: functions for the tab's
+            // Run now and Skip next buttons (left out: no button). set(key, null) clears; all of it goes when the plugin stops.
+            schedule: {
+                set: (key, e) => {
+                    if (!e) { r.sched.delete(String(key)); return; }
+                    r.sched.set(String(key), { what: String(e.what || ''), at: Number(e.at) || null, accounts: Array.isArray(e.accounts) ? e.accounts.map(String) : [],
+                        why: e.why ? String(e.why) : '', runNow: typeof e.runNow === 'function' ? e.runNow : null, skip: typeof e.skip === 'function' ? e.skip : null });
+                },
+                clear: () => r.sched.clear(),
             },
             errors: {
                 define: (code, spec) => { if (!host.errors.codes[code]) host.errors.define(code, spec); if (!r.codes.includes(code)) r.codes.push(code); },
@@ -529,6 +542,65 @@ class PluginHost {
     }
 
     // --- what the panel reads -----------------------------------------------
+    // Schedule tab: what each running plugin has coming up (its own schedule.set entries, and its everyAccount checks).
+    schedule() {
+        const out = [];
+        for (const [id, p] of this.plugins) {
+            if (p.state !== 'running' || !p.res) continue;
+            const name = p.manifest.name || id;
+            for (const [key, e] of p.res.sched) out.push({ plugin: id, pluginName: name, key, what: e.what, at: e.at, accounts: e.accounts, why: e.why, canRun: !!e.runNow, canSkip: !!e.skip });
+            p.res.perAccount.forEach((pa, i) => {
+                const ids = pa.due ? this.dueFor(pa) : [];
+                if (!ids.length) return;
+                const soon = this.dueSoon(pa), at = pa.due.get(soon[0]);
+                const sec = Math.round(pa.ms / 1000);
+                out.push({ plugin: id, pluginName: name, key: 'every:' + i, what: pa.what, at, accounts: soon,
+                    why: `each of ${ids.length} account${ids.length === 1 ? '' : 's'} every ${sec >= 120 ? Math.round(sec / 60) + ' min' : sec + ' s'}`, canRun: true, canSkip: true, each: true });
+            });
+        }
+        return out;
+    }
+
+    // The accounts due next: the soonest one and any due within a minute of it.
+    dueSoon(pa) {
+        const ids = this.dueFor(pa);
+        if (!ids.length) return [];
+        const at = Math.min(...ids.map(aid => pa.due.get(aid)));
+        return ids.filter(aid => pa.due.get(aid) - at < 60000).sort((x, y) => pa.due.get(x) - pa.due.get(y));
+    }
+    dueFor(pa) { return [...pa.due.keys()].filter(aid => { try { return !pa.only || !!pa.only(aid); } catch (_) { return false; } }); }
+
+    // Run now / Skip next from the Schedule tab.
+    async scheduleDo(id, key, op) {
+        const p = this.plugins.get(id);
+        if (!p || p.state !== 'running' || !p.res) return { ok: false, error: 'That plugin isn\'t running.' };
+        if (String(key).startsWith('every:')) {
+            const pa = p.res.perAccount[Number(String(key).slice(6))];
+            if (!pa || !pa.due) return { ok: false, error: 'Nothing scheduled there now.' };
+            const now = Date.now();
+            for (const aid of this.dueSoon(pa)) pa.due.set(aid, op === 'run' ? now : Math.max(pa.due.get(aid), now) + pa.ms);
+            return { ok: true };
+        }
+        const e = p.res.sched.get(String(key));
+        const fn = e && (op === 'run' ? e.runNow : e.skip);
+        if (!fn) return { ok: false, error: 'Nothing scheduled there now.' };
+        try { const v = await fn(); return { ok: true, ...(v && typeof v === 'object' ? v : {}) }; }
+        catch (err) { this.crashed(id, err); return { ok: false, error: err.message }; }
+    }
+
+    // Schedule tab "Now": what each plugin is doing on which accounts (their busy marks), and who's asking for them.
+    activity() {
+        const out = new Map();   // plugin -> { what -> [aid] }
+        for (const [aid, m] of this.busy) for (const b of m.values()) {
+            const k = b.plugin + '\u0000' + b.what;
+            if (!out.has(k)) out.set(k, { plugin: b.plugin, pluginName: (this.plugins.get(b.plugin) || { manifest: {} }).manifest.name || b.plugin, what: b.what, since: b.at, accounts: [] });
+            const o = out.get(k); o.accounts.push(aid); o.since = Math.min(o.since, b.at);
+        }
+        const wants = [];
+        for (const [aid, m] of this.wants) for (const w of m.values()) wants.push({ plugin: w.plugin, pluginName: (this.plugins.get(w.plugin) || { manifest: {} }).manifest.name || w.plugin, what: w.what, since: w.at, account: aid });
+        return { busy: [...out.values()], wants };
+    }
+
     list() {
         return [...this.plugins.entries()].map(([id, p]) => ({
             id, name: p.manifest.name || id, version: p.manifest.version, description: p.manifest.description || '',

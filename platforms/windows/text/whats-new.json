@@ -1,5 +1,12 @@
 {
   "_how": "One entry per released version, newest first. Each line is one bullet; **bold** works. Shown once after an update, and used as the release notes on GitHub. npm run release refuses a version with no entry here.",
+  "1.2.18": [
+    "**Discord webhooks** — a walkthrough in Settings > Discord webhooks sets up three channels: **#zsb-drops** (the Opener's favourited drops), **#zsb-alerts** and **#zsb-daily**. Each webhook is tested as you save it, and kept sealed on this computer.",
+    "**Alerts** — posts when accounts need a look for over a minute (and when they're fine again), when a plugin run stops with a reason, and when the hub restarted after a crash. Pick which ones.",
+    "**Daily report** — once a day at the time you pick: accounts clicking, income, money, tokens, net worth and premier with the change since the last report, plus what went wrong. **Send now** any time.",
+    "**Schedule tab** — what's running now and what's coming up next: which plugin, which accounts, when and why. **Run now** and **Skip next** on each.",
+    "**Auto-recover** — an account waiting for a slot starts by itself when one frees up; a failed sign-in is tried again (5 min, 15, 30, then hourly); and the hub restarts itself after a crash or a 2-minute freeze (at most 3 times an hour). Each can be switched off in Settings > Auto-recover."
+  ],
   "1.2.17": [
     "**Problems you can trust** — the Accounts tab count, the **Problems** filter, the Overview and the header now agree. An account that's still clicking but has a sign-in problem counts too.",
     "**Waiting for a slot** — accounts over the per-IP limit no longer show as red errors. Their card says **Waiting for a slot**, and the header shows how many are waiting.",

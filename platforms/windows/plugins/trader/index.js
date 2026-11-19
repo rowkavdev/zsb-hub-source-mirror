@@ -756,7 +756,26 @@ module.exports = {
             suggestMain();
             const every = num(S('everyMs')) || Math.max(5, num(S('everyMin'))) * 60000;
             if (ctx.power.live() && Date.now() - lastRun >= every) check();   // on the schedule only when on and live
+            plan();
         });
+        // The Schedule tab (hub 1.2.18+): the next route check, with Run now / Skip next.
+        const plan = () => {
+            if (!ctx.schedule) return;
+            const routes = S('routes') || [];
+            if (!ctx.power.live() || !routes.length) { ctx.schedule.set('check', null); return; }
+            const every = num(S('everyMs')) || Math.max(5, num(S('everyMin'))) * 60000;
+            const from = new Set();
+            for (const r of routes) {
+                if (r.to) from.add(r.to);
+                if (r.from && r.from.all) for (const a of ctx.accounts.list()) from.add(a.id);
+                else for (const id of (r.from && r.from.ids) || []) from.add(id);
+            }
+            ctx.schedule.set('check', { what: running ? 'Checking routes (running)' : 'Check trade routes', at: running ? Date.now() : Math.max(lastRun + every, Date.now()), accounts: [...from],
+                why: `every ${Math.round(every / 60000)} min: ${routes.length} route${routes.length === 1 ? '' : 's'}, each moves what's over its keep amount`,
+                runNow: () => { lastRun = 0; check(true); return { message: running ? 'Already checking — it goes again right after.' : 'Checking routes now.' }; },
+                skip: () => { lastRun = Math.max(lastRun + every, Date.now()); plan(); return { message: 'Skipped: the next check is one interval later.' }; } });
+        };
+        plan();
         ctx.settings.onChange((k) => { if (k === 'routes' || k === 'on' || k === 'runMode') lastRun = 0; });
         ctx.panel.action('check', () => {
             if (!(S('routes') || []).length) return { ok: false, error: 'Add a route first.' };
