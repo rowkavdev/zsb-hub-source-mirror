@@ -70,8 +70,16 @@
     const errHtml = (raw) => { const e = errParts(raw); return esc(e.text) + (e.code ? ` <small class="err-code">${esc(e.code)}</small>` : ''); };
 
     // "Nothing here", the same everywhere: what is missing, a hint, a button. plain leaves the box off (inside a card or a dialog).
-    // Accounts that need the user: the count on the Accounts tab and the Problems filter.
-    const isBad = (a) => a.status === 'logged-out' || a.status === 'problem' || a.status === 'needs-you';
+    // One rule for "needs the user", built from the same issue list Troubleshoot reports: the Accounts tab count,
+    // the Problems filter and the Overview status all use it. An account waiting for a free place on its IP
+    // (CC-RATE-01) is not a problem: it starts by itself when one frees up.
+    const WAIT_CODES = new Set(['CC-RATE-01']);
+    const waitingForSlot = (a) => !a.startedAt && (a.issues || []).some(i => WAIT_CODES.has(i.code));
+    const needsAttention = (a) => a.status === 'logged-out' || a.status === 'problem' || a.status === 'needs-you' || a.status === 'proxy-down'
+        || (a.issues || []).some(i => !WAIT_CODES.has(i.code));
+    // The status in words: waiting for a slot, or clicking but with something to look at, read differently from plain Clicking.
+    const statusWord = (a) => waitingForSlot(a) ? T('status.slot') : a.startedAt && needsAttention(a) && (a.status === 'clicking' || a.status === 'no-clicks')
+        ? T('status.attention') : TX['status.' + a.status] ? T('status.' + a.status) : a.status;
     const FILTERS = ['all', 'problems', 'clicking', 'stopped'];
     // True while someone is typing or choosing in a field inside el, so a redraw would get in the way.
     const typingIn = (el) => { const a = document.activeElement; return !!(a && el && el.contains(a) && (/^(INPUT|TEXTAREA)$/.test(a.tagName) && a.type !== 'checkbox' || a.tagName === 'SELECT')); };
@@ -293,7 +301,8 @@
         const t = S.totals;
         setHtml('#summary', `<span class="kpi">${H('header.kpi.clicking', { n: t.clicking, max: S.capacity || S.maxPerIp })}<span class="mini"><i data-w="${Math.min(100, Math.round((S.clickingRuns ?? S.running) / (S.capacity || S.maxPerIp) * 100))}"></i></span></span>`
             + (t.total ? `<button class="kpi kpi-btn" data-act="incomeChart" title="${H('income.open')}">${H('header.kpi.income', { money: money(t.total) })}</button>` : '')
-            + (S.accounts.length > t.clicking ? `<span class="kpi">${H('header.kpi.idle', { n: S.accounts.length - t.clicking })}</span>` : '')
+            + ((() => { const wait = S.accounts.filter(waitingForSlot).length, idle = S.accounts.length - t.clicking - wait;
+                return (idle > 0 ? `<span class="kpi">${H('header.kpi.idle', { n: idle })}</span>` : '') + (wait ? `<span class="kpi">${H('header.kpi.slot', { n: wait })}</span>` : ''); })())
             + (S.update && S.update.status === 'ready' ? `<span class="kpi update">${H('update.ready', { version: S.update.version })}<button class="small primary" data-act="installUpdate">${H('update.restart')}</button></span>` : ''));
         $('#startAll').disabled = !S.accounts.some(a => !a.startedAt && a.hasToken);
         $('#stopAll').disabled = !S.running;
@@ -353,7 +362,7 @@
     }
     let tabSaved = '';
     function drawTabs() {
-        const bad = S.accounts.filter(isBad).length;
+        const bad = S.accounts.filter(needsAttention).length;
         const plugBad = S.plugins.filter(p => p.state === 'error').length;
         // A tab whose content has pin (a few words, e.g. 'running') comes out of its drop-down onto the bar, with that word.
         const ptabs = S.tabs.map(t => { const id = 'plugin:' + t.plugin + ':' + t.title, pin = t.content && typeof t.content.pin === 'string' && t.content.pin.slice(0, 20);
@@ -361,7 +370,9 @@
         const all = [['accounts', T('tabs.accounts'), bad], ['overview', T('tabs.overview'), 0], ['plugins', T('tabs.plugins'), plugBad], ...ptabs.map(t => [t.id, t.label, 0]), ['log', T('tabs.log'), 0], ['settings', T('tabs.settings'), 0]];
         if (tab.startsWith('plugin:') && !all.some(t => t[0] === tab)) tab = 'accounts';
         if (tab !== tabSaved && !studio && tourAt < 0) { tabSaved = tab; try { localStorage.setItem('zsb.tab', tab); } catch (_) {} }
-        const one = ([id, label, n]) => `<button role="tab" data-act="tab" data-tab="${esc(id)}" aria-selected="${id === tab}">${esc(label)}${n ? `<span class="count">${n}</span>` : ''}</button>`;
+        // The count is read out as words ("6 accounts need a look"); the bare number is only for the eye.
+        const said = (id, n) => T(id === 'plugins' ? (n === 1 ? 'tabs.count.plugins.one' : 'tabs.count.plugins') : (n === 1 ? 'tabs.count.accounts.one' : 'tabs.count.accounts'), { n });
+        const one = ([id, label, n]) => `<button role="tab" data-act="tab" data-tab="${esc(id)}" aria-selected="${id === tab}">${esc(label)}${n ? `<span class="count" aria-hidden="true">${n}</span><span class="sr-only">, ${esc(said(id, n))}</span>` : ''}</button>`;
         const groups = new Map();
         for (const t of ptabs) groups.set(t.group, [...(groups.get(t.group) || []), t]);
         if (openGroup && !(groups.get(openGroup) || []).length) openGroup = null;
@@ -385,8 +396,14 @@
     // --- overview ----------------------------------------------------------
     // Totals over every account, from each one's last /api/me report (an account that isn't clicking keeps what it
     // had when it last reported). The accounts table sorts by any column.
-    let ovSort = { key: 'networth', dir: -1 };
-    try { const o = JSON.parse(localStorage.getItem('zsb.ovSort') || 'null'); if (o && typeof o.key === 'string' && (o.dir === 1 || o.dir === -1)) ovSort = { key: o.key, dir: o.dir }; } catch (_) {}
+    // Default: income, highest first, with the accounts that need a look on top. (Saved under a new name: the old
+    // default, Net worth, sorted every not-yet-reported account to $0 at the bottom of nothing useful.)
+    let ovSort = { key: 'income', dir: -1 };
+    try { const o = JSON.parse(localStorage.getItem('zsb.ovSort2') || 'null'); if (o && typeof o.key === 'string' && (o.dir === 1 || o.dir === -1)) ovSort = { key: o.key, dir: o.dir }; } catch (_) {}
+    // The 8th Overview tile takes turns: Need a look, Exit IPs, Vault. It stays on Need a look while any account needs
+    // one; otherwise it moves on every 8 s (not with reduced motion), and a click shows the next one and holds it 30 s.
+    const OV_ROT = ['look', 'ips', 'vault'];
+    let ovRot = 0, ovRotHold = 0;
     function drawOverview() {
         const acc = S.accounts, me = (a) => a.me || {};
         if (typingIn($('#tab-overview'))) return;
@@ -394,17 +411,33 @@
         const sum = (list, f) => list.reduce((s, a) => s + (Number(f(a)) || 0), 0);
         const has = (list, f) => list.some(a => f(a) != null);
         const total = (list, f, fmt) => (has(list, f) ? fmt(sum(list, f)) : '—');
+        // Hover text: the exact number (the tile shows it short, e.g. $46.58M).
+        const exact = (list, f, cash, unit = '') => (has(list, f) ? (cash ? '$' + sum(list, f).toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 }) : Math.round(sum(list, f)).toLocaleString('en-US')) + unit : '');
         const income = (a) => (a.perHour ? a.perHour.total : null);
-        const clicking = acc.filter(a => a.startedAt).length, pro = acc.filter(a => me(a).membership === 'pro').length;
-        const tile = (label, value, sub) => `<div class="stat"><span>${H(label)}</span><b title="${esc(value)}">${esc(value)}</b>${sub ? `<small class="muted">${esc(sub)}</small>` : ''}</div>`;
+        const clicking = acc.filter(a => a.startedAt).length, pro = acc.filter(a => me(a).membership === 'pro').length, look = acc.filter(needsAttention).length, slots = acc.filter(waitingForSlot).length;
+        const rotTile = () => {
+            const which = look && Date.now() > ovRotHold ? 'look' : OV_ROT[ovRot % OV_ROT.length];
+            let value, sub, full = '';
+            if (which === 'look') { value = String(look); sub = T(look ? 'overview.rot.look.some' : 'overview.rot.look.none'); }
+            else if (which === 'ips') {
+                value = String(new Set(acc.filter(a => a.startedAt).map(a => a.route || 'direct')).size);
+                sub = slots ? T('overview.accounts.slots', { n: slots }) : T('overview.rot.ips.max', { max: S.settings.maxPerIp });
+            } else {
+                const vault = (a) => (a.perHour ? a.perHour.vault : null);
+                value = has(acc, vault) ? T('overview.income.value', { v: money(sum(acc, vault)) }) : '—'; full = exact(acc, vault, true, '/h'); sub = T('overview.rot.vault.sub');
+            }
+            return `<button class="stat stat-rot" data-act="ovRot" title="${H('overview.rot.tip')}"><span>${H('overview.rot.' + which)}</span><b${full ? ` title="${esc(full)}"` : ''}>${esc(value)}</b><small class="muted">${esc(sub)}</small></button>`;
+        };
+        const tile = (label, value, sub, full) => `<div class="stat"><span>${H(label)}</span><b title="${esc(full || value)}">${esc(value)}</b>${sub ? `<small class="muted">${esc(sub)}</small>` : ''}</div>`;
         const tiles = `<div class="statrow ov-stats">
-            ${tile('overview.accounts', `${clicking} / ${acc.length}`)}
-            ${tile('overview.income', has(acc, income) ? T('overview.income.value', { v: money(sum(acc, income)) }) : '—')}
-            ${tile('overview.money', total(acc, a => me(a).money, money))}
-            ${tile('overview.tokens', total(acc, a => me(a).tokens, num))}
-            ${tile('overview.networth', total(acc, a => me(a).networth, money))}
-            ${tile('overview.premier', total(acc, a => me(a).premier, num))}
+            ${tile('overview.accounts', `${clicking} / ${acc.length}`, [look ? T('overview.accounts.look', { n: look }) : '', slots ? T('overview.accounts.slots', { n: slots }) : ''].filter(Boolean).join(' · '))}
+            ${tile('overview.income', has(acc, income) ? T('overview.income.value', { v: money(sum(acc, income)) }) : '—', '', exact(acc, income, true, '/h'))}
+            ${tile('overview.money', total(acc, a => me(a).money, money), '', exact(acc, a => me(a).money, true))}
+            ${tile('overview.tokens', total(acc, a => me(a).tokens, num), '', exact(acc, a => me(a).tokens))}
+            ${tile('overview.networth', total(acc, a => me(a).networth, money), '', exact(acc, a => me(a).networth, true))}
+            ${tile('overview.premier', total(acc, a => me(a).premier, num), '', exact(acc, a => me(a).premier))}
             ${tile('overview.pro', `${pro} / ${acc.length}`)}
+            ${rotTile()}
           </div>`;
         const table = (head, rows, sortable) => `<div class="table-wrap"><table class="ov-table"><thead><tr>${head.map(([k, label, numCol]) => sortable
                 ? `<th${numCol ? ' class="n"' : ''}><button class="ov-sort${ovSort.key === k ? ' on' : ''}" data-act="ovSort" data-key="${esc(k)}">${esc(label)}${ovSort.key === k ? (ovSort.dir < 0 ? ' ↓' : ' ↑') : ''}</button></th>`
@@ -421,24 +454,26 @@
         const ranks = new Map();
         for (const a of acc) { const r = me(a).rank; const k = r && r.name ? r.name : T('overview.rank.unknown'); const e = ranks.get(k) || { id: r && r.id != null ? r.id : -1, n: 0 }; e.n++; ranks.set(k, e); }
         const rankHtml = `<h4 class="plug-head">${H('overview.ranks')}</h4><div class="ov-ranks">${[...ranks].sort((x, y) => y[1].id - x[1].id)
-            .map(([name, e]) => `<span class="ov-rank"><b>${e.n}</b> ${esc(name)}</span>`).join('')}</div>`;
+            .map(([name, e]) => `<span class="ov-rank">${esc(name)} <span class="ov-rank-n">· <b>${e.n}</b></span></span>`).join('')}</div>`;
         // Every account.
         const names = folderNames(), folderName = (id) => names.get(id) || '';
         const cols = [['name', T('overview.col.account')], ...(folders.length ? [['folder', T('overview.col.folder')]] : []), ['status', T('overview.col.status')],
             ['income', T('overview.col.income'), 1], ['money', T('overview.col.money'), 1], ['tokens', T('overview.col.tokens'), 1], ['networth', T('overview.col.networth'), 1], ['premier', T('overview.col.premier'), 1],
             ['rank', T('overview.col.rank')], ['pro', T('overview.col.membership')]];
         const val = {
-            name: (a) => String(a.name || a.id).toLowerCase(), folder: (a) => folderName(a.folder).toLowerCase(), status: (a) => a.status,
+            name: (a) => String(a.name || a.id).toLowerCase(), folder: (a) => folderName(a.folder).toLowerCase(),
+            status: (a) => (needsAttention(a) ? '0' : waitingForSlot(a) ? '1' : '2') + statusWord(a),
             income, money: (a) => me(a).money, tokens: (a) => me(a).tokens, networth: (a) => me(a).networth, premier: (a) => me(a).premier,
             rank: (a) => (me(a).rank ? me(a).rank.id : null), pro: (a) => (me(a).membership === 'pro' ? 1 : 0),
         };
-        const get = val[ovSort.key] || val.networth;
+        const get = val[ovSort.key] || val.income, lookFirst = ovSort.key === 'income' && ovSort.dir < 0;
         const sorted = [...acc].sort((x, y) => {
+            if (lookFirst && needsAttention(x) !== needsAttention(y)) return needsAttention(x) ? -1 : 1;
             const a = get(x), b = get(y);
             if (a == null && b == null) return 0; if (a == null) return 1; if (b == null) return -1;
             return (typeof a === 'string' ? a.localeCompare(b) : a - b) * ovSort.dir;
         });
-        const rows = sorted.map(a => [a.name || a.id, ...(folders.length ? [folderName(a.folder) || '—'] : []), T('status.' + a.status),
+        const rows = sorted.map(a => [a.name || a.id, ...(folders.length ? [folderName(a.folder) || '—'] : []), statusWord(a),
             income(a) == null ? '—' : money(income(a)), money(me(a).money), num(me(a).tokens), money(me(a).networth), me(a).premier == null ? '—' : Math.round(me(a).premier).toLocaleString(),
             me(a).rank && me(a).rank.name ? me(a).rank.name : '—', me(a).membership === 'pro' ? T('overview.pro.yes') : me(a).membership ? T('overview.pro.no') : '—']);
         setHtml('#tab-overview', `${tiles}${folderHtml}${rankHtml}<h4 class="plug-head">${H('overview.all')}</h4>${table(cols, rows, true)}<p class="muted ov-note">${H('overview.note')}</p>`);
@@ -510,7 +545,8 @@
     const BUSY_CODES = new Set(['CC-AUTH-05', 'CC-AUTH-07', 'CC-SLOW-01']);
     const busyWhy = (r) => T('busy.why.' + ((r && r.why) || 'unhealthy'), { what: (r && r.what) || '' });
     function issueHtml(a) {
-        const list = a.issues.map(i => `
+        // Waiting for a slot is said once by the card's own state and the note above the cards, not as a red box on each.
+        const list = a.issues.filter(i => !(WAIT_CODES.has(i.code) && waitingForSlot(a))).map(i => `
             <div class="issue ${i.code === 'CC-CF-01' || i.code === 'CC-AUTH-05' || i.code === 'CC-AUTH-06' ? 'warn' : ''}">
               <div><span class="code">${esc(i.code)}</span> ${esc(issueText(i))}${(i.code === 'CC-AUTH-06' || i.code === 'CC-AUTH-08') && i.detail ? ` <span class="muted">${esc(i.detail)}</span>` : ''}</div>
               <div class="fix">${esc(issueFix(i))}</div>
@@ -523,22 +559,23 @@
     }
 
     function updateCard(c, a) {
-        const f = c.f, running = !!a.startedAt, me = a.me, ph = a.perHour;
+        const f = c.f, running = !!a.startedAt, me = a.me, ph = a.perHour, slot = waitingForSlot(a);
         c.a = a;
-        c.el.className = 'card s-' + a.status + (running ? '' : ' off') + (picked.has(a.id) ? ' picked' : '');
+        c.el.className = 'card s-' + (slot ? 'slot' : a.status) + (running ? '' : ' off') + (picked.has(a.id) ? ' picked' : '');
         if (f.pick.checked !== picked.has(a.id)) f.pick.checked = picked.has(a.id);
         f.pick.tabIndex = selecting ? 0 : -1;
         setText(f.name, a.name);
         f.name.title = a.name;
         setText(f.vaultLabel, a.vaultEveryMin ? T('card.vault.every', { min: Math.round(a.vaultEveryMin) }) : T('card.vault'));
-        f.chip.className = 'chip ' + a.status;
-        setText(f.chip, TX['status.' + a.status] ? T('status.' + a.status) : a.status);
+        f.chip.className = 'chip ' + (slot ? 'slot' : running && needsAttention(a) && (a.status === 'clicking' || a.status === 'no-clicks') ? 'attention' : a.status);
+        setText(f.chip, statusWord(a));
 
         // The big number: what this account makes per hour, from its own rates.
         // Not clicking: say what's going on instead of empty numbers.
         let hero = a.status === 'logged-out' ? T('card.hero.loggedOut') : T('card.hero.stopped'), unit = '',
             label = a.status === 'logged-out' ? T('card.label.loggedOut') : T('card.label.stopped', { ago: ago(a.lastClickOkAt) });
-        if (running && !ph) { hero = '…'; label = T('card.label.waiting'); }
+        if (slot) { hero = T('card.hero.slot'); label = T('card.label.slot'); }
+        else if (running && !ph) { hero = '…'; label = T('card.label.waiting'); }
         else if (running) {
             hero = money(ph.total); unit = T('card.hero.unit');
             label = a.clickType === 'off' ? T('card.label.off') : a.clickType === 'cases'
@@ -573,7 +610,8 @@
         f.segMoney.className = a.type === 'money' ? 'on' : ''; f.segMoney.setAttribute('aria-pressed', String(a.type === 'money'));
         f.segCases.className = a.type === 'cases' ? 'on' : ''; f.segCases.setAttribute('aria-pressed', String(a.type === 'cases'));
         f.segOff.className = a.type === 'off' ? 'on' : ''; f.segOff.setAttribute('aria-pressed', String(a.type === 'off'));
-        const main = running ? ['stop', T('card.btn.stop'), ''] : a.hasToken ? ['start', T('card.btn.start'), 'primary'] : ['relogin', T('card.btn.relogin'), 'primary'];
+        // Waiting for a slot: Start can't make room, so it's an ordinary button, not the card's main action.
+        const main = running ? ['stop', T('card.btn.stop'), ''] : a.hasToken ? ['start', T('card.btn.start'), slot ? '' : 'primary'] : ['relogin', T('card.btn.relogin'), 'primary'];
         f.main.dataset.act = main[0];
         f.main.className = main[2];
         setText(f.main, main[1]);
@@ -637,7 +675,8 @@
         }
         const note = el.querySelector('.limit-note');
         note.hidden = (S.clickingRuns ?? S.running) < (S.capacity || S.maxPerIp);   // Off accounts take no place
-        setText(note, T('accounts.limit', { max: S.capacity || S.maxPerIp, per: S.maxPerIp }));
+        const waiting = S.accounts.filter(waitingForSlot).length;
+        setText(note, T('accounts.limit', { max: S.capacity || S.maxPerIp, per: S.maxPerIp }) + (waiting ? ' ' + T('accounts.limit.waiting', { n: waiting }) : ''));
         applyCompact();
         // Mid-drag the cards stay where the pointer put them; the numbers still update.
         if (drag) { for (const a of S.accounts) { const c = cards.get(a.id); if (c) updateCard(c, a); } return; }
@@ -729,7 +768,12 @@
     async function bulkAct(what, arg) {
         const ids = [...picked], n = ids.length;
         if (!n) return;
-        if (what === 'remove' && !(await modal({ title: T(n === 1 ? 'bulk.remove.title.one' : 'bulk.remove.title', { n }), body: T('modal.remove.body'), ok: T('modal.remove.ok'), danger: true }))) return;
+        if (what === 'remove') {
+            // Name them, so a wrong tick shows before it's gone (the first 12, then how many more).
+            const names = ids.map(id => (S.accounts.find(a => a.id === id) || {}).name || id);
+            const list = `<ul class="modal-names">${names.slice(0, 12).map(x => `<li>${esc(x)}</li>`).join('')}${names.length > 12 ? `<li class="muted">${H('bulk.remove.more', { n: names.length - 12 })}</li>` : ''}</ul>`;
+            if (!(await modal({ title: T(n === 1 ? 'bulk.remove.title.one' : 'bulk.remove.title', { n }), html: list + `<div class="muted">${H('modal.remove.body')}</div>`, ok: T('modal.remove.ok'), danger: true }))) return;
+        }
         if (what === 'folder') {
             const opts = [['', T('folders.none')], ...(S.folders || []).map(f => [f.id, f.name]), ['+', T('folders.newOption')]];
             let v = '';
@@ -765,7 +809,7 @@
         if (!box) return;
         const few = S.accounts.length <= 8;
         box.hidden = few && !searchQ;
-        const chips = el.querySelector('.acct-filter'), bad = S.accounts.filter(isBad).length;
+        const chips = el.querySelector('.acct-filter'), bad = S.accounts.filter(needsAttention).length;
         chips.hidden = few && filterBy === 'all';
         chips.querySelectorAll('button').forEach(b => {
             const on = b.dataset.id === filterBy;
@@ -774,7 +818,7 @@
             if (b.dataset.id === 'problems') setText(b, bad ? T('cards.filter.problemsN', { n: bad }) : T('cards.filter.problems'));
         });
         const q = searchQ.trim().toLowerCase(), names = folderNames(), active = !!q || filterBy !== 'all';
-        const fits = { all: () => true, problems: isBad, clicking: (a) => !!a.startedAt, stopped: (a) => !a.startedAt }[filterBy];
+        const fits = { all: () => true, problems: needsAttention, clicking: (a) => !!a.startedAt, stopped: (a) => !a.startedAt }[filterBy];
         let shown = 0;
         for (const a of S.accounts) {
             const c = cards.get(a.id);
@@ -1019,6 +1063,9 @@
 
     // --- plugins -------------------------------------------------------------
     function pluginState(p) {
+        // A plugin that acts for real says which mode it is in; Practice is a calm tag, Live the green one.
+        const mode = (p.settings || []).find(s => s.key === 'runMode');
+        if (p.state === 'running' && mode) return mode.value === 'live' ? `<span class="tag ok">${H('plugins.state.live')}</span>` : `<span class="tag">${H('plugins.state.practice')}</span>`;
         if (p.state === 'running') return `<span class="tag ok">${H('plugins.state.running')}</span>`;
         if (p.state === 'error') return `<span class="tag bad">${esc(p.error.code)}</span>`;
         return `<span class="tag">${H('plugins.state.off')}</span>`;
@@ -1225,6 +1272,14 @@
         const box = $('#modal .modal-box');
         bindSettings(box, id, box.onclick);
         return done.then(refresh);
+    }
+
+    // Plugins that have switched to Live once on this panel (so the first-time warning isn't asked again).
+    const liveSeen = (id) => { try { return JSON.parse(localStorage.getItem('zsb.liveOk') || '[]').includes(id); } catch (_) { return false; } };
+    async function confirmLive(p) {
+        const ok = await modal({ title: T('live.confirm.title', { name: p.name || p.id }), body: T('live.confirm.body'), ok: T('live.confirm.ok') });
+        if (ok) try { const l = JSON.parse(localStorage.getItem('zsb.liveOk') || '[]'); if (!l.includes(p.id)) localStorage.setItem('zsb.liveOk', JSON.stringify([...l, p.id].slice(-50))); } catch (_) {}
+        return !!ok;
     }
 
     // Live settings controls (modal or a plugin's own tab): every change is saved as it's made.
@@ -1472,8 +1527,14 @@
                 set.querySelectorAll('.pick:not([hidden]) [data-pick="acct"]').forEach(x => { x.checked = b.dataset.pick === 'every'; });
                 ticked(set);
             } else if (b && b.dataset.choice != null) {
-                set.querySelectorAll('[data-choice]').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', String(x === b)); });
-                save(set.dataset.key, b.dataset.choice);
+                const pick = () => {
+                    set.querySelectorAll('[data-choice]').forEach(x => { x.classList.toggle('on', x === b); x.setAttribute('aria-pressed', String(x === b)); });
+                    save(set.dataset.key, b.dataset.choice);
+                };
+                // Practice to Live moves real in-game value: the first time for each plugin, say so and ask.
+                const sp = P().settings.find(x => x.key === set.dataset.key);
+                if (set.dataset.key === 'runMode' && b.dataset.choice === 'live' && sp && sp.value !== 'live' && !liveSeen(id)) confirmLive(P()).then(ok => { if (ok) pick(); });
+                else pick();
             } else if (b && b.hasAttribute('data-pset-reload')) call('pluginReload', id).then(() => toast(T('toast.plugin.reloaded')));
             else if (b && b.dataset.paction) {
                 const q = b.dataset.shop != null && b.parentElement.querySelector('[data-shop-qty]');
@@ -1581,7 +1642,8 @@
     // the setting. Inside a wizard step marked next, picking one goes on to the next step.
     //   tiles { key, search, next, empty, groups: [{ title, items: [{ id, name, image, sub, meta }] }] }
     const tileQ = new Map();   // plugin:key -> what's typed in its search box (kept across redraws)
-    const tilePic = (u, cls = '') => `<span class="pshopg-img${cls}">${/^https:\/\//.test(u || '') ? `<img src="${esc(u)}" alt="" loading="lazy">` : ''}</span>`;
+    // No picture: no empty frame either (the tile shrinks to its name and price).
+    const tilePic = (u, cls = '') => /^https:\/\//.test(u || '') ? `<span class="pshopg-img${cls}"><img src="${esc(u)}" alt="" loading="lazy"></span>` : `<span class="pshopg-img none${cls}"></span>`;
     function tilesHtml(b, p) {
         const sp = p.settings.find(x => x.key === b.key), cur = sp ? String(sp.value ?? '') : '';
         const k = p.id + ':' + b.key, q = (tileQ.get(k) || '').trim().toLowerCase();
@@ -1624,10 +1686,12 @@
         const si = steps.findIndex(x => x.id === cur);
         const next = si >= 0 ? (steps[si + 1] ? steps[si + 1].id : f ? '__finish' : '') : '';
         const total = steps.length + (f ? 1 : 0);
-        const row = (x, i, go) => `<button type="button" class="pwiz-row${x.done ? ' done' : ''}${x.warn ? ' warn' : ''}" data-wiz-open="${esc(x.id)}">
+        // A step not done yet is a to-do, not a fault: its prompt (warn) reads grey in every plugin. Only a step that is
+        // set but still has a problem shows the warning colour.
+        const row = (x, i, go) => { const bad = !!x.warn && !!x.done; return `<button type="button" class="pwiz-row${x.done ? ' done' : ''}${bad ? ' warn' : ''}" data-wiz-open="${esc(x.id)}">
             ${i != null ? `<span class="pstep">${x.done ? '✓' : i + 1}</span>` : ''}${x.image ? tilePic(x.image, ' pwiz-img') : ''}
-            <span class="pwiz-txt"><b>${esc(x.title || '')}</b><span class="${x.warn ? 'pcell-warn' : 'muted'}">${esc(x.warn || x.summary || '')}</span></span>
-            <span class="pwiz-go">${H(go || (i == null ? 'block.wizard.open' : x.done ? 'block.wizard.change' : 'block.wizard.choose'))}</span></button>`;
+            <span class="pwiz-txt"><b>${esc(x.title || '')}</b><span class="${bad ? 'pcell-warn' : 'muted'}">${esc(x.warn || x.summary || '')}</span></span>
+            <span class="pwiz-go">${H(go || (i == null ? 'block.wizard.open' : x.done ? 'block.wizard.change' : 'block.wizard.choose'))}</span></button>`; };
         const start = f ? `<div class="pwiz-start${f.ready ? ' ready' : ''}"><span class="pstep">${steps.length + 1}</span>
             <span class="pwiz-txt"><b>${esc(f.title || '')}</b>${f.text ? `<span class="muted">${esc(f.text)}</span>` : ''}</span>${btnsHtml(f.buttons || [])}</div>` : '';
         const page = `<ol class="pwiz-steps">${steps.map((x, i) => `<li>${row(x, i)}</li>`).join('')}${f ? `<li>${start}</li>` : ''}</ol>
@@ -1810,10 +1874,11 @@
                 const cls = ['pcard', on ? '' : 'off', b.locked ? 'locked' : '', k ? 'folds' : '', open ? 'open' : '', b.done ? 'done' : ''].filter(Boolean).join(' ');
                 return `<div class="${cls}">
                     <div class="pcard-head"${k && !b.locked ? ` data-card="${esc(k)}"` : ''}>${b.step != null ? `<span class="pstep">${b.done ? '✓' : esc(b.step)}</span>` : ''}
-                      ${tg && !b.locked ? `<div class="pset" data-key="${esc(tg.key)}" data-type="boolean"><label class="switch"${b.toggleDisabled ? ` title="${esc(b.toggleDisabled)}"` : ''}><input type="checkbox" data-pset aria-label="${esc(b.title || tg.key)}"${b.toggleInvert ? ' data-invert' : ''} ${on ? 'checked' : ''}${b.toggleDisabled ? ' disabled' : ''}><i></i></label></div>` : ''}
+                      ${tg && !b.locked ? `<div class="pset" data-key="${esc(tg.key)}" data-type="boolean"><label class="switch"${b.toggleDisabled ? ` title="${esc(b.toggleDisabled)}"` : ''}><input type="checkbox" data-pset aria-label="${esc(b.title || tg.key)}"${b.toggleInvert ? ' data-invert' : ''} ${on ? 'checked' : ''}${b.toggleDisabled ? ` disabled aria-describedby="${esc('why-' + p.id + '-' + (b.id || tg.key))}"` : ''}><i></i></label></div>` : ''}
                       <div class="pcard-titles"><div class="title">${esc(b.title || '')}</div>
                         ${b.locked ? `<div class="desc">${esc(b.locked)}</div>` : (b.summary && k ? `<div class="desc pcard-sum">${esc(b.summary)}</div>` : '')}
-                        ${b.text && !b.locked ? `<div class="desc pcard-text">${esc(b.text)}</div>` : ''}</div>
+                        ${b.text && !b.locked ? `<div class="desc pcard-text">${esc(b.text)}</div>` : ''}
+                        ${tg && !b.locked && b.toggleDisabled ? `<div class="desc pcard-why" id="${esc('why-' + p.id + '-' + (b.id || tg.key))}">${esc(b.toggleDisabled)}</div>` : ''}</div>
                       ${k && !b.locked && body && (on || b.bodyWhenOff) ? `<button type="button" class="pcard-caret" aria-expanded="${open}" aria-label="${H('block.card.fold', { title: b.title || '' })}"><span aria-hidden="true">⌄</span></button>` : ''}</div>
                     ${(on || b.bodyWhenOff) && body && !b.locked ? `<div class="pcard-body">${(b.keys || []).length ? settingsHtml(b.keys, b.bare) : ''}${pluginBlocks(b.blocks, p)}</div>` : ''}
                   </div>`;
@@ -1913,26 +1978,30 @@
         // What was typed but not saved yet (port, password, name) comes back after the redraw.
         const typed = {};
         for (const id of TYPED) { const i = document.getElementById(id); if (i && i.value !== (i.dataset.saved || '')) typed[id] = i.value; }
+        // A short row of the sections on top, so Help (and the rest) is one click away instead of a long scroll.
+        const jump = secs => `<nav class="set-jump" aria-label="${H('settings.jump')}">${secs.map(([k, key]) => `<button class="small ghost" data-act="setJump" data-to="${k}"${k === 'help' ? ' data-help' : ''}>${H(key)}</button>`).join('')}</nav>`;
         $('#tab-settings').innerHTML = `
+        ${jump([['help', 'settings.section.help'], ['clicking', 'settings.section.clicking'], ['app', 'settings.section.app'], ['look', 'look.section'],
+            ...(S.stats && S.stats.available ? [['sharing', 'settings.section.sharing']] : []), ['web', 'settings.section.web'], ['advanced', 'settings.section.advanced']])}
         <div class="rows">
-          <div class="section-title">${H('settings.section.clicking')}</div>
+          <h2 class="section-title" id="set-clicking" tabindex="-1">${H('settings.section.clicking')}</h2>
           <div class="row"><div class="main"><div class="title">${H('settings.main.title')}</div><div class="desc">${s.main && s.main.userId ? H('settings.main.is', { name: esc(s.main.name || s.main.userId) }) : H('settings.main.none')}</div></div>
             <button class="small" data-act="setMain">${H(s.main && s.main.userId ? 'settings.main.change' : 'main.set')}</button></div>
           ${sw('resumeOnLaunch', s.resumeOnLaunch, 'resume')}
           <div class="row"><div class="main"><div class="title">${H('settings.auto.title')}</div><div class="desc">${H('settings.auto.desc')}</div></div>
-            <label><input type="number" min="0" max="100" step="0.01" value="${s.autoCasePct}" data-act="setting" data-key="autoCasePct" aria-label="${H('settings.auto.title')}"> %</label>
+            <label><input type="text" inputmode="decimal" class="num-in" value="${esc(String(+Number(s.autoCasePct).toFixed(2)))}" data-act="setting" data-key="autoCasePct" aria-label="${H('settings.auto.title')}"> %</label>
             <div class="extra"><button class="small" data-act="allAuto">${H('settings.auto.all')}</button></div></div>
           ${row('caseValue')}
           <div class="row"><div class="main"><div class="title">${H('settings.maxPerIp.title')}</div><div class="desc">${H('settings.maxPerIp.desc', { max: 20 })}</div></div>
             <input type="number" min="1" max="20" value="${s.maxPerIp}" data-act="setting" data-key="maxPerIp" aria-label="${H('settings.maxPerIp.title')}"></div>
 
-          <div class="section-title">${H('settings.section.app')}</div>
+          <h2 class="section-title" id="set-app" tabindex="-1">${H('settings.section.app')}</h2>
           ${sw('startMinimized', s.startMinimized)}
           ${S.platform === 'win32' ? sw('startWithSystem', s.startWithSystem) : ''}
           ${sw('closeToTray', s.closeToTray)}
           ${sw('cleanOldSignIns', s.cleanOldSignIns !== false)}
 
-          <div class="section-title">${H('look.section')}</div>
+          <h2 class="section-title" id="set-look" tabindex="-1">${H('look.section')}</h2>
           ${lookHtml(s)}
           <div class="row"><div class="main"><div class="title">${H('settings.theme.title')}</div><div class="desc">${H((S.themes || []).length ? 'settings.theme.desc' : 'settings.theme.none')}</div></div>
             <select data-act="setting" data-key="theme" aria-label="${H('settings.theme.title')}">
@@ -1942,7 +2011,7 @@
             </select></div>
           ${themeOptsHtml(s)}
 
-          ${S.stats && S.stats.available ? `<div class="section-title">${H('settings.section.sharing')}</div>
+          ${S.stats && S.stats.available ? `<h2 class="section-title" id="set-sharing" tabindex="-1">${H('settings.section.sharing')}</h2>
           ${sw('shareStats', s.shareStats)}
           ${SHARE_CATS.map(c => `<div class="row sub${s.shareStats ? '' : ' off'}"><label class="switch"><input type="checkbox" data-act="shareMore" data-key="${c}" aria-label="${H(`share.cat.${c}.title`)}" ${(s.shareMore || {})[c] ? 'checked' : ''} ${s.shareStats ? '' : 'disabled'}><i></i></label>
             <div class="main"><div class="title">${H(`share.cat.${c}.title`)}</div><div class="desc">${H(`share.cat.${c}.desc`)}</div></div></div>`).join('')}
@@ -1952,7 +2021,7 @@
           ${row('statsPreview', `<button class="small" data-act="statsPreview">${H('settings.statsPreview.button')}</button>`)}
           ${row('shareWalk', `<button class="small" data-act="shareWalk">${H('settings.shareWalk.button')}</button>`)}` : ''}
 
-          <div class="section-title">${H('settings.section.web')}</div>
+          <h2 class="section-title" id="set-web" tabindex="-1">${H('settings.section.web')}</h2>
           <div class="row">
             <label class="switch"><input type="checkbox" data-act="web" aria-label="${H('settings.web.title')}" ${w.enabled ? 'checked' : ''}><i></i></label>
             <div class="main"><div class="title">${H('settings.web.title')}</div>
@@ -1964,14 +2033,15 @@
             </div>
           </div>
 
-          <div class="section-title">${H('settings.section.help')}</div>
+          <h2 class="section-title" id="set-help" tabindex="-1">${H('settings.section.help')}</h2>
           <div class="row"><div class="main"><div class="title">${H('settings.version.title', { version: S.version })}</div><div class="desc" id="updateText">${updateText()}</div></div>
             ${S.update && S.update.status !== 'off' ? `<button class="small" data-act="checkUpdates">${H('settings.update.check')}</button>` : ''}</div>
           ${S.update && S.update.status !== 'off' ? sw('testBuilds', s.testBuilds) : ''}
+          ${row('trouble', `<button class="small" data-act="openTrouble">${H('settings.trouble.button')}</button>`)}
           ${row('tour', `<button class="small" data-act="tour">${H('settings.tour.button')}</button>`)}
           ${row('whatsnew', `<button class="small" data-act="whatsNew">${H('settings.whatsnew.button')}</button>`)}
 
-          <div class="section-title">${H('settings.section.advanced')}</div>
+          <h2 class="section-title" id="set-advanced" tabindex="-1">${H('settings.section.advanced')}</h2>
           ${sw('allowUnverifiedPlugins', s.allowUnverifiedPlugins, 'unverified')}
           ${webLook ? '' : row('data', `<button class="small" data-act="openDataFolder">${H('settings.data.button')}</button>`)
               + row('quit', `<button class="small danger" data-act="quit">${H('settings.quit.button')}</button>`)}
@@ -2290,10 +2360,11 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
                 applyCompact();
                 return;
             }
+            case 'ovRot': { const lookNow = S.accounts.some(needsAttention); if (lookNow && Date.now() > ovRotHold) ovRot = 0; ovRot++; ovRotHold = Date.now() + 30000; drawOverview(); return; }
             case 'ovSort': {
                 const k = el.dataset.key;
                 ovSort = ovSort.key === k ? { key: k, dir: -ovSort.dir } : { key: k, dir: ['name', 'folder', 'status'].includes(k) ? 1 : -1 };
-                try { localStorage.setItem('zsb.ovSort', JSON.stringify(ovSort)); } catch (_) {}
+                try { localStorage.setItem('zsb.ovSort2', JSON.stringify(ovSort)); } catch (_) {}
                 drawOverview(); return;
             }
             case 'folderMenu': { const m = sections.get(id).f.menu; closeMenus(m); m.hidden = !m.hidden; menuToggled(el, m); return; }
@@ -2409,7 +2480,12 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
             }
             case 'setting': {
                 if (e.type !== 'change') return;
-                const v = el.type === 'checkbox' ? el.checked : el.value;
+                let v = el.type === 'checkbox' ? el.checked : el.value;
+                if (el.dataset.key === 'autoCasePct') {
+                    const n = Number(String(v).replace(',', '.').replace(/[%\s]/g, ''));
+                    if (String(v).trim() === '' || !Number.isFinite(n) || n < 0 || n > 100) { toast(T('settings.auto.bad'), 'bad'); el.value = String(+Number(S.settings.autoCasePct).toFixed(2)); break; }
+                    v = n; el.value = String(+n.toFixed(2));
+                }
                 if (!(await saveSettings({ [el.dataset.key]: v }))) break;
                 if (el.dataset.key === 'maxPerIp') el.value = S.settings.maxPerIp;
                 if (el.dataset.key === 'shareStats') settingsDrawn = false;   // the extras follow it
@@ -2455,6 +2531,8 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
             case 'openDataFolder': await call('openDataFolder'); break;
             case 'tour': settingsDrawn = false; startTour(); return;
             case 'whatsNew': showWhatsNew(true); return;
+            case 'openTrouble': openTrouble('report'); return;
+            case 'setJump': { const h = document.getElementById('set-' + el.dataset.to); if (h) { h.scrollIntoView({ block: 'start', behavior: matchMedia('(prefers-reduced-motion: reduce)').matches ? 'auto' : 'smooth' }); h.focus({ preventScroll: true }); } return; }
             case 'statsPreview': showStats(); return;
             case 'incomeChart': showIncome(); return;
             case 'checkUpdates': await call('checkUpdates'); break;
@@ -2545,15 +2623,20 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         return ip ? T('trouble.via.unknown', { ip }) : '—';
     }
 
+    // Which accounts have it, on this screen only (the copied report leaves names out): a few, then "and N more".
+    const namesList = (names) => names.length <= 4 ? names.join(', ') : T('trouble.report.names', { names: names.slice(0, 3).join(', '), n: names.length - 3 });
     function troubleReport() {
         const codes = new Map();
         for (const i of S.appIssues) { const c = codes.get(i.code) || { i, app: false, n: 0 }; c.app = true; codes.set(i.code, c); }
-        for (const a of S.accounts) for (const i of a.issues) { const c = codes.get(i.code) || { i, app: false, n: 0 }; c.n++; codes.set(i.code, c); }
+        for (const a of S.accounts) for (const i of a.issues) { if (WAIT_CODES.has(i.code) && waitingForSlot(a)) continue; const c = codes.get(i.code) || { i, app: false, n: 0, names: [] }; c.n++; (c.names = c.names || []).push(a.name); codes.set(i.code, c); }
+        const waiting = S.accounts.filter(waitingForSlot).length;
         const rows = [...codes.values()].map(c => `<li><span class="code">${esc(c.i.code)}</span> <span>${esc(issueText(c.i))}</span>
-            <span class="muted tr-count">${[c.app ? H('trouble.report.app') : '', c.n ? esc(plural(c.n)) : ''].filter(Boolean).join(' · ')}</span></li>`).join('');
+            <span class="muted tr-count">${[c.app ? H('trouble.report.app') : '', c.n ? esc(plural(c.n)) : ''].filter(Boolean).join(' · ')}</span>
+            ${c.n ? `<div class="tr-names">${esc(namesList(c.names))}</div>` : ''}</li>`).join('');
         return `<p class="muted">${H('trouble.report.body')}</p>
             <div class="tr-sub">${H('trouble.report.problems')}</div>
             ${rows ? `<ul class="tr-issues">${rows}</ul>` : emptyHtml(H('trouble.report.none'))}
+            ${waiting ? `<p class="muted">${H('trouble.report.waiting', { n: waiting })}</p>` : ''}
             <div class="btns"><button class="primary" data-tr="copy">${H('trouble.report.copy')}</button></div>`;
     }
 
@@ -2601,6 +2684,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         const cls = { running: 'muted', found: 'tr-bad', clear: 'tr-ok', stopped: 'muted', failed: 'tr-warn' }[b.state] || 'muted';
         return `<div class="small ${cls}">${H('busy.result.' + b.state, { what: esc(b.what || ''), secs: b.secs || 0, min: Math.round((b.secs || 0) / 6) / 10 })}</div>`;
     }
+    // Only the cause word is coloured: the Sessions and Busy test buttons beside it only look, so they stay plain.
     const CAUSE_CLASS = { ok: 'muted', own: 'tr-warn', elsewhere: 'tr-bad', ip: 'tr-warn', behind: 'tr-warn' };
     function troubleClicks() {
         const c = TR.clicks;
@@ -2609,7 +2693,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         const live = c.accounts.filter(a => a.running).sort((a, b) => order[a.cause] - order[b.cause] || (b.refused + b.ipRefused) - (a.refused + a.ipRefused));
         const rows = live.map(a => `<tr><td class="tr-name">${esc(a.name)}${folderTag(a.id)}</td><td>${esc(viaText(a.route))}</td>
             <td class="num">${a.refused}</td><td class="num">${a.ipRefused}</td><td class="num">${a.missed}<span class="muted">/${a.due}</span></td>
-            <td class="${CAUSE_CLASS[a.cause]}">${H('trouble.cause.' + a.cause)}${a.cause === 'own' || a.cause === 'elsewhere' ? ` <button class="small" data-tr="toSessions" data-id="${esc(a.id)}">${H('trouble.tab.sessions')}</button>` : ''}${(a.cause === 'own' || a.cause === 'elsewhere' || a.cause === 'behind') && !(a.busy && a.busy.state === 'running') ? ` <button class="small" data-tr="busy" data-id="${esc(a.id)}" title="${esc(T('busy.tip'))}">${H(a.busy ? 'busy.again' : 'busy.btn')}</button>` : ''}${busyResult(a.busy)}${extraResult(a.extra)}</td></tr>`).join('');
+            <td><span class="${CAUSE_CLASS[a.cause]}">${H('trouble.cause.' + a.cause)}</span>${a.cause === 'own' || a.cause === 'elsewhere' ? ` <button class="small" data-tr="toSessions" data-id="${esc(a.id)}">${H('trouble.tab.sessions')}</button>` : ''}${(a.cause === 'own' || a.cause === 'elsewhere' || a.cause === 'behind') && !(a.busy && a.busy.state === 'running') ? ` <button class="small" data-tr="busy" data-id="${esc(a.id)}" title="${esc(T('busy.tip'))}">${H(a.busy ? 'busy.again' : 'busy.btn')}</button>` : ''}${busyResult(a.busy)}${extraResult(a.extra)}</td></tr>`).join('');
         const routeName = (id) => { const r = c.routes.find(x => x.id === id); return id === 'direct' ? T('trouble.via.direct') : (r && r.label) || id; };
         const tested = new Map(((c.tested && c.tested.routes) || []).map(x => [x.id, x]));
         const routes = c.routes.map(r => {
@@ -2844,7 +2928,12 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         toast(r && r.ok ? T('toast.import.started', { n: r.total }) : plainError(r && r.error) || T('toast.failed'), r && r.ok ? '' : 'bad');
     }
     $('#startAll').addEventListener('click', async () => { if (!(S.settings.main && S.settings.main.userId)) { await setMainModal(); return; } busyRun('startAll|', async () => { await call('startAll'); await refresh(); }); });
-    $('#stopAll').addEventListener('click', () => busyRun('stopAll|', async () => { await call('stopAll'); await refresh(); }));
+    // Stop all sits next to Start all and halts the whole fleet: ask first.
+    $('#stopAll').addEventListener('click', async () => {
+        const n = S.accounts.filter(a => a.startedAt).length;
+        if (!(await modal({ title: T('modal.stopAll.title', { n }), body: T('modal.stopAll.body'), ok: T('modal.stopAll.ok'), danger: true }))) return;
+        busyRun('stopAll|', async () => { await call('stopAll'); await refresh(); });
+    });
     $('#report').addEventListener('click', () => openTrouble());
     {
         const t = $('#trouble');
@@ -2867,6 +2956,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         refresh(); pullLogs();
         setInterval(refresh, 1500);
         setInterval(pullLogs, 2000);
+        setInterval(() => { if (tab === 'overview' && !document.hidden && Date.now() > ovRotHold && !matchMedia('(prefers-reduced-motion: reduce)').matches) { ovRot++; drawOverview(); } }, 8000);
         setInterval(() => { if (tab === 'accounts' && !document.hidden) for (const c of cards.values()) if (cardShows(c)) tickCard(c); }, 250);
     })();
 })();

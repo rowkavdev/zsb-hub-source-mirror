@@ -26,7 +26,11 @@
 
 const PRESET = 'ZSB Hub convert';
 const NO_CAP = 999999;   // autosellAmount is a value cap: drops worth more are kept
-const OPEN_GAP_MS = 300;
+// Opens go back to back (no fixed pause, like the Opener). "User is locked" (a click batch held the lock) is sent again
+// after LOCK_RETRY_MS, up to MAX_LOCK_RETRIES in a row; a 429 waits the site's Retry-After (else RATE_WAIT_S), up to
+// MAX_RATE_WAITS in a row. Neither counts as a failed open.
+const LOCK_RETRY_MS = 250, MAX_LOCK_RETRIES = 40, RATE_WAIT_S = 30, MAX_RATE_WAITS = 10;
+const LOCKED = /user is locked/i;
 const CATALOG_MS = 30 * 60 * 1000;
 const MAX_OPEN_FAILS = 5;
 const INV_FILL = 0.9;    // non-Pro: sell the drops before the inventory passes this
@@ -327,7 +331,7 @@ async function run(aid, name) {
                     rec.sells = (rec.sells || 0) + 1;
                     lane.phase = 'opening';
                 };
-                let fails = 0, full = 0, done = 0, left = pro ? Infinity : room();
+                let fails = 0, full = 0, locks = 0, rates = 0, done = 0, left = pro ? Infinity : room();
                 while (stock >= perOpen) {
                     if (halted()) throw new Stop(ctx.stopping ? 'turned off' : 'stopped by you');
                     if (left <= 0) {
@@ -337,7 +341,7 @@ async function run(aid, name) {
                     }
                     const r = await ctx.request(aid, '/api/open/' + (cap.type || 'capsule'), { method: 'POST', body });
                     if (r.kind === 'ok') {
-                        stock -= perOpen; lane.opened += perOpen; rec.opened += perOpen; done++; fails = 0; full = 0;
+                        stock -= perOpen; lane.opened += perOpen; rec.opened += perOpen; done++; fails = 0; full = 0; locks = 0; rates = 0;
                         if (!pro) { inv.used += perOpen; left--; }
                         if (done % 25 === 0) {
                             stock = await stockOf(aid, cap._id); save();
@@ -350,11 +354,22 @@ async function run(aid, name) {
                             if (++full > FULL_RETRIES) throw new Stop(`the site keeps refusing opens after selling the drops: ${msg}`);
                             left = 0; continue;
                         }
-                        if (++fails >= MAX_OPEN_FAILS) throw new Stop(`opening failed ${fails}× in a row (HTTP ${r.status})`);
-                        await ctx.sleep(r.kind === 'rate' ? 30000 : 2000 * fails);
+                        if (LOCKED.test(msg)) {   // something else held the account's lock for a moment: just send it again
+                            if (++locks > MAX_LOCK_RETRIES) throw new Stop(`the site kept the account locked for ${locks} opens in a row — something else is using it (opening on the site, a trade, another tool?)`);
+                            await ctx.sleep(LOCK_RETRY_MS);
+                            continue;
+                        }
+                        if (r.kind === 'rate') {
+                            const wait = Math.min(120, Math.max(1, Number.isFinite(r.retryAfter) ? r.retryAfter : RATE_WAIT_S));
+                            if (++rates > MAX_RATE_WAITS) throw new Stop(`the site refused opens as too many ${rates}× in a row`);
+                            if (rates === 1) log(`the site says too many opens — waiting ${wait} s`, 'warn');
+                            await ctx.sleep(wait * 1000);
+                            continue;
+                        }
+                        if (++fails >= MAX_OPEN_FAILS) throw new Stop(`opening failed ${fails}× in a row (${msg || 'HTTP ' + r.status})`);
+                        await ctx.sleep(2000 * fails);
                         stock = await stockOf(aid, cap._id);
                     }
-                    await ctx.sleep(OPEN_GAP_MS);
                 }
                 if (!pro && lane.opened) await sellDrops();
                 log(`opened ${opens(lane.opened)}${rec.sells ? ` · sold the drops ${rec.sells}×` : ''}`, 'ok');

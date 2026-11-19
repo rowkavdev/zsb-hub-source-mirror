@@ -1,5 +1,14 @@
 {
   "_how": "One entry per released version, newest first. Each line is one bullet; **bold** works. Shown once after an update, and used as the release notes on GitHub. npm run release refuses a version with no entry here.",
+  "1.2.17": [
+    "**Problems you can trust** — the Accounts tab count, the **Problems** filter, the Overview and the header now agree. An account that's still clicking but has a sign-in problem counts too.",
+    "**Waiting for a slot** — accounts over the per-IP limit no longer show as red errors. Their card says **Waiting for a slot**, and the header shows how many are waiting.",
+    "**Safer Live** — the first time you switch a plugin from Practice to Live, it asks you to confirm. When On can't be switched on, a line under it says why. The Plugins list shows **Practice** or **Live** for each plugin.",
+    "**Overview** — 8 tiles in two rows. The last one takes turns between **Need a look**, **Exit IPs** and **Vault** (click it for the next one). Hover any total for the exact number. Rank chips read rank first, and the table sorts by income with problems on top.",
+    "**Fewer surprises** — **Stop all** and **Set every account to Auto** ask first, bulk Remove lists the accounts, and Troubleshoot names the accounts in each row. Settings has buttons at the top to jump to a section, Help first.",
+    "**Converter: faster opening** — like the Opener, it no longer waits 300 ms after each open. A busy account is tried again, and when the site says too many opens it waits as long as the site asks.",
+    "**Linux** — the installer now works on Fedora (dnf) and on desktops that run only Wayland or only X11."
+  ],
   "1.2.16": [
     "**Clicks off** — each account's click switch has a new choice, **Off**: the account stays on and works with every plugin (Opener, Trader, Armory…), but sends no clicks and doesn't collect its vault. It doesn't take one of the IP's clicking places either, so you can run as many as you like. Select several accounts to set them all at once.",
     "**Check drops** — the Opener page has a **Check drops** button once an account has kept a favourited drop. It shows how many you haven't looked at yet. It opens a window with each account's drops in a row, newest first. The same item from one open is one card (×2, ×3…); click it to see each one with its float and pattern.",
