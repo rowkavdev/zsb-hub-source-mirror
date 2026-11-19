@@ -1,7 +1,7 @@
 {
   "id": "effects",
   "name": "Effects",
-  "version": "1.1.0",
+  "version": "1.2.0",
   "description": "Manages the site's special effects with ammo: pick effects, then buy, sell, start or queue them on all accounts at once or one account. The queue starts each effect as soon as nothing of its kind is running, and can buy it with ammo first.",
   "minCore": "1.2.14",
   "main": "index.js",

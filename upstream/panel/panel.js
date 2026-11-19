@@ -286,6 +286,120 @@
         draw(steps[step] ? step : 'start');
     }
 
+    // Discord webhooks walkthrough (Settings > Discord webhooks): one channel and webhook each for the Opener's drops,
+    // Alerts and the Daily report. Every step can be skipped; a saved webhook is tested straight away.
+    let hookOpen = false;
+    const HOOK_STEPS = ['intro', 'drops', 'alerts', 'report', 'done'];
+    const openerOn = () => (S.plugins || []).some(p => p.id === 'opener' && p.enabled && p.state === 'running');
+    function hookWalkthrough(step = 'intro') {
+        if (hookOpen) return;
+        const m = $('#modal'), box = m.querySelector('.modal-box');
+        const opener = document.activeElement;
+        const saved = { drops: false };
+        let note = null;   // { ok, text } under the current step
+        const hk = () => (S.settings.hooks || {});
+        const stepNo = (k) => T('hook.walk.step', { n: HOOK_STEPS.indexOf(k), of: 3 });
+        const noteHtml = () => note ? `<div class="muted share-hint${note.ok ? ' good' : ' bad'}" role="${note.ok ? 'status' : 'alert'}">${esc(note.text)}</div>` : '';
+        const paste = (kind) => `<label class="mfield"><span>${H(hk()[kind] && hk()[kind].set ? 'hook.walk.replace' : 'hook.walk.paste')}</span>
+            <input id="hookUrl" type="password" autocomplete="off" spellcheck="false" placeholder="https://discord.com/api/webhooks/…"></label>
+            ${hk()[kind] && hk()[kind].set ? `<div class="muted share-hint">${H('hook.walk.isSet', { tail: esc(hk()[kind].tail) })}</div>` : ''}`;
+        const nav = (primary) => `<div class="btns"><button data-hw="back">${H('hook.walk.back')}</button><button data-hw="skip">${H('hook.walk.skip')}</button>${primary}</div>`;
+        const steps = {
+            intro: () => `<h3 id="modalTitle">${H('hook.walk.title')}</h3><div class="muted">${H('hook.walk.intro')}</div>
+                <ul class="share-all">${['drops', 'alerts', 'report'].map(k => `<li><b>${H(`hook.walk.${k}.channel`)}</b> <span class="muted">${H(`hook.walk.${k}.why`)}</span></li>`).join('')}</ul>
+                <div class="muted share-hint">${H('hook.walk.how')}</div>
+                <div class="btns"><button data-hw="close">${H('hook.walk.close')}</button><button class="primary" data-hw="next">${H('hook.walk.start')}</button></div>`,
+            drops: () => `<h3 id="modalTitle">${stepNo('drops')} · ${H('hook.walk.drops.title')}</h3><div class="muted">${H('hook.walk.drops.text')}</div>
+                ${openerOn() ? `<label class="mfield"><span>${H('hook.walk.paste')}</span><input id="hookUrl" type="password" autocomplete="off" spellcheck="false" placeholder="https://discord.com/api/webhooks/…"></label>`
+                    : `<div class="muted share-hint bad">${H('hook.walk.drops.off')}</div>`}
+                ${noteHtml()}
+                ${nav(saved.drops ? `<button class="primary" data-hw="next">${H('hook.walk.next')}</button>` : openerOn() ? `<button class="primary" data-hw="save">${H('hook.walk.save')}</button>` : '')}`,
+            alerts: () => `<h3 id="modalTitle">${stepNo('alerts')} · ${H('hook.walk.alerts.title')}</h3><div class="muted">${H('hook.walk.alerts.text')}</div>
+                ${paste('alerts')}
+                <div class="share-list">${['problems', 'plugins', 'restarts'].map(k => `<label class="share-row"><span class="switch"><input type="checkbox" data-hwon="${k}" ${((hk().alerts || {}).on || {})[k] !== false ? 'checked' : ''}><i></i></span>
+                    <span class="share-text"><b>${H(`hook.alerts.${k}.title`)}</b><span>${H(`hook.alerts.${k}.desc`)}</span></span></label>`).join('')}</div>
+                ${noteHtml()}
+                ${nav(hk().alerts && hk().alerts.set && note && note.ok ? `<button class="primary" data-hw="next">${H('hook.walk.next')}</button>` : `<button class="primary" data-hw="save">${H('hook.walk.save')}</button>`)}`,
+            report: () => `<h3 id="modalTitle">${stepNo('report')} · ${H('hook.walk.report.title')}</h3><div class="muted">${H('hook.walk.report.text')}</div>
+                ${paste('report')}
+                <label class="mfield"><span>${H('hook.report.time')}</span><input id="hookTime" type="time" value="${esc((hk().report || {}).time || '09:00')}"></label>
+                ${noteHtml()}
+                ${nav(hk().report && hk().report.set && note && note.ok ? `<button class="primary" data-hw="next">${H('hook.walk.next')}</button>` : `<button class="primary" data-hw="save">${H('hook.walk.save')}</button>`)}`,
+            done: () => `<h3 id="modalTitle">${H('hook.walk.done.title')}</h3>
+                <ul class="share-all">${['drops', 'alerts', 'report'].map(k => {
+                    const on = k === 'drops' ? saved.drops : !!(hk()[k] && hk()[k].set);
+                    return `<li><b>${H(`hook.walk.${k}.channel`)}</b> <span class="muted">${H(on ? 'hook.walk.done.on' : 'hook.walk.done.off')}</span></li>`;
+                }).join('')}</ul>
+                <div class="muted share-hint">${H('hook.walk.done.later')}</div>
+                <div class="btns"><button class="primary" data-hw="close">${H('hook.walk.close')}</button></div>`,
+        };
+        const draw = (to, keepNote) => {
+            step = to; if (!keepNote) note = null;
+            box.classList.toggle('wide', step !== 'intro' && step !== 'done');
+            box.innerHTML = steps[step]();
+            const f = box.querySelector('#hookUrl') || box.querySelector('[data-hw="next"], [data-hw="save"], [data-hw="close"]');
+            if (f) f.focus();
+        };
+        const go = (d) => draw(HOOK_STEPS[Math.max(0, Math.min(HOOK_STEPS.length - 1, HOOK_STEPS.indexOf(step) + d))]);
+        const close = () => {
+            m.hidden = true; box.innerHTML = ''; box.classList.remove('wide');
+            box.onclick = box.onchange = null; m.onclick = null;
+            document.removeEventListener('keydown', key);
+            hookOpen = false; settingsDrawn = false;
+            if (opener && opener.isConnected && opener.focus) opener.focus();
+            refresh();
+        };
+        const result = (r, okText) => { note = r && r.ok !== false && !r.error ? { ok: true, text: okText || r.message || T('hook.walk.sent') } : { ok: false, text: plainError(r && r.error) || T('toast.failed') }; return note.ok; };
+        let saving = false;
+        const save = async () => {
+            if (saving) return;
+            const inp = box.querySelector('#hookUrl'), url = inp ? inp.value.trim() : '';
+            const btn = box.querySelector('[data-hw="save"]');
+            saving = true; if (btn) btn.disabled = true;
+            try {
+                if (step === 'drops') {
+                    if (!url) { note = { ok: false, text: T('hook.walk.needUrl') }; return; }
+                    await call('pluginSetting', 'opener', 'hookPaste', url);
+                    if (result(await call('pluginAction', 'opener', 'hookSave', null)) && result(await call('pluginAction', 'opener', 'hookTest', null), T('hook.walk.sent'))) saved.drops = true;
+                } else {
+                    const kind = step;
+                    if (kind === 'report') { const t = box.querySelector('#hookTime').value; if (!result(await call('hookOptions', 'report', { time: t }))) return; }
+                    if (url) { if (!result(await call('hookSet', kind, url))) return; }
+                    else if (!(hk()[kind] && hk()[kind].set)) { note = { ok: false, text: T('hook.walk.needUrl') }; return; }
+                    result(await call('hookTest', kind), T(kind === 'report' ? 'hook.walk.sentReport' : 'hook.walk.sent'));
+                    try { S.settings = await call('setSettings', {}); } catch (_) {}
+                }
+            } catch (_) { note = { ok: false, text: T('toast.failed') }; }
+            finally { saving = false; if (!m.hidden && hookOpen) draw(step, true); }
+        };
+        const key = (e) => {
+            if (e.key === 'Escape') close();
+            else if (e.key === 'Tab') trapTab(e, box);
+            else if (e.key === 'Enter' && e.target.id === 'hookUrl') { e.preventDefault(); save(); }
+        };
+        box.onclick = (e) => {
+            const b = e.target.closest('[data-hw]');
+            if (!b) return;
+            const a = b.dataset.hw;
+            if (a === 'close') close();
+            else if (a === 'next' || a === 'skip') go(1);
+            else if (a === 'back') go(-1);
+            else if (a === 'save') save();
+        };
+        box.onchange = async (e) => {
+            const k = e.target.dataset && e.target.dataset.hwon;
+            if (!k) return;
+            const r = await call('hookOptions', 'alerts', { on: { [k]: e.target.checked } });
+            if (!r || !r.ok) { e.target.checked = !e.target.checked; toast(T('toast.saveFailed'), 'bad'); }
+            else { try { S.settings = await call('setSettings', {}); } catch (_) {} }
+        };
+        m.onclick = (e) => { if (e.target === m) close(); };
+        document.addEventListener('keydown', key);
+        hookOpen = true;
+        m.hidden = false;
+        draw(steps[step] ? step : 'intro');
+    }
+
     async function showWhatsNew(all) {
         const entries = await call('whatsNew', !!all);
         await MODALS.whatsnew(entries);
@@ -367,7 +481,7 @@
         // A tab whose content has pin (a few words, e.g. 'running') comes out of its drop-down onto the bar, with that word.
         const ptabs = S.tabs.map(t => { const id = 'plugin:' + t.plugin + ':' + t.title, pin = t.content && typeof t.content.pin === 'string' && t.content.pin.slice(0, 20);
             return { id, label: t.title, pin, group: pin ? 'pin:' + id : t.group || 'more' }; });
-        const all = [['accounts', T('tabs.accounts'), bad], ['overview', T('tabs.overview'), 0], ['plugins', T('tabs.plugins'), plugBad], ...ptabs.map(t => [t.id, t.label, 0]), ['log', T('tabs.log'), 0], ['settings', T('tabs.settings'), 0]];
+        const all = [['accounts', T('tabs.accounts'), bad], ['overview', T('tabs.overview'), 0], ['schedule', T('tabs.schedule'), 0], ['plugins', T('tabs.plugins'), plugBad], ...ptabs.map(t => [t.id, t.label, 0]), ['log', T('tabs.log'), 0], ['settings', T('tabs.settings'), 0]];
         if (tab.startsWith('plugin:') && !all.some(t => t[0] === tab)) tab = 'accounts';
         if (tab !== tabSaved && !studio && tourAt < 0) { tabSaved = tab; try { localStorage.setItem('zsb.tab', tab); } catch (_) {} }
         // The count is read out as words ("6 accounts need a look"); the bare number is only for the eye.
@@ -385,11 +499,11 @@
               <div class="menu tab-menu"${openGroup === g ? '' : ' hidden'}>${list.map(t => `<button data-act="tab" data-tab="${esc(t.id)}"${t.id === tab ? ' class="on"' : ''}>${esc(t.label)}</button>`).join('')}</div>
             </span>`;
         }).join('');
-        const html = one(all[0]) + one(all[1]) + one(all[2]) + groupHtml + one(all[all.length - 2]) + one(all[all.length - 1]);
+        const html = one(all[0]) + one(all[1]) + one(all[2]) + one(all[3]) + groupHtml + one(all[all.length - 2]) + one(all[all.length - 1]);
         setHtml('#tabs', html);
         const openMenu = $('#tabs .tab-menu:not([hidden])');
         if (openMenu) placeTabMenu(openMenu);
-        for (const s of ['accounts', 'overview', 'plugins', 'log', 'settings']) $('#tab-' + s).hidden = tab !== s;
+        for (const s of ['accounts', 'overview', 'schedule', 'plugins', 'log', 'settings']) $('#tab-' + s).hidden = tab !== s;
         $('#tab-plugin').hidden = !tab.startsWith('plugin:');
     }
 
@@ -1954,6 +2068,44 @@
         if (atBottom) el.scrollTop = el.scrollHeight;
     }
 
+    // --- schedule -----------------------------------------------------------
+    // What's running now and what's coming up, who does it, for which accounts and why. Read-only for now, plus Run now /
+    // Skip next where the owner offers them; times are changed in each plugin's own Schedule card.
+    let schedPulling = false, schedLast = null;
+    const span = (ms) => { const s = Math.max(0, Math.round(ms / 1000)); return s < 60 ? T('sched.spanS', { n: s }) : s < 3600 ? T('sched.spanM', { n: Math.round(s / 60) }) : s < 86400 ? T('sched.spanH', { h: Math.floor(s / 3600), m: Math.round((s % 3600) / 60) }) : T('sched.spanD', { n: Math.round(s / 86400) }); };
+    const inTime = (ms) => ms < 45000 ? T('sched.soon') : T('sched.in', { t: span(ms) });
+    const clockAt = (t) => new Date(t).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+    const schedWho = (e) => e.n ? `${e.names.map(esc).join(', ')}${e.n > e.names.length ? ' ' + H('sched.more', { n: e.n - e.names.length }) : ''}` : '';
+    async function drawSchedule() {
+        if (!schedPulling) {
+            schedPulling = true;
+            call('schedule').then(r => { schedLast = r; }).catch(() => {}).finally(() => { schedPulling = false; if (tab === 'schedule') paintSchedule(); });
+        }
+        paintSchedule();
+    }
+    function paintSchedule() {
+        const r = schedLast;
+        if (!r) { setHtml('#tab-schedule', `<div class="muted">${H('sched.loading')}</div>`); return; }
+        const off = Date.now() - r.at;   // this device's clock vs the hub's
+        const nowRows = r.now.map(e => `<div class="sched-row">
+            <div class="sched-when">${e.since ? H('sched.for', { t: span(r.at - e.since) }) : H('sched.waiting')}</div>
+            <div class="sched-main"><div class="sched-what"><b>${esc(e.what)}</b> <span class="muted">· ${esc(e.who)}</span></div>
+              ${e.n ? `<div class="sched-acc">${schedWho(e)}</div>` : ''}${e.why ? `<div class="muted sched-why">${esc(e.why)}</div>` : ''}</div></div>`).join('');
+        const nextRows = r.next.map(e => {
+            const rel = e.at ? e.at - r.at : null, id = esc(e.src + '|' + e.key);
+            return `<div class="sched-row">
+            <div class="sched-when">${rel == null ? '—' : `<b>${inTime(rel - (Date.now() - off - r.at))}</b><span class="muted">${esc(clockAt(e.at + off))}</span>`}</div>
+            <div class="sched-main"><div class="sched-what"><b>${esc(e.what)}</b> <span class="muted">· ${esc(e.who)}</span></div>
+              ${e.n ? `<div class="sched-acc">${e.each ? H('sched.each') + ' ' : ''}${schedWho(e)}</div>` : ''}${e.why ? `<div class="muted sched-why">${esc(e.why)}</div>` : ''}</div>
+            <div class="sched-btns">${e.canRun ? `<button class="small" data-act="schedDo" data-id="${id}|run">${H('sched.run')}</button>` : ''}${e.canSkip ? `<button class="small ghost" data-act="schedDo" data-id="${id}|skip">${H('sched.skip')}</button>` : ''}</div></div>`;
+        }).join('');
+        setHtml('#tab-schedule', `<h4 class="plug-head">${H('sched.now')}</h4>
+            ${nowRows ? `<div class="sched-list">${nowRows}</div>` : emptyHtml(H('sched.empty.now'), '', '', true)}
+            <h4 class="plug-head sched-gap">${H('sched.next')}</h4>
+            ${nextRows ? `<div class="sched-list">${nextRows}</div>` : emptyHtml(H('sched.empty.next'), H('sched.empty.nextHint'), '', true)}
+            <p class="muted ov-note">${H('sched.note')}</p>`);
+    }
+
     // --- settings ------------------------------------------------------------
     // A switch row; its title and description are settings.<key>.title / .desc (or the keys given).
     function sw(key, on, textKey = key) {
@@ -1961,6 +2113,24 @@
             <div class="main"><div class="title">${H(`settings.${textKey}.title`)}</div><div class="desc">${H(`settings.${textKey}.desc`)}</div></div></div>`;
     }
     const row = (k, extra = '') => `<div class="row"><div class="main"><div class="title">${H(`settings.${k}.title`)}</div><div class="desc">${H(`settings.${k}.desc`)}</div></div>${extra}</div>`;
+
+    // Settings > Discord webhooks: Drops (the Opener's own), Alerts and the Daily report. The URL itself never reaches here.
+    function hookRows(h) {
+        const state = (x) => !x ? '' : x.unreadable ? `<span class="share-hint bad">${H('hook.unreadable')}</span>` : x.dead ? `<span class="share-hint bad">${esc(x.dead)}</span>`
+            : x.set ? H('hook.isSet', { tail: esc(x.tail) }) : H('hook.notSet');
+        const btns = (kind, x) => x && x.set ? `<button class="small" data-act="hookTest" data-kind="${kind}">${H('hook.test')}</button>${kind === 'report' ? `<button class="small" data-act="hookReportNow">${H('hook.report.now')}</button>` : ''}<button class="small danger" data-act="hookClear" data-kind="${kind}">${H('hook.remove')}</button>`
+            : `<button class="small" data-act="hookWalk" data-to="${kind}">${H('hook.setUp')}</button>`;
+        const a = h.alerts || {}, r = h.report || {};
+        const sub = !a.set ? ' off' : '';
+        return `<div class="row"><div class="main"><div class="title">${H('hook.drops.title')}</div><div class="desc">${H('hook.drops.desc')}</div></div>
+              ${openerOn() ? `<button class="small" data-act="hookWalk" data-to="drops">${H('hook.setUp')}</button>` : ''}</div>
+            <div class="row"><div class="main"><div class="title">${H('hook.alerts.title')}</div><div class="desc">${H('hook.alerts.desc')} ${state(a)}</div></div>${btns('alerts', a)}</div>
+            ${['problems', 'plugins', 'restarts'].map(k => `<div class="row sub${sub}"><label class="switch"><input type="checkbox" data-act="hookAlertOn" data-key="${k}" aria-label="${H(`hook.alerts.${k}.title`)}" ${(a.on || {})[k] !== false ? 'checked' : ''} ${a.set ? '' : 'disabled'}><i></i></label>
+              <div class="main"><div class="title">${H(`hook.alerts.${k}.title`)}</div><div class="desc">${H(`hook.alerts.${k}.desc`)}</div></div></div>`).join('')}
+            <div class="row"><div class="main"><div class="title">${H('hook.report.title')}</div><div class="desc">${H('hook.report.desc')} ${state(r)}${r.set && r.last ? ' · ' + H('hook.report.last', { ago: ago(r.last) }) : ''}</div></div>
+              <label>${H('hook.report.time')} <input type="time" value="${esc(r.time || '09:00')}" data-act="hookTime" aria-label="${H('hook.report.time')}"></label>
+              <div class="extra">${btns('report', r)}</div></div>`;
+    }
 
     const TYPED = ['webPort', 'webPass', 'shareNameInput'];
     // The share name is checked as it is typed, like in the sharing walkthrough.
@@ -1981,7 +2151,7 @@
         // A short row of the sections on top, so Help (and the rest) is one click away instead of a long scroll.
         const jump = secs => `<nav class="set-jump" aria-label="${H('settings.jump')}">${secs.map(([k, key]) => `<button class="small ghost" data-act="setJump" data-to="${k}"${k === 'help' ? ' data-help' : ''}>${H(key)}</button>`).join('')}</nav>`;
         $('#tab-settings').innerHTML = `
-        ${jump([['help', 'settings.section.help'], ['clicking', 'settings.section.clicking'], ['app', 'settings.section.app'], ['look', 'look.section'],
+        ${jump([['help', 'settings.section.help'], ['clicking', 'settings.section.clicking'], ['recover', 'settings.section.recover'], ['discord', 'settings.section.discord'], ['app', 'settings.section.app'], ['look', 'look.section'],
             ...(S.stats && S.stats.available ? [['sharing', 'settings.section.sharing']] : []), ['web', 'settings.section.web'], ['advanced', 'settings.section.advanced']])}
         <div class="rows">
           <h2 class="section-title" id="set-clicking" tabindex="-1">${H('settings.section.clicking')}</h2>
@@ -1994,6 +2164,14 @@
           ${row('caseValue')}
           <div class="row"><div class="main"><div class="title">${H('settings.maxPerIp.title')}</div><div class="desc">${H('settings.maxPerIp.desc', { max: 20 })}</div></div>
             <input type="number" min="1" max="20" value="${s.maxPerIp}" data-act="setting" data-key="maxPerIp" aria-label="${H('settings.maxPerIp.title')}"></div>
+
+          <h2 class="section-title" id="set-recover" tabindex="-1">${H('settings.section.recover')}</h2>
+          ${['slots', 'signIn', 'relaunch'].map(k => `<div class="row"><label class="switch"><input type="checkbox" data-act="recover" data-key="${k}" aria-label="${H(`settings.recover.${k}.title`)}" ${(s.autoRecover || {})[k] !== false ? 'checked' : ''}><i></i></label>
+            <div class="main"><div class="title">${H(`settings.recover.${k}.title`)}</div><div class="desc">${H(`settings.recover.${k}.desc`)}</div></div></div>`).join('')}
+
+          <h2 class="section-title" id="set-discord" tabindex="-1">${H('settings.section.discord')}</h2>
+          ${row('hookWalk', `<button class="small" data-act="hookWalk">${H('settings.hookWalk.button')}</button>`)}
+          ${hookRows(s.hooks || {})}
 
           <h2 class="section-title" id="set-app" tabindex="-1">${H('settings.section.app')}</h2>
           ${sw('startMinimized', s.startMinimized)}
@@ -2306,6 +2484,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
         else if (S.whatsNew && S.settings.tourDone && !askShare && !whatsNewShown && !studio && idle) { whatsNewShown = true; setTimeout(() => showWhatsNew(false), 300); }
         if (tab === 'accounts') drawAccounts();
         else if (tab === 'overview') drawOverview();
+        else if (tab === 'schedule') drawSchedule();
         else if (tab === 'plugins') drawPlugins();
         else if (tab.startsWith('plugin:')) drawPluginTab();
         else if (tab === 'settings' && !settingsDrawn) { drawSettings(); settingsDrawn = true; }
@@ -2316,7 +2495,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
 
     // A button whose work takes a moment (the site answers, a window opens) dims until it is through, and a second
     // press waits. Kept by action + id, not by element: a redraw swaps the button for a new one mid-wait.
-    const BUSY_ACTS = new Set(['start', 'stop', 'folderStart', 'folderStop', 'add', 'relogin', 'pluginToggle', 'pluginInstall', 'pluginRemove', 'pluginReload', 'pluginCatalog', 'checkUpdates', 'webSave']);
+    const BUSY_ACTS = new Set(['schedDo', 'start', 'stop', 'folderStart', 'folderStop', 'add', 'relogin', 'pluginToggle', 'pluginInstall', 'pluginRemove', 'pluginReload', 'pluginCatalog', 'checkUpdates', 'webSave']);
     const HEAD_BUSY = { 'add|': '#add', 'startAll|': '#startAll', 'stopAll|': '#stopAll' };
     const busyKeys = new Set();
     const busyKey = (el) => el.dataset.act + '|' + (el.dataset.id || '');
@@ -2524,6 +2703,47 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
                 if (inp) { inp.value = S.settings.shareName || ''; inp.dataset.saved = inp.value; }
                 toast(T(v ? 'settings.shareName.saved' : 'settings.shareName.cleared'));
                 return;
+            }
+            case 'recover': {
+                if (e.type !== 'change') return;
+                await saveSettings({ autoRecover: { [el.dataset.key]: el.checked } });
+                if (el.dataset.key === 'relaunch') toast(T('settings.recover.relaunch.next'));
+                break;
+            }
+            case 'hookWalk': hookWalkthrough(el.dataset.to || 'intro'); return;
+            case 'schedDo': {
+                const [src, key, op] = [id.slice(0, id.indexOf('|')), id.slice(id.indexOf('|') + 1, id.lastIndexOf('|')), id.slice(id.lastIndexOf('|') + 1)];
+                const r = await call('scheduleDo', src, key, op);
+                toast(r && r.ok ? (r.message || T('sched.done')) : plainError(r && r.error) || T('toast.failed'), r && r.ok ? '' : 'bad');
+                schedLast = null; drawSchedule();
+                break;
+            }
+            case 'hookAlertOn': {
+                if (e.type !== 'change') return;
+                const r = await call('hookOptions', 'alerts', { on: { [el.dataset.key]: el.checked } });
+                if (!r || !r.ok) { el.checked = !el.checked; toast(T('toast.saveFailed'), 'bad'); }
+                break;
+            }
+            case 'hookTime': {
+                if (e.type !== 'change') return;
+                const r = await call('hookOptions', 'report', { time: el.value });
+                if (!r || !r.ok) { toast(plainError(r && r.error) || T('toast.saveFailed'), 'bad'); settingsDrawn = false; }
+                else toast(T('hook.report.timeSaved', { time: el.value }));
+                break;
+            }
+            case 'hookTest': case 'hookReportNow': {
+                const r = await call(a, el.dataset.kind);
+                toast(r && r.ok ? (r.message || T('hook.walk.sent')) : plainError(r && r.error) || T('toast.failed'), r && r.ok ? '' : 'bad');
+                settingsDrawn = false;
+                break;
+            }
+            case 'hookClear': {
+                const kind = el.dataset.kind;
+                if (!(await modal({ title: T(`hook.${kind}.removeTitle`), body: T('hook.removeBody'), ok: T('hook.remove'), danger: true }))) return;
+                const r = await call('hookClear', kind);
+                toast(r && r.ok ? T('hook.removed') : T('toast.failed'), r && r.ok ? '' : 'bad');
+                settingsDrawn = false;
+                break;
             }
             case 'shareWalk': shareWalkthrough(); return;
             case 'web': if (e.type === 'change') { await saveWeb({ enabled: el.checked }); } break;
@@ -2873,6 +3093,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
                 else if (kind === 'modal') MODALS[arg] && MODALS[arg](S && S.accounts[0] && S.accounts[0].name);
                 if (kind === 'tour') startTour(Math.max(0, Number(arg) - 1));
                 if (kind === 'share') shareWalkthrough(arg || 'start');
+                if (kind === 'hook') { hookOpen = false; hookWalkthrough(arg || 'intro'); }
                 if (kind === 'trouble') openTrouble(arg || 'report');
             },
             toast: (key) => toast(T(key)),

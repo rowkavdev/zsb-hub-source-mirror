@@ -52,7 +52,7 @@ module.exports = {
             latest.set(acct.id, { ...run, claimed: (prev ? prev.claimed : 0) + run.claimed, items: (prev ? prev.items : 0) + run.items, value: (prev ? prev.value : 0) + run.value });
             totals = { claimed: totals.claimed + run.claimed, items: totals.items + run.items, value: totals.value + run.value };
             if (run.claimed) ctx.log(`Claimed ${run.claimed} reward tier${run.claimed === 1 ? '' : 's'}${run.items ? `, ${run.items} item${run.items === 1 ? '' : 's'} worth $${Math.round(run.value).toLocaleString()}` : ''}`, 'ok', acct.id);
-        });
+        }, { what: 'Claim ready rewards', only: (aid) => !!ctx.settings.get('on') && ctx.settings.runsOn('accounts', aid) });
 
         ctx.panel.tab('Rewards', () => {
             const chosen = ctx.accounts.list().filter(a => ctx.settings.runsOn('accounts', a.id));

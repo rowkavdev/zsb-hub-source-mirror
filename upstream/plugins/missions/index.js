@@ -44,7 +44,7 @@ module.exports = {
                 ctx.log('Claimed ' + claimed + ' mission' + (claimed === 1 ? '' : 's'), 'ok', acct.id);
             }
             latest.set(acct.id, { at: Date.now(), list: r.json });
-        });
+        }, { what: 'Claim finished missions' });
 
         ctx.panel.badge((id) => {
             const m = latest.get(id);

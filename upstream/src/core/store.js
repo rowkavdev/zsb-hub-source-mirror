@@ -22,6 +22,7 @@ const SETTINGS_DEFAULTS = {
     maxPerIp: 20,                // the site's limit; can be lowered, never raised
     autoCasePct: 33.34,          // Auto clicks cases above this case click % (casesPerClick), money otherwise
     resumeOnLaunch: true,        // restart the accounts that were clicking when the app closed
+    autoRecover: { slots: true, signIn: true, relaunch: true },   // engine.js top (slots, signIn); main.js watchdog (relaunch)
     startMinimized: false,
     startWithSystem: false,      // Windows only; on Linux the installer adds the autostart entry
     closeToTray: true,           // closing the window keeps clicking in the tray; false = closing quits
@@ -89,6 +90,7 @@ class Store {
         });
         const s = readJson(this.settingsFile, {});
         this.settings = { ...SETTINGS_DEFAULTS, ...s, panelWeb: { ...SETTINGS_DEFAULTS.panelWeb, ...(s.panelWeb || {}) },
+            autoRecover: { ...SETTINGS_DEFAULTS.autoRecover, ...(s.autoRecover || {}) },
             shareMore: { ...SETTINGS_DEFAULTS.shareMore, ...(s.shareMore || {}) }, plugins: s.plugins || {}, folders: Array.isArray(s.folders) ? s.folders : [] };
         this.settings.maxPerIp = Math.min(HARD_MAX_PER_IP, Math.max(1, Number(this.settings.maxPerIp) || HARD_MAX_PER_IP));
         this._saveTimer = null;
@@ -236,6 +238,9 @@ class Store {
         if (patch.shareName != null) s.shareName = cleanName(patch.shareName);
         if (patch.shareAsked != null) s.shareAsked = !!patch.shareAsked;
         if (patch.cleanOldSignIns != null) s.cleanOldSignIns = !!patch.cleanOldSignIns;
+        if (patch.autoRecover && typeof patch.autoRecover === 'object') {
+            for (const k of Object.keys(SETTINGS_DEFAULTS.autoRecover)) if (patch.autoRecover[k] != null) s.autoRecover[k] = !!patch.autoRecover[k];
+        }
         if (patch.testBuilds != null) s.testBuilds = !!patch.testBuilds;
         if (typeof patch.lastVersion === 'string') s.lastVersion = patch.lastVersion;
         if (patch.main && /^[0-9a-f]{24}$/i.test(patch.main.userId || '')) s.main = { userId: patch.main.userId, name: patch.main.name || null, account: patch.main.account || null };

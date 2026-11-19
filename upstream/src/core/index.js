@@ -20,6 +20,7 @@ const { PUBLIC_KEY } = require('../plugins/keys');
 const { WhatsNew } = require('./whatsnew');
 const { Stats } = require('./stats');
 const { Income } = require('./income');
+const { createNotify } = require('./notify');
 const { parseAccounts } = require('./importer');
 const { Troubleshoot } = require('./troubleshoot');
 const { clientId, parseUserId, USER_ID } = require('./client');
@@ -31,7 +32,7 @@ const EXPIRY_WARN_DAYS = 7;
 const TYPES = ['auto', 'money', 'cases', 'off'];
 
 function createCore({ version, dataDir, bundledPluginsDir, transport, auth, crypt, retryDelayMs, whatsNewFile, stats: statsOpts = {},
-    catalogUrl = null, pluginKey = PUBLIC_KEY, fetch: fetchFn, sockets = null, incomeSampleMs, busyTiming, extraTickMs: EXTRA_TICK_MS = 30000, pluginPace }) {
+    catalogUrl = null, pluginKey = PUBLIC_KEY, fetch: fetchFn, sockets = null, incomeSampleMs, busyTiming, extraTickMs: EXTRA_TICK_MS = 30000, pluginPace, notify: notifyOpts }) {
     const startedAt = Date.now();
     const store = new Store(dataDir, crypt);
     const whatsNew = new WhatsNew({ version, store, file: whatsNewFile });
@@ -46,16 +47,19 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
     const trouble = new Troubleshoot({ store, engine, site, log, errors, pluginBusy: (id) => plugins.busyOf(id), timing: busyTiming });
     const stats = new Stats({ version, store, engine, errors, plugins, log, ...statsOpts });
 
+    let notify = null;   // set below (Discord webhooks); its URLs are hidden too
     // What scrub() hides in logs and reports: tokens, imported sign-ins, and account names (shown as acct#id instead).
     log.secrets = () => store.accounts.flatMap(a => [
         ...(a.token ? [{ value: a.token, label: '[token]' }] : []),
         { value: a.name, label: 'acct#' + a.id },
         ...(a.login ? [{ value: a.login.password, label: '[password]' }, { value: a.login.email, label: 'acct#' + a.id }] : []),
-    ]).sort((x, y) => y.value.length - x.value.length);
+    ]).concat((notify ? notify.secrets() : []).map(u => ({ value: u, label: '[webhook]' }))).sort((x, y) => y.value.length - x.value.length);
 
     errors.on('change', () => engine.emit('change'));
     engine.on('refused', (id) => trouble.noteRefused(id));
     const income = new Income({ dataDir, sampleMs: incomeSampleMs, sample: () => totals(store.accounts.map(a => engine.view(a))) });
+    // Discord Alerts + Daily report (src/core/notify.js).
+    notify = createNotify({ store, log, errors, engine, plugins, income, version, ...(fetchFn ? { fetch: fetchFn } : {}), ...(notifyOpts || {}) });
 
     // Logins last about a year; a week before one runs out, say so on the card (CC-AUTH-03).
     async function checkSession(acct) {
@@ -107,8 +111,8 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
     }
 
     function publicSettings() {
-        const { panelWeb, plugins: _p, ...s } = store.settings;
-        return { ...s, panelWeb: { enabled: panelWeb.enabled, port: panelWeb.port, hasPassword: !!panelWeb.password } };
+        const { panelWeb, plugins: _p, hooks: _h, ...s } = store.settings;
+        return { ...s, panelWeb: { enabled: panelWeb.enabled, port: panelWeb.port, hasPassword: !!panelWeb.password }, hooks: notify.view() };
     }
 
     function reportText() {
@@ -298,7 +302,7 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
                 return { ok: false, error: `${store.settings.maxPerIp} accounts already click on this IP — stop one, or add a proxy, to click here too.` };
             const a = store.update(id, { type });
             log.add(id, type === 'off' ? 'Clicks and vault off: it stays on for plugins' : type === 'auto' ? `Auto: clicks ${engine.clickType(a)} for now (cases above ${store.settings.autoCasePct}% case click)` : 'Clicks ' + type + ' from the next batch');
-            if (type === 'off') for (const x of store.accounts) errors.clear(x.id, 'CC-RATE-01');   // a clicking place freed up
+            if (type === 'off') engine.slotFreed();   // a clicking place freed up: a waiting account takes it
             engine.emit('change');
             return { ok: true };
         },
@@ -394,6 +398,14 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
         // Settings > See what's sent: the report exactly as it would go now.
         statsReport: () => stats.info(true),
         incomeHistory: () => income.hours(),
+        // Discord webhooks (Alerts, Daily report): kind 'alerts' | 'report'. The URL never comes back.
+        hookSet: (kind, url) => { const r = notify.set(kind, url); engine.emit('change'); return r; },
+        hookClear: (kind) => { const r = notify.clear(kind); engine.emit('change'); return r; },
+        hookOptions: (kind, patch) => { const r = notify.options(kind, patch || {}); engine.emit('change'); return r; },
+        hookTest: (kind) => notify.test(kind),
+        schedule: () => schedule(),
+        scheduleDo: (src, key, op) => scheduleDo(src, key, op),
+        hookReportNow: async () => { const r = await notify.sendReport(true); return r.ok ? { ok: true, message: 'Report sent.' } : { ok: false, error: r.wait ? 'Discord is rate-limiting this webhook — try again in a moment.' : 'Not sent: ' + r.error }; },
         whatsNewSeen: () => { whatsNew.seen(); return { ok: true }; },
         setSettings: (patch) => { const { main: _m, ...p } = patch || {}; store.setSettings(p); engine.emit('change'); return publicSettings(); },
         setMain: (arg) => setMain(arg),
@@ -423,6 +435,7 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
         stats.start();
         catalog.start();
         income.start();
+        notify.start();
         setTimeout(checkSessions, 60 * 1000).unref?.();
         sessionTimer = setInterval(checkSessions, SESSION_CHECK_MS);
         if (sessionTimer.unref) sessionTimer.unref();
@@ -434,16 +447,61 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
     function shutdown() {
         // Keep wasRunning so the same accounts start again next launch.
         engine.stopAll({ keepResume: true, quiet: true });
+        engine.cancelRecover();
         plugins.stopAll();
         stats.stop();
         catalog.stop();
         income.stop();
+        notify.stop();
         clearInterval(sessionTimer);
         clearInterval(extraTimer);
         try { store.saveAccounts(); } catch (_) {}
     }
 
-    return { rpc, boot, shutdown, store, errors, log, engine, plugins, catalog, site, income, checkSession, trouble };
+    // ---- the Schedule tab ----
+    // Now: what plugins are doing on which accounts, who's asking for one, accounts waiting for a clicking place.
+    // Next: what's coming up and why — each running plugin's own (host.schedule()), the hub's sign-in tries and the
+    // daily report — soonest first. Each has Run now / Skip next when its owner offers them.
+    function schedule() {
+        const name = (id) => { const a = store.get(id); return a ? a.name : id; };
+        const accts = (ids) => ({ names: ids.slice(0, 8).map(name), n: ids.length });
+        const act = plugins.activity();
+        const waiting = store.accounts.filter(a => errors.has(a.id, 'CC-RATE-01')).map(a => a.id);
+        const now = [
+            ...act.busy.map(b => ({ who: b.pluginName, what: b.what, since: b.since, ...accts(b.accounts) })),
+            ...act.wants.map(w => ({ who: w.pluginName, what: 'waiting for: ' + w.what, since: w.since, ...accts([w.account]), why: 'another plugin has the account; it goes once that one lets go' })),
+            ...(waiting.length ? [{ who: 'Hub', what: 'Waiting for a clicking place', since: null, ...accts(waiting),
+                why: `their IP already has ${store.settings.maxPerIp} clicking; ${engine.recover('slots') ? 'each starts when one there stops' : 'start them by hand (auto-recover is off)'}` }] : []),
+        ];
+        const next = plugins.schedule().map(e => ({ src: e.plugin, key: e.key, who: e.pluginName, what: e.what, at: e.at, why: e.why, canRun: e.canRun, canSkip: e.canSkip, each: !!e.each, ...accts(e.accounts) }));
+        for (const r of engine.reloginList()) next.push({ src: 'hub', key: 'relogin:' + r.id, who: 'Hub', what: 'Sign in again', at: r.at, ...accts([r.id]),
+            why: `logged out and signing back in failed; try ${r.n + 1} of ${engine.reloginMs.length} (auto-recover)`, canRun: true, canSkip: false });
+        const rep = notify.nextReport();
+        if (rep != null) next.push({ src: 'hub', key: 'report', who: 'Hub', what: 'Daily report to Discord', at: rep, names: [], n: 0,
+            why: `every day at ${store.settings.hooks.report.time} (Settings > Discord webhooks)`, canRun: true, canSkip: true });
+        next.sort((a, b) => (a.at || Infinity) - (b.at || Infinity));
+        return { now, next, at: Date.now() };
+    }
+    async function scheduleDo(src, key, op) {
+        if (!['run', 'skip'].includes(op)) return { ok: false, error: 'No such action' };
+        if (src === 'hub') {
+            if (key === 'report') {
+                if (op === 'skip') return notify.skipReport() ? { ok: true, message: 'Skipped: the next report goes a day later.' } : { ok: false, error: 'No report set up.' };
+                const r = await notify.sendReport(true);
+                return r.ok ? { ok: true, message: 'Report sent.' } : { ok: false, error: r.wait ? 'Discord is rate-limiting this webhook — try again in a moment.' : 'Not sent: ' + r.error };
+            }
+            if (String(key).startsWith('relogin:') && op === 'run') return engine.reloginNow(String(key).slice(8)) ? { ok: true, message: 'Trying to sign in now.' } : { ok: false, error: 'Nothing waiting there now.' };
+            return { ok: false, error: 'Nothing scheduled there now.' };
+        }
+        const r = await plugins.scheduleDo(src, key, op);
+        engine.emit('change');
+        return r.ok && !r.message ? { ...r, message: op === 'run' ? 'Running now.' : 'Skipped the next one.' } : r;
+    }
+
+    // main.js: how the last run ended (the watchdog's note), once at start, after boot().
+    const lastRunEnded = (info) => notify.lastRunEnded(info);
+
+    return { rpc, boot, shutdown, store, errors, log, engine, plugins, catalog, site, income, checkSession, trouble, notify, lastRunEnded };
 }
 
 module.exports = { createCore };

@@ -1,7 +1,7 @@
 {
   "id": "rewards",
   "name": "Rewards",
-  "version": "1.4.0",
+  "version": "1.5.0",
   "description": "Claims ready /rewards tiers (rank, clicks, vault, inventory value and the rest) on the accounts you choose.",
   "minCore": "1.0.6",
   "main": "index.js",

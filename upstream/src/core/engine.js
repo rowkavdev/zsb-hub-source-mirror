@@ -12,6 +12,13 @@
  * A 401 first tries a silent re-login (the login window's saved session); only if that fails is
  * the account stopped as logged out (CC-AUTH-01). It resumes by itself once the user logs in again.
  *
+ * Auto-recover (Settings, settings.autoRecover, each on by default):
+ *   slots   an account refused for "too many on this IP" (CC-RATE-01) waits for a slot: when one frees up (a stop, an
+ *           account set to Off) the waiting accounts start in their list order. Stop all, or Stop on a waiting
+ *           account, cancels the wait.
+ *   signIn  when the quiet re-login fails (the site down, say), it's tried again after RELOGIN_MS (5 min, 15, 30, then
+ *           hourly), up to that many times; a login by hand cancels it.
+ *
  * Events (plugins listen through the plugin host):
  *   'change'                      something the panel shows changed
  *   'started' / 'stopped'  (id)
@@ -22,6 +29,9 @@
 
 const EventEmitter = require('events');
 const { routeKey } = require('./site');
+
+// Auto-recover: when to try signing in again after a failed quiet re-login (see the top).
+const RELOGIN_MS = [5, 15, 30, 60, 60, 60, 60, 60].map(m => m * 60000);
 
 // $ per clicked case before an account has measured its own. Measured 2026-11-02 on 87 hub accounts, all
 // with a $25 max case price: median $6.60 per case, every account between $6.32 and $6.86 = 26.4% of the
@@ -61,7 +71,68 @@ class Engine extends EventEmitter {
         this.run = new Map();     // id -> runtime state
         this.lastMe = new Map();  // id -> last /api/me numbers, kept after a stop so the card still shows them
         this.timer = null;
+        this.relogin = new Map(); // id -> timer for the next sign-in try (auto-recover)
+        this.reloginMs = RELOGIN_MS;
+        this.bulkStop = false;    // Stop all: freed slots aren't handed on
     }
+
+    // Auto-recover switches (see the top).
+    recover(k) { const r = this.settings.autoRecover; return !r || r[k] !== false; }
+
+    // A clicking place freed up: the accounts waiting for one (CC-RATE-01) try again, in list order; the ones that
+    // still don't fit get CC-RATE-01 again from start().
+    slotFreed() {
+        const waiting = this.store.accounts.filter(a => this.errors.has(a.id, 'CC-RATE-01')).map(a => a.id);
+        for (const id of waiting) this.errors.clear(id, 'CC-RATE-01');
+        if (this.bulkStop || !waiting.length || !this.recover('slots')) return;
+        setTimeout(() => {
+            for (const id of waiting) {
+                const a = this.store.get(id);
+                if (!a || !a.wasRunning || !a.token || this.run.has(id)) continue;
+                if (this.start(id).ok) this.log.add(id, 'A clicking place on its IP freed up — started', 'ok');
+            }
+        }, 0);
+    }
+
+    // Sign-in tries after a failed quiet re-login (auto-recover).
+    scheduleRelogin(id, n = 0) {
+        clearTimeout(this.relogin.get(id)); this.relogin.delete(id);
+        if (!this.recover('signIn')) return;
+        if (n >= this.reloginMs.length) { this.log.add(id, 'Stopped trying to sign in by itself — log in again to resume', 'warn'); return; }
+        const ms = this.reloginMs[n];
+        this.log.add(id, `Will try to sign in again by itself in ${ms >= 60000 ? Math.round(ms / 60000) + ' min' : Math.round(ms / 1000) + ' s'}`, 'info');
+        const t = setTimeout(() => { this.relogin.delete(id); this.retryLogin(id, n).catch(() => {}); }, ms);
+        if (t.unref) t.unref();
+        t.at = Date.now() + ms; t.n = n;   // for the Schedule tab
+        this.relogin.set(id, t);
+    }
+
+    async retryLogin(id, n) {
+        const acct = this.store.get(id);
+        if (!acct || acct.token || this.run.has(id)) return;
+        let token = null;
+        try { token = await this.auth.refresh(acct); } catch (_) {}
+        if (!token && acct.login && this.auth.signIn) {
+            try { const res = await this.auth.signIn({ ...acct.login, partition: acct.partition, route: acct.route || this.routeFor(acct) }); if (res && res.ok) token = res.token; } catch (_) {}
+        }
+        if (acct.token || this.run.has(id)) return;   // logged in by hand meanwhile
+        if (!token) return this.scheduleRelogin(id, n + 1);
+        acct.token = token; this.store.saveAccounts();
+        this.log.add(id, 'Signed back in by itself', 'ok');
+        this.loggedIn(id);
+    }
+
+    // Schedule tab: the sign-in tries waiting ([{ id, at, n }]); Run now tries one straight away.
+    reloginList() { return [...this.relogin.entries()].map(([id, t]) => ({ id, at: t.at, n: t.n })); }
+    reloginNow(id) {
+        const t = this.relogin.get(id);
+        if (!t) return false;
+        clearTimeout(t); this.relogin.delete(id);
+        this.retryLogin(id, t.n).catch(() => {});
+        return true;
+    }
+
+    cancelRecover() { for (const t of this.relogin.values()) clearTimeout(t); this.relogin.clear(); }
 
     get settings() { return this.store.settings; }
 
@@ -184,6 +255,7 @@ class Engine extends EventEmitter {
         if (!off && !this.hasRoom(route, id)) {
             const n = this.usedIn(this.groupOf(route), id);
             this.errors.raise(id, 'CC-RATE-01', `${n}/${this.settings.maxPerIp} already running${route === 'direct' ? '' : ' on proxy ' + route}`);
+            if (!acct.wasRunning) { acct.wasRunning = true; this.store.saveAccounts(); }   // waits for a slot (auto-recover)
             return { ok: false, code: 'CC-RATE-01' };
         }
         this.errors.clear(id, 'CC-RATE-01');
@@ -221,15 +293,20 @@ class Engine extends EventEmitter {
     // keepResume: leave wasRunning set (app closing, logged out) so it starts again later.
     stop(id, { keepResume = false, quiet = false } = {}) {
         const run = this.run.get(id);
-        if (!run) return { ok: false, error: 'Not running' };
+        if (!run) {
+            // Waiting for a slot: Stop cancels the wait.
+            const a = this.store.get(id);
+            if (a && this.errors.has(id, 'CC-RATE-01')) { this.errors.clear(id, 'CC-RATE-01'); if (!keepResume) { a.wasRunning = false; this.store.saveAccounts(); } this.emit('change'); return { ok: true }; }
+            return { ok: false, error: 'Not running' };
+        }
         if (run.me) this.lastMe.set(id, run.me);
         clearTimeout(run.clickTimer);
         this.errors.clear(id, 'CC-SLOW-01');
         this.run.delete(id);
         const acct = this.store.get(id);
         if (acct && !keepResume) { acct.wasRunning = false; this.store.saveAccounts(); }
-        // A slot just freed up: "too many on this IP" is no longer true for anyone.
-        for (const a of this.store.accounts) this.errors.clear(a.id, 'CC-RATE-01');
+        // A slot just freed up: the accounts waiting for one try again (auto-recover).
+        this.slotFreed();
         if (!quiet) this.log.add(id, 'Stopped');
         if (!this.run.size && this.timer) { clearInterval(this.timer); this.timer = null; }
         this.emit('stopped', id); this.emit('change');
@@ -242,7 +319,15 @@ class Engine extends EventEmitter {
         return out;
     }
 
-    stopAll(opts) { for (const id of this.running()) this.stop(id, opts); }
+    stopAll(opts = {}) {
+        this.bulkStop = true;
+        try {
+            for (const id of this.running()) this.stop(id, opts);
+            // Nothing waits for a slot after Stop all (the app closing keeps them waiting for next launch).
+            for (const a of this.store.accounts) if (this.errors.has(a.id, 'CC-RATE-01')) this.stop(a.id, opts);
+        } finally { this.bulkStop = false; }
+        if (!opts.keepResume) this.cancelRecover();
+    }
 
     resume() {
         if (!this.settings.resumeOnLaunch) return;
@@ -495,10 +580,12 @@ class Engine extends EventEmitter {
         this.log.add(r.id, 'Logged out — log in again to resume', 'error');
         this.stop(r.id, { keepResume: true, quiet: true });
         this.emit('loggedOut', r.id);
+        this.scheduleRelogin(r.id);
     }
 
     // A fresh login for an account: clears the logout and resumes it if it was clicking before.
     loggedIn(id) {
+        clearTimeout(this.relogin.get(id)); this.relogin.delete(id);
         this.errors.clearGroup(id, 'auth');
         this.errors.clear(id, 'CC-AUTH-02');
         const a = this.store.get(id);

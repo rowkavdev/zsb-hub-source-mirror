@@ -55,7 +55,7 @@ module.exports = {
             totals = { free: totals.free + done.free, premium: totals.premium + done.premium };
             const parts = [done.free && `${done.free} free`, done.premium && `${done.premium} Pro`].filter(Boolean);
             if (parts.length) ctx.log(`Claimed ${parts.join(' + ')} pass tier${done.free + done.premium === 1 ? '' : 's'}`, 'ok', acct.id);
-        });
+        }, { what: 'Claim ready pass tiers', only: (aid) => !!ctx.settings.get('on') && ctx.settings.runsOn('accounts', aid) });
 
         ctx.panel.tab('Pass', () => {
             const chosen = ctx.accounts.list().filter(a => ctx.settings.runsOn('accounts', a.id));

@@ -439,6 +439,21 @@ function tick(asked) {
     }
 }
 
+// The Schedule tab (hub 1.2.18+): the next accounts due, with Run now / Skip next.
+function plan() {
+    if (!ctx.schedule) return;
+    const ids = ctx.power.live() && !halt ? ctx.accounts.list().filter(a => runsOn(a.id) && !busy.has(a.id)).map(a => a.id) : [];
+    if (!ids.length) { ctx.schedule.set('run', null); return; }
+    const every = num(S('everyMs')) || Math.max(5, num(S('everyMin'))) * 60000;
+    const dueOf = (id) => (state.last[id] || 0) + every;
+    const at = Math.min(...ids.map(dueOf)), soon = ids.filter(id => dueOf(id) - at < 60000);
+    const later = ids.length - soon.length, f = farm();
+    ctx.schedule.set('run', { what: 'Play for rewards', at: Math.max(at, Date.now()), accounts: soon,
+        why: `each account every ${Math.round(every / 60000)} min${f ? ' · star farming XP for the Armory' : ''}; waits while another plugin has the account${later ? ` · ${later} more later` : ''}`,
+        runNow: () => { for (const id of soon) state.last[id] = 0; tick(true); plan(); return { message: 'Playing now.' }; },
+        skip: () => { const now = Date.now(); for (const id of soon) state.last[id] = Math.max(dueOf(id), now); ctx.data.set(state); plan(); return { message: 'Skipped: those accounts play one round later.' }; } });
+}
+
 module.exports = {
     start(c) {
         ctx = c;
@@ -446,7 +461,8 @@ module.exports = {
         state.pending = state.pending || {};
         signal();
         ctx.every(1000, signal);
-        ctx.every(15000, tick);
+        ctx.every(15000, () => { tick(); plan(); });
+        plan();
         ctx.panel.action('run', () => {
             const chosen = ctx.accounts.list().filter(a => runsOn(a.id));
             if (!chosen.length) return { ok: false, error: 'Choose accounts first.' };
