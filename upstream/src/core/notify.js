@@ -150,7 +150,7 @@ function createNotify({ store, log, errors, engine, plugins, income, version, fe
         const when = info.at ? ` (${new Date(info.at).toLocaleString('en-GB')})` : '';
         const what = info.why === 'frozen' ? 'it froze and was restarted' : info.why === 'crashed' ? 'it crashed and was restarted' : 'it stopped without quitting and started again';
         const line = info.gaveUp ? `It stopped unexpectedly${when} and kept failing, so it wasn't restarted again — it's running now because it was started.` : `${what[0].toUpperCase() + what.slice(1)}${when}.`;
-        log.add(null, 'The hub ' + (info.gaveUp ? 'kept stopping unexpectedly' : what), 'warn');
+        log.add(null, 'The hub ' + (info.gaveUp ? 'kept stopping unexpectedly' : what.replace(/^it /, '')), 'warn');
         restarts.push(line);
     }
 

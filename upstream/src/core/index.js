@@ -226,8 +226,11 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
 
     async function addAccount(existingId) {
         const existing = existingId ? store.get(existingId) : null;
-        // The login goes out the way the account will click: its route (a proxy, or this PC's connection).
-        const route = existing ? engine.routeFor(existing) : engine.pickRoute();
+        // A new account signs in on this PC's connection, like imports, and then starts on the least used route with
+        // room (proxies included). Signing in through the picked proxy left the window signed in while the token check
+        // through that proxy never passed, so the account never registered (a user, 2026-11-20: this PC full, a proxy
+        // picked). "Log in again" keeps the account's own route.
+        const route = existing ? engine.routeFor(existing) : 'direct';
         const res = await auth.login({ partition: existing ? existing.partition : undefined, route });
         if (!res.ok) {
             if (res.code) errors.raise(existing ? existing.id : null, res.code, res.error);
@@ -246,7 +249,6 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
             return { ok: true, id: existing.id };
         }
         const { account, replaced, oldPartition } = store.upsert(res);
-        if (route && !account.route) { account.route = route; store.saveAccounts(); }
         if (oldPartition) auth.forget(oldPartition);
         errors.clear(null, 'CC-AUTH-02');
         log.add(account.id, replaced ? 'Logged in again' : 'Account added', 'ok');

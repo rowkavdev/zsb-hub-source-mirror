@@ -1,7 +1,7 @@
 {
   "id": "trader",
   "name": "Trader",
-  "version": "1.11.0",
+  "version": "1.13.0",
   "description": "Moves tokens and items between your accounts: one trade at a time, or by trade routes you set up (from which accounts, to which account, and what goes: tokens, terminals, skins over a price or by name). Both sides must be accounts in this app and clicking. Starts in practice mode.",
   "minCore": "1.2.14",
   "main": "index.js",
@@ -94,6 +94,209 @@
           "placeholder": "e.g. Dragon Lore, Howl",
           "when": "skins"
         },
+        "filt": {
+          "type": "boolean",
+          "label": "Items matching inventory filters",
+          "default": false,
+          "when": "to",
+          "newline": true,
+          "help": "The game's inventory filters, as on View inventory: e.g. Patterns: Only sends every pattern item."
+        },
+        "fSearch": {
+          "type": "text",
+          "label": "Search",
+          "default": "",
+          "placeholder": "any name",
+          "when": "filt"
+        },
+        "fPatterns": {
+          "type": "choice",
+          "label": "Patterns",
+          "default": "",
+          "when": "filt",
+          "options": [
+            {
+              "value": "",
+              "label": "Any"
+            },
+            {
+              "value": "none",
+              "label": "None"
+            },
+            {
+              "value": "only",
+              "label": "Only"
+            }
+          ]
+        },
+        "fRarity": {
+          "type": "choice",
+          "label": "Rarity",
+          "default": "",
+          "when": "filt",
+          "options": [
+            {
+              "value": "",
+              "label": "Any"
+            },
+            {
+              "value": "Consumer Grade",
+              "label": "Consumer Grade"
+            },
+            {
+              "value": "Industrial Grade",
+              "label": "Industrial Grade"
+            },
+            {
+              "value": "Mil-Spec Grade",
+              "label": "Mil-Spec Grade"
+            },
+            {
+              "value": "Restricted",
+              "label": "Restricted"
+            },
+            {
+              "value": "Classified",
+              "label": "Classified"
+            },
+            {
+              "value": "Covert",
+              "label": "Covert"
+            }
+          ]
+        },
+        "fExterior": {
+          "type": "choice",
+          "label": "Exterior",
+          "default": "",
+          "when": "filt",
+          "options": [
+            {
+              "value": "",
+              "label": "Any"
+            },
+            {
+              "value": "Factory New",
+              "label": "Factory New"
+            },
+            {
+              "value": "Minimal Wear",
+              "label": "Minimal Wear"
+            },
+            {
+              "value": "Field-Tested",
+              "label": "Field-Tested"
+            },
+            {
+              "value": "Well-Worn",
+              "label": "Well-Worn"
+            },
+            {
+              "value": "Battle-Scarred",
+              "label": "Battle-Scarred"
+            }
+          ]
+        },
+        "fStSv": {
+          "type": "choice",
+          "label": "StatTrak/Souvenir",
+          "default": "",
+          "when": "filt",
+          "options": [
+            {
+              "value": "",
+              "label": "Any"
+            },
+            {
+              "value": "None",
+              "label": "None"
+            },
+            {
+              "value": "Non ST",
+              "label": "Non ST"
+            },
+            {
+              "value": "Non SV",
+              "label": "Non SV"
+            },
+            {
+              "value": "Only ST",
+              "label": "Only ST"
+            },
+            {
+              "value": "Only SV",
+              "label": "Only SV"
+            }
+          ]
+        },
+        "fQuality": {
+          "type": "choice",
+          "label": "Quality",
+          "default": "",
+          "when": "filt",
+          "options": [
+            {
+              "value": "",
+              "label": "Any"
+            },
+            {
+              "value": "0",
+              "label": "Common"
+            },
+            {
+              "value": "1",
+              "label": "Rare"
+            },
+            {
+              "value": "2",
+              "label": "Epic"
+            },
+            {
+              "value": "3",
+              "label": "Legendary"
+            }
+          ]
+        },
+        "fFloatRank": {
+          "type": "choice",
+          "label": "Float Rank",
+          "default": "",
+          "when": "filt",
+          "options": [
+            {
+              "value": "",
+              "label": "Any"
+            },
+            {
+              "value": "none",
+              "label": "None"
+            },
+            {
+              "value": "all",
+              "label": "Only"
+            }
+          ]
+        },
+        "fEvent": {
+          "type": "choice",
+          "label": "Event",
+          "default": "",
+          "when": "filt",
+          "options": [
+            {
+              "value": "",
+              "label": "Any"
+            },
+            {
+              "value": "None",
+              "label": "None"
+            },
+            {
+              "value": "All",
+              "label": "Only"
+            }
+          ]
+        },
         "skipFavorites": {
           "type": "boolean",
           "label": "Keep favourited items (skins and terminals)",
@@ -131,6 +334,13 @@
       "label": "How many of each, per sender (empty = all)",
       "default": "",
       "placeholder": "all",
+      "page": true
+    },
+    "oneFilt": {
+      "type": "boolean",
+      "label": "Send by inventory filters",
+      "default": false,
+      "hidden": true,
       "page": true
     },
     "oneFavs": {
@@ -418,6 +628,13 @@
     "fanTo": {
       "type": "accounts",
       "hidden": true
+    },
+    "oneLoop": {
+      "type": "boolean",
+      "label": "Loop: keep trading until nothing's left",
+      "default": false,
+      "page": true,
+      "help": "Each sender makes as many trades as it takes (each holds 50, or 200 for Pro), one after another."
     }
   },
   "power": true
