@@ -74,11 +74,20 @@ const favorite = (s) => !!(s.favorite || s.isFavorite || s.favorited || s.isFavo
 const isTerminal = (s) => !!s.isTerminal || /terminal/i.test(s.name || '');
 const terminalKind = (s) => (/genesis/i.test(s.name || '') ? 'genesis' : /dead hand/i.test(s.name || '') ? 'deadhand' : 'other');
 
+// A route's own inventory filters (the game's, as on View inventory): the query they make, and how they read.
+const ROUTE_FILTERS = [['fExterior', 'exterior'], ['fRarity', 'rarity'], ['fStSv', 'statTrakSouvenir'], ['fQuality', 'quality'], ['fEvent', 'eventName'],
+    ['fFloatRank', 'filterFloatRanks'], ['fPatterns', 'patterns']];
+const routeQuery = (r) => [['sort', 'price'], ['search', String(r.fSearch || '').trim()], ...ROUTE_FILTERS.map(([k, p]) => [p, String(r[k] || '')])]
+    .filter(([, v]) => v).map(([k, v]) => `&${k}=${encodeURIComponent(v)}`).join('');
+const ROUTE_NAMES = { fExterior: 'Exterior', fRarity: 'Rarity', fStSv: 'StatTrak/Souvenir', fQuality: 'Quality', fEvent: 'Event', fFloatRank: 'Float rank', fPatterns: 'Patterns' };
+const routeFilterLabel = (r) => [String(r.fSearch || '').trim() ? `"${String(r.fSearch).trim()}"` : '',
+    ...ROUTE_FILTERS.filter(([k]) => r[k]).map(([k]) => `${ROUTE_NAMES[k]}: ${FILT_VALUES[r[k]] || r[k]}`)].filter(Boolean).join(', ');
+
 // What a route takes from this sender's inventory, most valuable first.
-async function pickItems(aid, route) {
+async function pickItems(aid, route, cap = Infinity) {
     const names = String(route.names || '').split(',').map(x => x.trim()).filter(Boolean);
     const wantSkins = !!route.skins && (num(route.skinsOver) > 0 || names.length > 0);
-    if (route.terminals === 'none' && !wantSkins) return [];
+    if (route.terminals === 'none' && !wantSkins && !route.filt) return [];
     const take = (s) => {
         if (!s || !s._id || (route.skipFavorites && favorite(s))) return false;
         if (isTerminal(s)) return route.terminals === 'all' || route.terminals === terminalKind(s);
@@ -98,6 +107,17 @@ async function pickItems(aid, route) {
             await sleep(250);
         }
     }
+    // Items matching the route's inventory filters (favourited ones kept with "Keep favourited items"), up to a trade's worth.
+    if (route.filt) {
+        const q = routeQuery(route);
+        for (let page = 1, pages = 1, n = 0; page <= pages && page <= PAGES_MAX && n < cap; page++) {
+            if (ctx.stopping) return [];
+            const j = await getJson(aid, `/api/inventory?page=${page}${q}&showUpgradedSkins=true&showStickers=true`);
+            pages = (j && j.pages) || 0;
+            for (const s of (j && j.skins) || []) if (s && s._id && !(route.skipFavorites && favorite(s)) && !seen.has(s._id)) { seen.set(s._id, s); n++; }
+            if (page < pages) await sleep(250);
+        }
+    }
     return [...seen.values()].sort((a, b) => num(b.price) - num(a.price));
 }
 
@@ -111,7 +131,7 @@ async function trade(from, to, route, fromName, toName) {
 
     const pro = sMe.membership === 'pro';
     const cap = num(sMe.tradeItems) || (pro ? 200 : 50);
-    const items = (await pickItems(from, route)).slice(0, cap);
+    const items = (await pickItems(from, route, cap)).slice(0, cap);
     let tokens = 0;
     if (route.tokens && pro) {
         const spare = num(sMe.tokens) - num(route.keepTokens);
@@ -247,6 +267,65 @@ async function lookUp(terms) {
     me.running = false; me.at = Date.now();
 }
 
+// --- Send by the inventory filters ------------------------------------------
+// The "By inventory filters" preset: each sender sends everything the game's inventory filters match (the same filters
+// as View inventory: Patterns, Favorites, Rarity, …), in the inventory's sort order, up to its trade limit. Favourited
+// items stay put unless "Include favourited items" is on, whatever the Favorites filter says.
+const filtOn = () => !!S('oneFilt');
+const FILT_NAMES = { invExterior: 'Exterior', invRarity: 'Rarity', invFavs: 'Favorites', invStSv: 'StatTrak/Souvenir', invQuality: 'Quality',
+    invEvent: 'Event', invFloatRank: 'Float rank', invPatterns: 'Patterns' };
+const FILT_VALUES = { only: 'Only', all: 'Only', All: 'Only', none: 'None', None: 'None', 0: 'Common', 1: 'Rare', 2: 'Epic', 3: 'Legendary' };
+function filterLabel() {
+    const search = String(S('invSearch') || '').trim();
+    const parts = [search ? `"${search}"` : '', ...INV_FILTERS.filter(([k]) => S(k)).map(([k]) => `${FILT_NAMES[k]}: ${FILT_VALUES[S(k)] || S(k)}`)].filter(Boolean);
+    return parts.length ? parts.join(', ') : 'no filter (the whole inventory)';
+}
+const filtKey = () => 'filt:' + invQuery();
+// "Favorites: Only" with favourited items locked: nothing could go.
+const filtFavsOnly = () => S('invFavs') === 'only' && !S('oneFavs');
+// The sender's items the filters match, in the inventory's order: the others, and the favourited ones apart. Reads pages
+// until `want` sendable ones are in (all of them when want is Infinity), or PAGES_MAX.
+async function findFiltered(aid, want, withFavs) {
+    const items = [], favItems = [], q = invQuery(), seen = new Set();
+    for (let page = 1, pages = 1; page <= pages && page <= PAGES_MAX; page++) {
+        if (ctx.stopping) break;
+        const j = await getJson(aid, `/api/inventory?page=${page}${q}&showStickers=true&showUpgradedSkins=true`);
+        pages = (j && j.pages) || 0;
+        for (const s of (j && j.skins) || []) {
+            if (!s || !s._id || seen.has(s._id)) continue;
+            seen.add(s._id);
+            (favorite(s) ? favItems : items).push(s);
+        }
+        if ((withFavs ? items.length + favItems.length : items.length) >= want) break;
+        if (page < pages) await sleep(250);
+    }
+    return { items, favItems };
+}
+// Look up by filters: how many each account has, like the item look-up (same shape, so the sender list reads it alike).
+async function countFiltered(aid) {
+    const [f, m] = await Promise.all([findFiltered(aid, Infinity, false), getJson(aid, '/api/me')]);
+    const sum = (l) => l.reduce((s, x) => s + num(x.price), 0);
+    const byName = new Map(), group = (x) => { const k = String(x.name || 'Item'); if (!byName.has(k)) byName.set(k, { name: k, n: 0, favs: 0, value: 0, favValue: 0 }); return byName.get(k); };
+    for (const x of f.items) { const g = group(x); g.n++; g.value += num(x.price); }
+    for (const x of f.favItems) { const g = group(x); g.favs++; g.favValue += num(x.price); }
+    const names = [...byName.values()].sort((a, b) => (b.value + b.favValue) - (a.value + a.favValue) || (b.n + b.favs) - (a.n + a.favs));
+    return { n: f.items.length, favs: f.favItems.length, value: sum(f.items), favValue: sum(f.favItems), names, tokens: m && m.tokens, membership: m && m.membership };
+}
+async function lookUpFiltered() {
+    const accts = ctx.accounts.list();
+    const me = lookup = { terms: ['items matching ' + filterLabel()], key: filtKey(), filt: true, at: Date.now(), running: true, done: 0, total: accts.length, counts: {} };
+    for (const a of accts) {
+        if (ctx.stopping || lookup !== me) return;
+        if (!a.healthy) me.counts[a.id] = { skipped: true };
+        else {
+            try { me.counts[a.id] = await countFiltered(a.id); }
+            catch (e) { me.counts[a.id] = { error: e.message }; }
+        }
+        me.done++;
+    }
+    me.running = false; me.at = Date.now();
+}
+
 // Amounts typed in the single trade: "" = none (tokens) / all (items), "all", 1500, 500K, 2.5M, 1B.
 function amount(v, emptyIsAll) {
     const t = String(v ?? '').trim().toLowerCase().replace(/[, _]/g, '');
@@ -262,7 +341,8 @@ function amount(v, emptyIsAll) {
 // there go in its single trade, on top of anything the item names find. Favourited ones are locked unless "Include
 // favourited items" is on. Not saved: a restart forgets the picks.
 let inv = null;   // { aid, open, items: [], page, pages, count, search, loading, error, sel: Map(id -> skin) }
-const PICKED = '\u0000picked';
+const PICKED = '\u0000picked', FILT = '\u0000filters';
+const LOOP_MAX = 100;   // loop mode: at most this many trades per sender in one go (the site's 100 received a day)
 const tradeCap = (aid) => { if (inv && inv.aid === aid && inv.cap) return inv.cap; const me = ctx.accounts.stats(aid) || {}; return num(me.tradeItems) || (me.membership === 'pro' ? 200 : 50); };
 const picksFor = (aid) => (inv && inv.aid === aid ? [...inv.sel.values()] : []);
 // The game's inventory filters (same names and values as its own inventory page), as the query they make.
@@ -387,11 +467,13 @@ const PRESETS = [
     { id: 'genesis', title: 'Genesis', sub: 'Genesis terminals only', item: 'Genesis Terminal', tokens: '' },
     { id: 'deadhand', title: 'Dead Hand', sub: 'Dead Hand terminals only', item: 'Dead Hand Terminal', tokens: '' },
     { id: 'tokens_terminals', title: 'Tokens + terminals', sub: 'all of both', item: 'Terminal', tokens: 'all' },
+    { id: 'filters', title: 'By inventory filters', sub: 'all that match: Patterns, Favorites, Rarity…', filt: true, item: '', tokens: '' },
     { id: 'custom', title: 'Custom', sub: 'type the item and amounts below' },
 ];
 function presetNow() {
+    if (filtOn()) return 'filters';
     const terms = oneTerms(), item = terms.length > 1 ? null : (terms[0] || '').toLowerCase(), tk = amount(S('oneTokens'), false);
-    const p = PRESETS.find(x => x.id !== 'custom' && x.item.toLowerCase() === item && amount(x.tokens, false) === tk);
+    const p = PRESETS.find(x => x.id !== 'custom' && !x.filt && x.item.toLowerCase() === item && amount(x.tokens, false) === tk);
     return p ? p.id : 'custom';
 }
 
@@ -399,7 +481,7 @@ function presetNow() {
 // accounts that have it (plus any already picked). Most of the item first, then most tokens.
 function oneView() {
     const accts = ctx.accounts.list(), to = S('oneTo'), terms = oneTerms(), picked = new Set(senderIds()), withFavs = !!S('oneFavs');
-    const lk = lookup && terms.length && lookup.key === termsKey(terms) ? lookup : null;
+    const lk = !lookup ? null : filtOn() ? (lookup.key === filtKey() ? lookup : null) : terms.length && lookup.key === termsKey(terms) ? lookup : null;
     // How many it can send: favourited ones count only with the switch on.
     const has = (id) => { const c = lk && lk.counts[id]; return c && c.n != null ? c.n + (withFavs ? c.favs || 0 : 0) : -1; };
     // An account's tokens and Pro: from the look-up when it read them, else the hub's last report.
@@ -418,7 +500,8 @@ function oneProblem() {
     if (!to || !byId.has(to)) return 'Pick who receives.';
     if (Number.isNaN(tokens)) return 'Tokens: type a number like 500K or 2.5M, or "all".';
     if (Number.isNaN(want)) return 'How many: type a number, or leave it empty for all.';
-    if (!terms.length && !tokens && !ids.some(id => picksFor(id).length)) return 'Pick what to send: a preset, item names or tokens, or items from View inventory.';
+    if (filtOn() && filtFavsOnly()) return 'Favorites: Only picks favourited items — switch on "Include favourited items" to send them.';
+    if (!terms.length && !filtOn() && !tokens && !ids.some(id => picksFor(id).length)) return 'Pick what to send: a preset, item names or tokens, or items from View inventory.';
     if (!ids.length) return 'Pick who sends: click one or more accounts in the list, or All.';
     if (!byId.get(to).healthy) return `${byId.get(to).name} isn't clicking — start it first.`;
     if (ids.length === 1 && !byId.get(ids[0]).healthy) return `${byId.get(ids[0]).name} isn't clicking — start it first.`;
@@ -427,7 +510,7 @@ function oneProblem() {
 }
 
 // One sender's trade: works out what it sends, then sends it (in practice, only says what it would).
-async function sendFrom(from, to, accts, terms, want, tokens, withFavs, prog, quit = () => false) {
+async function sendFrom(from, to, accts, terms, want, tokens, withFavs, prog, quit = () => false, sent = {}) {
     const fromName = accts.get(from).name, toName = accts.get(to).name;
     if (!accts.get(from).healthy) return { ok: false, skip: true, text: `${fromName} isn't clicking.` };
     // A trade you start goes now. Other plugins' marks (the Armory's star farming, Games, the Opener) cover whole turns,
@@ -443,72 +526,138 @@ async function sendFrom(from, to, accts, terms, want, tokens, withFavs, prog, qu
         await ctx.sleep(500);
     }
     for (;;) {
-        const r = await sendFromNow(from, to, accts, terms, want, tokens, withFavs, fromName, toName);
+        const r = await sendFromNow(from, to, accts, terms, want, tokens, withFavs, fromName, toName, sent);
         if (!r.locked || Date.now() > end || ctx.stopping || quit()) return r;
         if (prog) prog(`the site says ${fromName} or ${toName} is busy for a moment — trying again`);
         await ctx.sleep(LOCK_RETRY_MS);
     }
 }
-async function sendFromNow(from, to, accts, terms, want, tokens, withFavs, fromName, toName) {
+// What one sender's trade would take, without sending: { done } (nothing to send / can't: the result as it is) or
+// { plan: { items, tk, parts, notes, sMe, cap, more, total, left } }. `sent` (loop mode) says how many of each part
+// earlier trades of this sender already took, so "how many" counts across the loop. `full` reads everything that
+// matches (Preview), so `total` is all of it rather than one trade's worth.
+async function planFrom(from, to, terms, want, tokens, withFavs, fromName, toName, sent = {}, full = false) {
     const [sMe, rMe] = await Promise.all([getJson(from, '/api/me'), getJson(to, '/api/me')]);
-    if (rMe.dailyTradesLeft != null && num(rMe.dailyTradesLeft) <= 0) return { ok: false, stop: true, text: `${toName} has no received trades left today.` };
+    const left = rMe.dailyTradesLeft == null ? null : num(rMe.dailyTradesLeft);
+    if (left != null && left <= 0) return { done: { ok: false, stop: true, text: `${toName} has no received trades left today.` } };
     const pro = sMe.membership === 'pro', cap = num(sMe.tradeItems) || (pro ? 200 : 50), held = Math.floor(num(sMe.tokens));
-    const notes = [];
-    let tk = 0;
+    const filt = filtOn(), notes = [];
+    let tk = 0, more = false, total = 0;
+    const room = (k) => (want === 'all' ? Infinity : Math.max(0, want - (sent[k] || 0)));
     if (tokens) {
-        if (!pro) { if (!terms.length) return { ok: false, skip: true, text: `${fromName} isn't Pro — only Pro accounts can trade tokens.` }; notes.push('no tokens: not Pro'); }
+        const alone = !terms.length && !filt;
+        if (!pro) { if (alone) return { done: { ok: false, skip: true, text: `${fromName} isn't Pro — only Pro accounts can trade tokens.` } }; notes.push('no tokens: not Pro'); }
         else if (tokens === 'all') tk = held;
-        else if (tokens > held) { if (!terms.length) return { ok: false, skip: true, text: `${fromName} has only ${count(held)} tokens.` }; notes.push(`no tokens: it has only ${count(held)}`); }
+        else if (tokens > held) { if (alone) return { done: { ok: false, skip: true, text: `${fromName} has only ${count(held)} tokens.` } }; notes.push(`no tokens: it has only ${count(held)}`); }
         else tk = tokens;
     }
     const picks = picksFor(from);
     let items = picks.slice();
+    total += picks.length;
     const parts = picks.length ? [[PICKED, picks.slice()]] : [];   // [name, the items of it that go]
+    let favsLeft = 0;
     if (terms.length) {
         const found = await findAll(from, terms);
-        let favsLeft = 0;
         for (const f of found) {
             const inIt = new Set(items.map(x => x._id));
             const pool = (withFavs ? [...f.items, ...f.favItems].sort((a, b) => num(b.price) - num(a.price)) : f.items).filter(x => !inIt.has(x._id));
             if (!withFavs) favsLeft += f.favItems.length;
-            const take = pool.slice(0, want === 'all' ? pool.length : want);
-            if (want !== 'all' && want > pool.length && pool.length) notes.push(`only ${pool.length} × ${f.term}`);
+            const r = room(f.term), take = pool.slice(0, Math.min(pool.length, r));
+            total += Math.min(pool.length, r);
+            if (want !== 'all' && !sent[f.term] && want > pool.length && pool.length) notes.push(`only ${pool.length} × ${f.term}`);
             if (take.length) { items.push(...take); parts.push([f.term, take]); }
         }
-        if (items.length > cap) {
-            notes.push(`${cap} is the most per trade`);
-            items = items.slice(0, cap);
-            const kept = new Set(items.map(x => x._id));
-            for (const p of parts) p[1] = p[1].filter(x => kept.has(x._id));
-        }
-        if (!items.length && !tk) return { ok: false, skip: true, text: `${fromName} has no ${terms.map(t => `"${t}"`).join(' or ')} to send${favsLeft ? ` — ${favsLeft} favourited (switch on "Include favourited items" to send those)` : ''}.` };
     }
-    if (items.length > cap) {   // picked by hand, more than one trade holds
+    if (filt) {
+        const inIt = new Set(items.map(x => x._id)), r = room(FILT), space = Math.max(0, cap - items.length);
+        const f = await findFiltered(from, full ? Infinity : Math.min(r, space) + inIt.size + 1, withFavs);
+        const pool = (withFavs ? [...f.items, ...f.favItems] : f.items).filter(x => !inIt.has(x._id));
+        if (!withFavs) favsLeft += f.favItems.length;
+        const take = pool.slice(0, Math.min(r, pool.length));
+        total += take.length;
+        if (take.length) { items.push(...take); parts.push([FILT, take]); }
+    }
+    const everything = items.slice();
+    if (items.length > cap) {   // more than one trade holds: this one takes the first `cap`, a loop takes the rest
+        more = true;
         notes.push(`${cap} is the most per trade`);
         items = items.slice(0, cap);
         const kept = new Set(items.map(x => x._id));
         for (const p of parts) p[1] = p[1].filter(x => kept.has(x._id));
     }
-    if (!items.length && !tk) return { ok: false, skip: true, text: `${fromName} has no tokens to send.` };
-    const what = [...parts.filter(p => p[1].length).map(([t, l]) => t === PICKED ? `${l.length} picked item${l.length === 1 ? '' : 's'}` : `${l.length} × ${t}`), tk ? `${count(tk)} tokens` : ''].filter(Boolean).join(' + ');
+    if (!items.length && !tk) {
+        const favTxt = favsLeft ? ` — ${favsLeft} favourited (switch on "Include favourited items" to send those)` : '';
+        if (filt && !terms.length) return { done: { ok: false, skip: true, text: `${fromName} has nothing matching ${filterLabel()}${favTxt}.` } };
+        if (terms.length) return { done: { ok: false, skip: true, text: `${fromName} has no ${[...terms.map(t => `"${t}"`), ...(filt ? ['items matching ' + filterLabel()] : [])].join(' or ')} to send${favTxt}.` } };
+        return { done: { ok: false, skip: true, text: `${fromName} has no tokens to send.` } };
+    }
+    return { plan: { items, everything, tk, parts, notes, sMe, cap, more, total, left } };
+}
+const partsText = (parts) => parts.filter(p => p[1].length).map(([t, l]) => t === PICKED ? `${l.length} picked item${l.length === 1 ? '' : 's'}`
+    : t === FILT ? `${l.length} item${l.length === 1 ? '' : 's'} matching ${filterLabel()}` : `${l.length} × ${t}`);
+async function sendFromNow(from, to, accts, terms, want, tokens, withFavs, fromName, toName, sent = {}) {
+    const p = await planFrom(from, to, terms, want, tokens, withFavs, fromName, toName, sent);
+    if (p.done) return p.done;
+    const { items, tk, parts, notes, sMe, more, left } = p.plan;
+    const what = [...partsText(parts), tk ? `${count(tk)} tokens` : ''].filter(Boolean).join(' + ');
     const note = notes.length ? ` (${notes.join(', ')})` : '';
-    if (ctx.power.practice()) { ctx.log(`${fromName} → ${toName}: practice — would send ${what}`, 'info', from); return { ok: true, what, note }; }
+    const value = items.reduce((s2, x) => s2 + num(x.price), 0);
+    if (ctx.power.practice()) { ctx.log(`${fromName} → ${toName}: practice — would send ${what}`, 'info', from); return { ok: true, what, note, n: items.length, tk, value, more, left }; }
     const mark = (on) => { if (ctx.accounts.setBusy) for (const id of [from, to]) ctx.accounts.setBusy(id, on ? 'trading' : null); };
     mark(true);
     try {
         const rec = await execute(from, to, items, tk, sMe, fromName, toName);
         if (rec.ok && inv && inv.aid === from) { for (const x of items) inv.sel.delete(x._id); inv.items = inv.items.filter(x => !items.some(y => y._id === x._id)); }
-        return rec.ok ? { ok: true, what, note } : { ok: false, locked: LOCKED.test(rec.why || ''), text: `${fromName}: the trade didn't go through — ${rec.why}` };
+        if (rec.ok) for (const [t, l] of parts) sent[t] = (sent[t] || 0) + l.length;
+        return rec.ok ? { ok: true, what, note, n: items.length, tk, value, more, left: left == null ? null : left - 1 }
+            : { ok: false, locked: LOCKED.test(rec.why || ''), text: `${fromName}: the trade didn't go through — ${rec.why}` };
     } finally { mark(false); }
 }
 
+// --- Preview ----------------------------------------------------------------------------------------------------
+// What each picked sender would send, read without sending: the first trade's items (by name, with worth), and with
+// Loop on, everything it would take in all and about how many trades. Kept until the setup changes.
+let preview = null;   // { key, at, running, done, total, rows: [{ name, text, first, worth, all, trades }] }
+const oneKey = () => JSON.stringify([S('oneTo'), senderIds(), oneTerms(), S('oneCount'), S('oneTokens'), !!S('oneFavs'), filtOn() && filtKey(), !!S('oneLoop'),
+    senderIds().map(id => picksFor(id).length)]);
+const namesText = (items, max = 6) => {
+    const by = new Map();
+    for (const x of items) by.set(x.name || 'Item', (by.get(x.name || 'Item') || 0) + 1);
+    const l = [...by.entries()].map(([n, c]) => (c > 1 ? `${c} × ${n}` : n));
+    return l.slice(0, max).join(', ') + (l.length > max ? ` +${l.length - max} more` : '');
+};
+async function runPreview() {
+    const accts = new Map(ctx.accounts.list().map(a => [a.id, a]));
+    const to = S('oneTo'), ids = senderIds(), terms = oneTerms(), want = amount(S('oneCount'), true), tokens = amount(S('oneTokens'), false), withFavs = !!S('oneFavs');
+    const loop = !!S('oneLoop');
+    const me = preview = { key: oneKey(), at: Date.now(), running: true, open: true, loop, done: 0, total: ids.length, rows: [] };
+    for (const id of ids) {
+        if (ctx.stopping || preview !== me) return;
+        const name = accts.get(id).name;
+        try {
+            if (!accts.get(id).healthy) { me.rows.push({ name, text: "isn't clicking" }); continue; }
+            const p = await planFrom(id, to, terms, want, tokens, withFavs, name, accts.get(to).name, {}, true);
+            if (p.done) { me.rows.push({ name, text: p.done.text.replace(name + ' ', '').replace(/^: /, '') }); continue; }
+            const { items, everything, tk, parts, notes, cap, total } = p.plan;
+            const goes = everything, worth = goes.reduce((s2, x) => s2 + num(x.price), 0);
+            const trades = Math.max(1, Math.ceil(total / cap));   // without Loop, Send sends only the first; "Send in N trades" sends it all
+            me.rows.push({ name, items: goes, tk, worth, cap, notes: notes.filter(n => !/most per trade/.test(n)),
+                first: [namesText(items), tk ? `${count(tk)} tokens` : ''].filter(Boolean).join(' + '),
+                text: [...partsText(parts), tk ? `${count(tk)} tokens` : ''].filter(Boolean).join(' + ') + (notes.length ? ` (${notes.join(', ')})` : ''),
+                all: goes.length, trades });
+        } catch (e) { me.rows.push({ name, text: "couldn't read: " + e.message }); }
+        finally { me.done++; }
+    }
+    me.running = false; me.at = Date.now();
+}
+
 // The single trade: each picked sender, one after another, makes one trade to the receiver.
-async function sendOne() {
+async function sendOne(forceLoop = false) {
     const accts = new Map(ctx.accounts.list().map(a => [a.id, a]));
     const to = S('oneTo'), ids = senderIds(), toName = accts.get(to).name;
     const terms = oneTerms(), want = amount(S('oneCount'), true), tokens = amount(S('oneTokens'), false), withFavs = !!S('oneFavs');
-    const practice = ctx.power.practice();
-    const me = one = { t: Date.now(), running: true, done: 0, total: ids.length, results: [], text: ids.length > 1 ? `Getting it ready… 0/${ids.length}` : 'Getting it ready…' };
+    const practice = ctx.power.practice(), loop = forceLoop || !!S('oneLoop');
+    const me = one = { t: Date.now(), running: true, loop, done: 0, total: ids.length, results: [], text: ids.length > 1 ? `Getting it ready… 0/${ids.length}` : 'Getting it ready…' };
     const asked = practice ? [] : [...new Set([to, ...ids])];
     askFor(asked, `single trade to ${toName}`);
     try {
@@ -516,10 +665,28 @@ async function sendOne() {
         if (ctx.stopping || me.halt) break;
         let r;
         const head = ids.length > 1 ? `${practice ? 'Working it out' : 'Sending'}… ${me.done}/${ids.length} · ` : '';
-        try { r = await sendFrom(id, to, accts, terms, want, tokens, withFavs, (w) => { me.text = head + w[0].toUpperCase() + w.slice(1) + '…'; }, () => me.halt); } catch (e) { r = { ok: false, text: `${accts.get(id).name}: ${e.message}` }; }
+        const name = accts.get(id).name, sent = {};
+        // Loop mode: the same sender trades again while there's more to send (live only: practice moves nothing), until
+        // nothing's left, Stop, LOOP_MAX trades, or the receiver is down to the received trades the Limits card keeps.
+        let tk = tokens, n = 0, items = 0, tks = 0, worth = 0, last = '', why = '', lastOk = null;
+        for (;;) {
+            const lead = loop && n ? `${name}: trade ${n + 1} · ` : '';
+            try { r = await sendFrom(id, to, accts, terms, want, tk, withFavs, (w) => { me.text = head + lead + w[0].toUpperCase() + w.slice(1) + '…'; }, () => me.halt, sent); }
+            catch (e) { r = { ok: false, text: `${name}: ${e.message}` }; }
+            if (!r.ok) { if (n) { const f = r; why = f.stop ? f.text.replace(/\.$/, '') : f.skip ? '' : `trade ${n + 1} failed: ${f.text.replace(name + ': ', '')}`; r = { ...lastOk, stop: f.stop }; } break; }
+            n++; lastOk = r; items += r.n || 0; tks += r.tk || 0; worth += r.value || 0; last = r.note; tk = 0;   // tokens go in the first trade only
+            if (!loop || practice || !r.more || me.halt || ctx.stopping || n >= LOOP_MAX) { if (loop && !practice && r.more && n >= LOOP_MAX) why = `stopped after ${LOOP_MAX} trades`; break; }
+            if (r.left != null && r.left <= Math.max(1, num(S('dailyCap')))) { why = `${toName} is down to ${r.left} received trades today`; break; }
+            me.text = head + `${name}: trade ${n + 1}…`;
+        }
         giveBack(asked.filter(x => x === id && x !== to));
-        const name = accts.get(id).name;
-        me.results.push({ name, ...r, text: r.ok ? `${practice ? 'would send' : 'sent'} ${r.what}${r.note}` : r.text });
+        const multi = n > 1;
+        const okText = !r.ok ? r.text : multi ? `sent ${count(items)} item${items === 1 ? '' : 's'}${tks ? ` + ${count(tks)} tokens` : ''} in ${n} trades${worth ? ` ($${count(worth)})` : ''}${why ? ` — ${why}` : ''}`
+            : `${practice ? 'would send' : 'sent'} ${r.what}${r.note}${loop && practice && r.more ? ' — Loop sends the rest in more trades' : ''}${why ? ` — ${why}` : ''}`;
+        if (multi) r = { ...r, what: `${count(items)} item${items === 1 ? '' : 's'}${tks ? ` + ${count(tks)} tokens` : ''} in ${n} trades`, note: why ? ` (${why})` : '' };
+        else if (r.ok && n === 1 && why) r = { ...r, note: (r.note || '') + ` (${why})` };
+        else if (r.ok && n === 1 && loop && practice && r.more) r = { ...r, note: (r.note || '') + ' — Loop sends the rest in more trades' };
+        me.results.push({ name, ...r, text: okText });
         me.done++;
         if (ids.length > 1) me.text = `${practice ? 'Working it out' : 'Sending'}… ${me.done}/${ids.length}`;
         if (r.stop) break;
@@ -542,6 +709,9 @@ async function sendOne() {
     // Keep the look-up's numbers right for the accounts that changed.
     if (!practice && ok.length && lookup && !lookup.running && terms.length && lookup.key === termsKey(terms)) {
         for (const id of [to, ...ids]) { try { lookup.counts[id] = await countOn(id, lookup.terms); } catch (_) {} }
+    }
+    if (!practice && ok.length && lookup && !lookup.running && lookup.filt && lookup.key === filtKey()) {
+        for (const id of [to, ...ids]) { try { lookup.counts[id] = await countFiltered(id); } catch (_) {} }
     }
 }
 
@@ -784,6 +954,16 @@ module.exports = {
         });
         // Stop: the trade in flight finishes (a half-made trade would be left stuck), nothing after it starts.
         ctx.panel.action('checkStop', () => { if (!running) return { message: 'No route run going.' }; routeHalt = true; return { message: 'Stopping after the current trade.' }; });
+        ctx.panel.action('onePreview', () => {
+            const why = oneProblem();
+            if (why && !/^A trade is going/.test(why)) return { ok: false, error: why };
+            if (preview && preview.running && preview.key === oneKey()) return { message: 'Already looking.' };
+            runPreview().catch(() => {});
+            return { message: 'Reading what each sender would send…' };
+        });
+        ctx.panel.action('pvClose', () => { if (preview) preview.open = false; return {}; });
+        ctx.panel.action('pvOpen', () => { if (!preview || preview.key !== oneKey()) return { ok: false, error: 'The setup changed — press Preview again.' }; preview.open = true; return {}; });
+        ctx.panel.action('pvPick', () => ({}));   // the cards are only to look at
         ctx.panel.action('oneStop', () => { if (!(one && one.running)) return { message: 'Nothing is sending.' }; one.halt = true; return { message: 'Stopping after the current trade.' }; });
         ctx.panel.action('fanStop', () => { if (!(fan && fan.running)) return { message: 'Nothing is sending.' }; fan.halt = true; return { message: 'Stopping after the current trade.' }; });
         ctx.panel.action('tradesCheck', () => {
@@ -802,6 +982,11 @@ module.exports = {
         ctx.panel.action('tradeFinish', settle('finish'));
         ctx.panel.action('tradeDelete', settle('delete'));
         ctx.panel.action('oneLookup', () => {
+            if (filtOn()) {
+                if (lookup && lookup.running && lookup.key === filtKey()) return { message: 'Already looking.' };
+                lookUpFiltered().catch(() => {});
+                return { message: `Looking for items matching ${filterLabel()} on every account…` };
+            }
             const terms = oneTerms();
             if (!terms.length) return { ok: false, error: 'Type an item name first.' };
             if (lookup && lookup.running && lookup.key === termsKey(terms)) return { message: 'Already looking.' };
@@ -824,12 +1009,13 @@ module.exports = {
         ctx.panel.action('onePreset', (id) => {
             const p = PRESETS.find(x => x.id === id);
             if (!p) return { ok: false, error: 'No such preset.' };
-            if (p.id === 'custom') return { message: 'Type the item and the amounts below.' };
-            for (const [k, v] of [['oneItem', p.item ? [p.item] : []], ['oneCount', ''], ['oneTokens', p.tokens]]) {
+            if (p.id === 'custom') { ctx.settings.set('oneFilt', false); return { message: 'Type the item and the amounts below.' }; }
+            for (const [k, v] of [['oneFilt', !!p.filt], ['oneItem', p.item ? [p.item] : []], ['oneCount', ''], ['oneTokens', p.tokens]]) {
                 const r = ctx.settings.set(k, v);
                 if (r && r.ok === false) return r;
             }
             if (p.item && !(lookup && lookup.running && lookup.key === termsKey([p.item]))) lookUp([p.item]).catch(() => {});
+            if (p.filt) return { message: 'Set the filters below — each sender sends everything they match.' };
             return { message: p.item ? `${p.title}: looking for "${p.item}" on every account…` : `${p.title}: now pick who sends.` };
         });
         ctx.panel.action('oneToMain', () => {
@@ -843,7 +1029,7 @@ module.exports = {
             const m = mainId();
             if (!m) return { ok: false, error: "Your main account isn't one of the hub's accounts." };
             const routes = S('routes') || [];
-            const r = ctx.settings.set('routes', [...routes, { to: m, from: { all: true, ids: [] }, tokens: false, keepTokens: 0, minTokens: 1000000, terminals: 'none', skins: false, skinsOver: 0, names: '', skipFavorites: true, minItems: 1 }]);
+            const r = ctx.settings.set('routes', [...routes, { to: m, from: { all: true, ids: [] }, tokens: false, keepTokens: 0, minTokens: 1000000, terminals: 'none', skins: false, skinsOver: 0, names: '', filt: false, skipFavorites: true, minItems: 1 }]);
             return r && r.ok === false ? r : { message: 'Route to your main added (from all accounts) — switch on what it sends.' };
         });
         const setFan = (ids) => { ctx.settings.set('fanTo', { ids }); return { ok: true }; };
@@ -884,6 +1070,19 @@ module.exports = {
             return { wizard: { id: 'one', step: null }, message: ctx.power.practice() ? 'Practice — working out what it would send…' : 'Sending the trade…' };
         });
         ctx.panel.action('invMore', () => { if (inv) invLoad(true); return {}; });
+        // Pick all matching: every item the filters show (more pages read as needed), up to what one trade holds;
+        // favourited ones only with the switch on.
+        ctx.panel.action('invPickAll', async () => {
+            if (!inv) return { ok: false, error: 'Open an inventory first.' };
+            const cap = tradeCap(inv.aid), ok = (x) => S('oneFavs') || !favorite(x);
+            await invLoadUntil(() => inv.items.filter(ok).length >= cap, PAGES_MAX);
+            const pick = inv.items.filter(ok).slice(0, cap);
+            inv.sel.clear();
+            for (const x of pick) inv.sel.set(x._id, x);
+            const favs = S('oneFavs') ? 0 : inv.items.filter(x => favorite(x)).length;
+            const more = inv.items.filter(ok).length > cap || inv.page < inv.pages;
+            return { message: `${count(pick.length)} picked${more && pick.length === cap ? ` — ${cap} is the most one trade holds` : ''}${favs ? ` · ${favs} favourited left out` : ''}.` };
+        });
         ctx.panel.action('invClear', () => { if (inv) inv.sel.clear(); return {}; });
         // Reset: every filter back to Any and the search cleared (the sort stays), as the game's Reset does.
         ctx.panel.action('invReset', () => { for (const k of ['invSearch', ...INV_FILTERS.map(x => x[0])]) ctx.settings.set(k, ''); if (inv && inv.open) invLoad(false); return {}; });
@@ -917,26 +1116,36 @@ module.exports = {
             return {};
         });
         ctx.settings.onChange((k) => { if (INV_KEYS.includes(k) && inv && inv.open && inv.query !== invQuery()) invLoad(false); });
-        ctx.panel.action('oneSend', () => {
+        // Sends by inventory filters always go through the preview: Send there (or here once it's read) sends.
+        const sendNow = (all) => {
             const why = oneProblem();
             if (why) return { ok: false, error: why };
-            sendOne().catch(() => {});
-            return { message: ctx.power.practice() ? 'Practice — working out what it would send…' : 'Sending the trade…' };
-        });
+            if (filtOn() && !(preview && preview.key === oneKey() && !preview.running)) {
+                if (!(preview && preview.running && preview.key === oneKey())) runPreview().catch(() => {});
+                else preview.open = true;
+                return { message: 'Look it over first — Send is in the preview.' };
+            }
+            preview = null;   // what it showed is about to move
+            sendOne(all).catch(() => {});
+            return { message: ctx.power.practice() ? 'Practice — working out what it would send…' : all ? 'Sending everything, trade after trade…' : 'Sending the trade…' };
+        };
+        ctx.panel.action('oneSend', () => sendNow(false));
+        ctx.panel.action('oneSendAll', () => sendNow(true));
         ctx.panel.tab('Trader', () => {
             const t = today(), practice = ctx.power.practice(), live = ctx.power.live(), routes = S('routes') || [];
             const accts = new Map(ctx.accounts.list().map(a => [a.id, a]));
             const isPro = (id) => { const me = ctx.accounts.stats(id); return !!(me && me.membership === 'pro'); };
             const sendersOf = (r) => [...accts.values()].filter(a => a.id !== r.to && (r.from.all || (r.from.ids || []).includes(a.id)));
-            const sendsSomething = (r) => r.tokens || r.terminals !== 'none' || (r.skins && (num(r.skinsOver) > 0 || String(r.names || '').trim()));
-            const short = (n) => (n >= 1e6 ? +(n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? +(n / 1e3).toFixed(1) + 'k' : String(n));
+            const sendsSomething = (r) => r.tokens || r.terminals !== 'none' || r.filt || (r.skins && (num(r.skinsOver) > 0 || String(r.names || '').trim()));
+            const short = (n) => (n >= 1e6 ? +(n / 1e6).toFixed(2) + 'M' : n >= 1e3 ? +(n / 1e3).toFixed(1) + 'k' : String(+(+n).toFixed(2)));
             const summary = (r) => {
                 const to = accts.get(r.to);
                 if (!to) return 'pick who receives';
                 const from = sendersOf(r), fromTxt = r.from.all ? 'all accounts' : !from.length ? 'no senders yet' : from.length <= 2 ? from.map(a => a.name).join(', ') : `${from.length} accounts`;
                 const what = [r.tokens && `tokens${num(r.keepTokens) ? ` (keep ${short(num(r.keepTokens))})` : ''}`,
                     r.terminals !== 'none' && ({ all: 'terminals', genesis: 'Genesis terminals', deadhand: 'Dead Hand terminals' })[r.terminals],
-                    r.skins && (num(r.skinsOver) > 0 ? `skins ≥ $${short(num(r.skinsOver))}` : ''), r.skins && String(r.names || '').trim() && `"${String(r.names).trim()}"`].filter(Boolean);
+                    r.skins && (num(r.skinsOver) > 0 ? `skins ≥ $${short(num(r.skinsOver))}` : ''), r.skins && String(r.names || '').trim() && `"${String(r.names).trim()}"`,
+                    r.filt && `items matching ${routeFilterLabel(r) || 'no filter (whole inventory)'}`].filter(Boolean);
                 return `${fromTxt} → ${to.name} · ${what.length ? what.join(' · ') : 'nothing to send yet'}`;
             };
             const problems = [];
@@ -953,7 +1162,7 @@ module.exports = {
             const plans = practice ? Object.entries(state.plans || {}).filter(([k]) => pairs.has(k)).map(([, x]) => x).sort((a, b) => b.t - a.t) : [];
             const every = Math.max(5, num(S('everyMin')));
             // Single trade: presets, then one or more senders; the list shows each account's tokens and, after a look-up, how many of the item it has.
-            const oneTo = S('oneTo'), terms = oneTerms(), term = termsLabel(terms), withFavs = !!S('oneFavs');
+            const oneTo = S('oneTo'), terms = oneTerms(), term = termsLabel(terms), withFavs = !!S('oneFavs'), filt = filtOn();
             const oneTokens = amount(S('oneTokens'), false), oneCount = amount(S('oneCount'), true);
             const { lk, has, meOf, withIt, listed, picked } = oneView();
             // One line per item the account has, by its own name; the panel folds more than 3 behind "Show all".
@@ -978,9 +1187,10 @@ module.exports = {
             const fromTxt = !fromIds.length ? '?' : fromIds.length === 1 ? accts.get(fromIds[0]).name : `${fromIds.length} accounts`;
             const tokTxt = oneTokens === 'all' ? 'all tokens' : oneTokens > 0 ? `${count(oneTokens)} tokens` : '';
             const pickN = fromIds.reduce((s, id) => s + picksFor(id).length, 0);
-            const oneWhat = [pickN ? `${pickN} picked item${pickN === 1 ? '' : 's'}` : '', term ? `${oneCount === 'all' ? 'all' : Number.isNaN(oneCount) ? '?' : count(oneCount)}${terms.length > 1 ? ' of each' : ''} × ${term}` : '', tokTxt].filter(Boolean).join(' + ');
+            const oneWhat = [pickN ? `${pickN} picked item${pickN === 1 ? '' : 's'}` : '', filt ? `${oneCount === 'all' ? 'everything' : Number.isNaN(oneCount) ? '?' : 'up to ' + count(oneCount)} matching ${filterLabel()}` : '', term ? `${oneCount === 'all' ? 'all' : Number.isNaN(oneCount) ? '?' : count(oneCount)}${terms.length > 1 ? ' of each' : ''} × ${term}` : '', tokTxt].filter(Boolean).join(' + ');
             const each = fromIds.length > 1 ? ' each' : '';
             const oneWhy = oneProblem(), preset = presetNow();
+            const pv = preview && preview.key === oneKey() ? preview : null;
             // Picking by hand: the one sender's inventory in a modal; what's picked shows here.
             const invA = inv && accts.get(inv.aid), invPicked = inv ? [...inv.sel.values()] : [];
             const invValue = invPicked.reduce((s, x) => s + num(x.price), 0);
@@ -997,7 +1207,7 @@ module.exports = {
                     ...(practice ? {} : { confirm: `Send ${oneWhat} from ${invA.name} to ${toA ? toA.name : '?'} now? A trade can't be undone.` }) };
                 return { title: `${invA.name}'s inventory`, close: 'invClose', blocks: [
                     // One bar: the search, then Done / Clear picked / Reset filters; under it the game's filters.
-                    { type: 'bar', keys: ['invSearch'], items: [sendBtn, { label: 'Check another account', action: 'invAnother' }, { label: 'Done', action: 'invClose' }, ...(invPicked.length ? [{ label: 'Clear picked', action: 'invClear' }] : []), ...(invFiltered() ? [{ label: 'Reset filters', action: 'invReset' }] : [])],
+                    { type: 'bar', keys: ['invSearch'], items: [sendBtn, { label: invFiltered() ? 'Pick all matching' : 'Pick all', action: 'invPickAll' }, { label: 'Check another account', action: 'invAnother' }, { label: 'Done', action: 'invClose' }, ...(invPicked.length ? [{ label: 'Clear picked', action: 'invClear' }] : []), ...(invFiltered() ? [{ label: 'Reset filters', action: 'invReset' }] : [])],
                         text: [sendWhy && !(one && one.running) ? (/^Pick what to send/.test(sendWhy) ? 'Click items to pick them for the trade' : `To send: ${sendWhy.replace(/\.$/, '')}`) : '', `${count(invPicked.length)} picked${invValue ? ` · $${short(invValue)}` : ''}`, `up to ${cap} in one trade`,
                             inv.count ? `${count(inv.count)} item${inv.count === 1 ? '' : 's'}${invFiltered() ? ' match' : ''}` : '',
                             lockFavs ? 'favourited ones locked' : ''].filter(Boolean).join(' · ') },
@@ -1008,10 +1218,43 @@ module.exports = {
                     ...(inv.page < inv.pages ? [{ type: 'buttons', items: [{ label: inv.loading ? 'Loading…' : `Load more (${count(inv.items.length)} of ${count(inv.count)})`, action: 'invMore' }] }] : []),
                 ] };
             })() : null;
-            const oneSendBtns = one && one.running && !practice && one.total > 1
+            const oneSendBtns = one && one.running && !practice && (one.total > 1 || one.loop)
                 ? [{ label: one.halt ? 'Stopping…' : 'Stop', action: 'oneStop', danger: true, disabled: !!one.halt }]
                 : [{ label: practice ? 'Practice send' : fromIds.length > 1 ? `Send ${fromIds.length} trades` : 'Send trade', action: 'oneSend', primary: true, disabled: !!oneWhy,
                     ...(practice ? {} : { confirm: fromIds.length > 1 ? `Send ${fromIds.length} trades now? Trades can't be undone.` : "Send this trade now? A trade can't be undone." }) }];
+            // Preview: an overlay like the Opener's drops — per sender a row of item cards (picture, wear, price), the same
+            // item stacked ×N, most valuable first; the page keeps a one-line summary with Open preview.
+            const pvItems = pv ? pv.rows.reduce((t, r) => t + (r.all || 0), 0) : 0, pvWorth = pv ? pv.rows.reduce((t, r) => t + (r.worth || 0), 0) : 0;
+            const pvTk = pv ? pv.rows.reduce((t, r) => t + (r.tk || 0), 0) : 0;
+            const pvLine = !pv ? '' : pv.running ? `Previewing… ${pv.done}/${pv.total} senders read` : `Preview: ${count(pvItems)} item${pvItems === 1 ? '' : 's'}${pvTk ? ` + ${count(pvTk)} tokens` : ''} worth $${short(pvWorth)} in all — nothing was sent.`;
+            const pvCards = (list) => {
+                const by = new Map();
+                for (const x of list) { const k = String(x.name || 'Item') + '|' + (favorite(x) ? 'f' : ''); if (!by.has(k)) by.set(k, []); by.get(k).push(x); }
+                return [...by.values()].map(g => ({ g, worth: g.reduce((t, x) => t + num(x.price), 0) })).sort((a, b) => b.worth - a.worth).map(({ g, worth }) => {
+                    const c = invCard1(g[0], false), one1 = g.length === 1;
+                    return { ...c, id: g[0]._id, on: false, price: '$' + worth.toLocaleString('en-US', { maximumFractionDigits: 2 }),
+                        detail: one1 ? c.detail : c.detail.split(' · ')[0], ...(one1 ? {} : { qty: { n: 0, of: g.length } }),
+                        hint: `${g[0].name || 'Item'}${one1 ? '' : ` — ${g.length} of them`}` };
+                });
+            };
+            const pvMulti = !!pv && !pv.running && !pv.loop && pv.rows.some(r => r.trades > 1);
+            const pvNeed = pv ? pv.rows.reduce((t, r) => t + (r.items && r.items.length ? r.trades || 1 : 0), 0) : 0;
+            const pvBtns = one && one.running ? oneSendBtns : pvMulti ? [
+                { label: `${practice ? 'Practice send' : 'Send'} in ${pvNeed} trades`, action: 'oneSendAll', primary: true, disabled: !!oneWhy,
+                    ...(practice ? {} : { confirm: `Send everything shown in ${pvNeed} trades, one after another? Trades can't be undone.` }) },
+                { label: fromIds.length > 1 ? 'Only the first trade each' : 'Only the first trade', action: 'oneSend', disabled: !!oneWhy,
+                    ...(practice ? {} : { confirm: fromIds.length > 1 ? `Send only the first trade from each of ${fromIds.length} senders? Trades can't be undone.` : "Send only the first trade? A trade can't be undone." }) },
+            ] : oneSendBtns;
+            const pvModal = pv && pv.open ? { title: practice ? 'Preview — practice mode' : 'Preview', close: 'pvClose', blocks: [
+                { type: 'bar', items: [...(pv.running ? [] : pvBtns.map(b => ({ ...b, disabled: b.disabled || !!oneWhy }))), { label: 'Close', action: 'pvClose' }],
+                    text: [pvLine, toA ? `to ${toA.name}` : '', pv.loop ? 'Loop: everything below, over as many trades as it takes'
+                        : pvMulti ? 'more than one trade holds — Send in trades sends it all' : 'one trade per sender'].filter(Boolean).join(' · ') },
+                ...pv.rows.map(r => ({ type: 'section',
+                    title: `${r.name} · ${r.items ? `${count(r.all)} item${r.all === 1 ? '' : 's'}${r.tk ? ` + ${count(r.tk)} tokens` : ''} · $${short(r.worth)}${r.trades > 1 ? ` · ${r.trades} trades (${count(r.cap)} each)` : ''}` : r.text}`,
+                    ...(r.notes && r.notes.length ? { text: r.notes.join(' · ') } : {}),
+                    blocks: r.items && r.items.length ? [{ type: 'items', action: 'pvPick', ...(pv.rows.length > 1 ? { reel: true } : {}), items: pvCards(r.items) }] : [] })),
+                ...(pv.running ? [{ type: 'text', text: 'Reading the next sender…' }] : []),
+            ] } : null;
             const oneCard = { type: 'section', title: 'Single trade', blocks: [
                 { type: 'wizard', id: 'one', steps: [
                     { id: 'to', title: 'Send to', done: !!toA, warn: toA ? null : 'pick who receives',
@@ -1022,14 +1265,14 @@ module.exports = {
                     { id: 'from', title: 'Send from', done: fromIds.length > 0,
                         buttons: soleA ? [{ label: 'View inventory', action: 'invOpen', arg: soleA.id }] : [], warn: fromIds.length ? null : listed.length ? 'pick one or more senders' : 'add another account to trade between them',
                         summary: fromIds.length ? (fromIds.length <= 3 ? fromIds.map(id => (accts.get(id) || {}).name).join(', ') : `${fromIds.length} accounts`) : '',
-                        text: term ? `Pick one or more. Look up shows how many of ${terms.length > 1 ? 'the items' : 'the item'} each account has.` : "Pick one or more. Each account's tokens are shown.",
+                        text: filt ? 'Pick one or more. Look up shows how many items matching the filters each account has.' : term ? `Pick one or more. Look up shows how many of ${terms.length > 1 ? 'the items' : 'the item'} each account has.` : "Pick one or more. Each account's tokens are shown.",
                         blocks: [
                             { type: 'buttons', items: [
-                                ...(term ? [{ label: lk && lk.running ? `Looking… ${lk.done}/${lk.total}` : lk ? 'Look up again' : 'Look up', action: 'oneLookup' }] : []),
+                                ...(term || filt ? [{ label: lk && lk.running ? `Looking… ${lk.done}/${lk.total}` : lk ? 'Look up again' : 'Look up', action: 'oneLookup' }] : []),
                                 ...(listed.length ? [{ label: withIt.length ? `All with it (${listed.length})` : `All (${listed.length})`, action: 'oneAll' }] : []),
                                 ...(fromIds.length ? [{ label: 'None', action: 'oneNone' }] : []),
                             ] },
-                            ...(lk && !lk.running ? [{ type: 'text', text: withIt.length ? `${count(lkTotal)} × ${termsLabel(lk.terms)} on ${withIt.length} account${withIt.length === 1 ? '' : 's'} — only those are listed${withFavs ? ', favourited ones included' : ' (favourited ones stay put)'}.`
+                            ...(lk && !lk.running ? [{ type: 'text', text: lk.filt ? (withIt.length ? `${count(lkTotal)} ${termsLabel(lk.terms)} on ${withIt.length} account${withIt.length === 1 ? '' : 's'} — only those are listed${withFavs ? ', favourited ones included' : ' (favourited ones stay put)'}.` : `No account has items matching ${filterLabel()}${withFavs ? '' : ' (favourited ones are left out)'}.`) : withIt.length ? `${count(lkTotal)} × ${termsLabel(lk.terms)} on ${withIt.length} account${withIt.length === 1 ? '' : 's'} — only those are listed${withFavs ? ', favourited ones included' : ' (favourited ones stay put)'}.`
                                 : `No account has ${lk.terms.map(t => `"${t}"`).join(' or ')} to send${withFavs ? '' : ' (favourited ones are left out)'}.` }] : []),
                             ...(fromIds.length ? [{ type: 'text', text: `${fromIds.length} picked.` }] : []),
                             listed.length ? { type: 'picker', action: 'onePick', tag: 'Sender', grid: true, multi: true, items: listed.map(a => ({ id: a.id, on: picked.has(a.id), title: a.name, lines: itemLines(a), meta: meta(a) })) }
@@ -1039,16 +1282,30 @@ module.exports = {
                         text: 'Pick a preset, or Custom and type it. Each sender sends its own.',
                         blocks: [
                             { type: 'picker', action: 'onePreset', tag: 'Picked', grid: true, items: PRESETS.map(p => ({ id: p.id, on: p.id === preset, title: p.title, sub: p.sub })) },
-                            { type: 'settings', keys: ['oneItem', 'oneCount', 'oneFavs', 'oneTokens'] },
-                            { type: 'text', text: 'Items: type a name and press Enter (or click away), then the next. Click a name to take it out.' },
+                            ...(filt ? [
+                                { type: 'text', text: 'Each sender sends everything these filters match, in the sort order, up to its trade limit (50 basic, 200 Pro). They are the same filters as View inventory.' },
+                                { type: 'settings', keys: ['invSearch'] },
+                                { type: 'settings', keys: INV_KEYS.slice(1), filters: true },
+                                ...(invFiltered() ? [{ type: 'buttons', items: [{ label: 'Reset filters', action: 'invReset' }] }] : [{ type: 'notice', level: 'warn', text: 'No filter set: each sender sends its whole inventory (up to its trade limit).' }]),
+                                ...(filtFavsOnly() ? [{ type: 'notice', level: 'warn', text: 'Favorites: Only picks favourited items — they stay put unless "Include favourited items" is on.' }] : []),
+                                { type: 'settings', keys: ['oneCount', 'oneFavs', 'oneTokens', 'oneLoop'] },
+                            ] : [
+                                { type: 'settings', keys: ['oneItem', 'oneCount', 'oneFavs', 'oneTokens', 'oneLoop'] },
+                                { type: 'text', text: 'Items: type a name and press Enter (or click away), then the next. Click a name to take it out.' },
+                            ]),
                             { type: 'text', text: 'Tokens take 500K, 2.5M, 1B or "all", and only go from Pro senders (a basic sender still sends the item).' },
                             ...invBlocks,
                         ] },
                 ],
                 finish: { title: one && one.running ? 'Sending…' : oneWhy ? 'Send' : `Send ${oneWhat}${each}`, ready: !oneWhy, next: 'Review and send',
                     text: oneWhy && !(one && one.running) ? oneWhy : `${oneWhat}${each} from ${fromTxt} to ${toA ? toA.name : '?'}${fromIds.length > 1 ? ` — ${fromIds.length} trades, one after another` : ''}.`,
-                    buttons: oneSendBtns,
-                    blocks: practice ? [{ type: 'text', text: 'Practice mode: it only says what it would send. Set the mode to Live (top card) to send for real.' }] : [] } },
+                    buttons: filtOn() && !(one && one.running) ? [{ label: pv && pv.running ? `Previewing… ${pv.done}/${pv.total}` : 'Preview and send', action: 'onePreview', primary: true, disabled: !!oneWhy }]
+                        : [...(oneWhy || (one && one.running) ? [] : [{ label: pv && pv.running ? `Previewing… ${pv.done}/${pv.total}` : pv ? 'Preview again' : 'Preview', action: 'onePreview' }]), ...oneSendBtns],
+                    blocks: [
+                        ...(S('oneLoop') ? [{ type: 'text', text: `Loop: each sender keeps trading until nothing's left (up to ${LOOP_MAX} trades, and stops while ${toA ? toA.name : 'the receiver'} still has the received trades the Limits card keeps).` }] : []),
+                        ...(practice ? [{ type: 'text', text: 'Practice mode: it only says what it would send. Set the mode to Live (top card) to send for real.' }] : [])] } },
+                // The preview sits on the page, under the steps (a button in the Review window closes it).
+                ...(pv ? [{ type: 'notice', level: '', text: pvLine }, ...(pv.open ? [] : [{ type: 'buttons', items: [{ label: 'Open preview', action: 'pvOpen' }] }])] : []),
                 ...(one ? [{ type: 'notice', level: one.running ? '' : one.ok ? 'ok' : 'warn', text: one.text }] : []),
                 ...(one && one.results && one.results.length ? [{ type: 'table', wrap: true, columns: ['Sender', practice ? 'Would' : 'Result'], rows: one.results.map(r => [r.name, r.text]) }] : []),
             ] };
@@ -1107,7 +1364,7 @@ module.exports = {
                 ] };
             const accountLines = Object.fromEntries([...accts.values()].map(a => { const me = meOf(a.id);
                 return [a.id, [me.tokens != null ? `${short(num(me.tokens))} tokens` : 'Tokens not read yet', busy.has(a.id) ? 'Trading now' : me.membership === 'pro' ? 'Pro' : me.membership ? 'Not Pro (no tokens out)' : '']]; }));
-            return { modal: invModal, accountLines, blocks: [
+            return { modal: invModal || pvModal, accountLines, blocks: [
                 { type: 'card', id: 'power', toggle: 'on', toggleDisabled: practice ? 'Set the mode to Live first' : null, bodyWhenOff: true, open: !live,
                     title: live ? (busy.size ? 'Trader — on, trading now' : 'Trader — on') : 'Trader — off',
                     summary: !routes.length ? 'add a route first' : practice ? 'practice: nothing is sent unless you press Practice run' : `live · ${routes.length} route${routes.length === 1 ? '' : 's'}, every ${every} min`,

@@ -1,5 +1,9 @@
 {
   "_how": "One entry per released version, newest first. Each line is one bullet; **bold** works. Shown once after an update, and used as the release notes on GitHub. npm run release refuses a version with no entry here.",
+  "1.2.19": [
+    "**Add account works when this PC is full** — the sign-in window now always opens on this PC's own connection (like imports), and the account then starts on the least used route with room, proxies included. Before, it could sign in through a proxy and never register.",
+    "Small fix: the log line after the hub restarted itself reads properly."
+  ],
   "1.2.18": [
     "**Discord webhooks** — a walkthrough in Settings > Discord webhooks sets up three channels: **#zsb-drops** (the Opener's favourited drops), **#zsb-alerts** and **#zsb-daily**. Each webhook is tested as you save it, and kept sealed on this computer.",
     "**Alerts** — posts when accounts need a look for over a minute (and when they're fine again), when a plugin run stops with a reason, and when the hub restarted after a crash. Pick which ones.",
