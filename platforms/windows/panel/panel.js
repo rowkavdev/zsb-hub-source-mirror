@@ -735,6 +735,12 @@
 
     const BUSY_CODES = new Set(['CC-AUTH-05', 'CC-AUTH-07', 'CC-SLOW-01']);
     const busyWhy = (r) => T('busy.why.' + ((r && r.why) || 'unhealthy'), { what: (r && r.what) || '' });
+    // What a bulk busy test did: how many wait their turn, and how many were left out and why.
+    function busyManyText(r) {
+        const skipped = Object.entries(r.skipped || {}).map(([why, n]) => T('busy.many.skip.' + why, { n })).join(', ');
+        const head = r.queued ? T('busy.many.queued', { n: r.queued }) : T('busy.many.none');
+        return skipped ? head + ' · ' + T('busy.many.skipped', { list: skipped }) : head;
+    }
     function issueHtml(a) {
         // Waiting for a slot is said once by the card's own state and the note above the cards, not as a red box on each.
         const list = a.issues.filter(i => !(WAIT_CODES.has(i.code) && waitingForSlot(a))).map(i => `
@@ -742,8 +748,9 @@
               <div><span class="code">${esc(i.code)}</span> ${esc(issueText(i))}${(i.code === 'CC-AUTH-06' || i.code === 'CC-AUTH-08') && i.detail ? ` <span class="muted">${esc(i.detail)}</span>` : ''}</div>
               <div class="fix">${esc(issueFix(i))}</div>
               ${i.code === 'CC-AUTH-08' ? `<div class="issue-btns"><button class="small danger" data-act="remove" data-id="${esc(a.id)}">${H('issue.removeDupe')}</button></div>` : ''}
-              ${i.code === 'CC-AUTH-05' || i.code === 'CC-AUTH-06' || i.code === 'CC-AUTH-07' || i.code === 'CC-SLOW-01' ? `<div class="issue-btns">${issueAction({ code: i.code, acct: a.id })}${BUSY_CODES.has(i.code) && !a.test && a.startedAt ? ` <button class="small" data-act="busyTest" data-id="${esc(a.id)}" title="${esc(T('busy.tip'))}">${H(i.code === 'CC-AUTH-07' ? 'busy.again' : 'busy.btn')}</button>` : ''}</div>` : ''}
+              ${i.code === 'CC-AUTH-05' || i.code === 'CC-AUTH-06' || i.code === 'CC-AUTH-07' || i.code === 'CC-SLOW-01' ? `<div class="issue-btns">${issueAction({ code: i.code, acct: a.id })}${BUSY_CODES.has(i.code) && !a.test && !a.testQueued && a.startedAt ? ` <button class="small" data-act="busyTest" data-id="${esc(a.id)}" title="${esc(T('busy.tip'))}">${H(i.code === 'CC-AUTH-07' ? 'busy.again' : 'busy.btn')}</button>` : ''}</div>` : ''}
             </div>`);
+        if (a.testQueued && !a.test) list.unshift(`<div class="issue"><div><b>${H('busy.queued')}</b></div><div class="fix">${H('busy.queued.desc')}</div><div><button class="small" data-act="busyStop" data-id="${esc(a.id)}">${H('busy.stop')}</button></div></div>`);
         if (a.test) list.unshift(`<div class="issue warn"><div><b>${H('busy.running')}</b></div><div class="fix">${H('busy.running.desc')}</div><div><button class="small" data-act="busyStop" data-id="${esc(a.id)}">${H('busy.stop')}</button></div></div>`);
         if (a.status === 'needs-you') list.unshift(`<div class="issue warn"><div><span class="code">CC-CF-01</span> ${H('card.cf.waiting')}</div><div><button class="small primary" data-act="openCheck" data-route="${esc(a.route || 'direct')}">${H('card.cf.open')}</button></div></div>`);
         return list.join('');
@@ -796,7 +803,7 @@
         setHtml(null, a.badges.map(b => `<span class="badge">${esc(b)}</span>`).join(''), f.badges);
         setHtml(null, issueHtml(a), f.issues);
 
-        f.menuBusy.hidden = !running || !!a.test;
+        f.menuBusy.hidden = !running || !!a.test || !!a.testQueued;
         f.segAuto.className = a.type === 'auto' ? 'on' : ''; f.segAuto.setAttribute('aria-pressed', String(a.type === 'auto'));
         f.segMoney.className = a.type === 'money' ? 'on' : ''; f.segMoney.setAttribute('aria-pressed', String(a.type === 'money'));
         f.segCases.className = a.type === 'cases' ? 'on' : ''; f.segCases.setAttribute('aria-pressed', String(a.type === 'cases'));
@@ -859,7 +866,7 @@
         let wrap = el.querySelector('.sections');
         if (!wrap) {
             lastHtml.delete(el);
-            el.innerHTML = `<p class="limit-note" hidden></p><div class="acct-tools"><input type="search" class="acct-search" placeholder="${H('cards.search')}" aria-label="${H('cards.search')}" hidden><div class="seg acct-filter" role="group" aria-label="${H('cards.filter.label')}" hidden>${FILTERS.map(k => `<button data-act="acctFilter" data-id="${k}" aria-pressed="false">${H('cards.filter.' + k)}</button>`).join('')}</div><span class="grow"></span><button class="small" data-act="selectMode" aria-pressed="false">${H('bulk.select')}</button><button class="small" data-act="compact" aria-pressed="false"></button><button class="small" data-act="folderNew">${H('folders.new')}</button></div><div class="bulk-bar" role="toolbar" aria-label="${H('bulk.label')}" hidden><span class="bulk-n" aria-live="polite"></span><button class="small" data-act="bulkAll"></button><button class="small" data-act="bulkNone">${H('bulk.none')}</button><span class="grow"></span><button class="small" data-act="bulk" data-what="start">${H('bulk.start')}</button><button class="small" data-act="bulk" data-what="stop">${H('bulk.stop')}</button><div class="seg" role="group" aria-label="${H('card.type.label')}"><button data-act="bulk" data-what="type" data-arg="auto">${H('card.type.auto')}</button><button data-act="bulk" data-what="type" data-arg="money">${H('card.type.money')}</button><button data-act="bulk" data-what="type" data-arg="cases">${H('card.type.cases')}</button><button data-act="bulk" data-what="type" data-arg="off" title="${H('card.type.off.tip')}">${H('card.type.off')}</button></div><button class="small" data-act="bulk" data-what="folder">${H('bulk.folder')}</button><button class="small danger" data-act="bulk" data-what="remove">${H('bulk.remove')}</button><button class="small primary" data-act="selectMode">${H('bulk.done')}</button></div><div class="acct-none" hidden>${emptyHtml(H('cards.noMatch'), H('cards.noMatchHint'), `<button class="small" data-act="acctClear">${H('cards.clear')}</button>`)}</div><div class="sections"></div>`;
+            el.innerHTML = `<p class="limit-note" hidden></p><div class="acct-tools"><input type="search" class="acct-search" placeholder="${H('cards.search')}" aria-label="${H('cards.search')}" hidden><div class="seg acct-filter" role="group" aria-label="${H('cards.filter.label')}" hidden>${FILTERS.map(k => `<button data-act="acctFilter" data-id="${k}" aria-pressed="false">${H('cards.filter.' + k)}</button>`).join('')}</div><span class="grow"></span><button class="small" data-act="selectMode" aria-pressed="false">${H('bulk.select')}</button><button class="small" data-act="compact" aria-pressed="false"></button><button class="small" data-act="folderNew">${H('folders.new')}</button></div><div class="bulk-bar" role="toolbar" aria-label="${H('bulk.label')}" hidden><span class="bulk-n" aria-live="polite"></span><button class="small" data-act="bulkAll"></button><button class="small" data-act="bulkNone">${H('bulk.none')}</button><span class="grow"></span><button class="small" data-act="bulk" data-what="start">${H('bulk.start')}</button><button class="small" data-act="bulk" data-what="stop">${H('bulk.stop')}</button><div class="seg" role="group" aria-label="${H('card.type.label')}"><button data-act="bulk" data-what="type" data-arg="auto">${H('card.type.auto')}</button><button data-act="bulk" data-what="type" data-arg="money">${H('card.type.money')}</button><button data-act="bulk" data-what="type" data-arg="cases">${H('card.type.cases')}</button><button data-act="bulk" data-what="type" data-arg="off" title="${H('card.type.off.tip')}">${H('card.type.off')}</button></div><button class="small" data-act="bulk" data-what="busy" title="${H('bulk.busy.tip')}">${H('bulk.busy')}</button><button class="small" data-act="bulk" data-what="folder">${H('bulk.folder')}</button><button class="small danger" data-act="bulk" data-what="remove">${H('bulk.remove')}</button><button class="small primary" data-act="selectMode">${H('bulk.done')}</button></div><div class="acct-none" hidden>${emptyHtml(H('cards.noMatch'), H('cards.noMatchHint'), `<button class="small" data-act="acctClear">${H('cards.clear')}</button>`)}</div><div class="sections"></div>`;
             wrap = el.querySelector('.sections');
             for (const s of sections.values()) s.el.remove();
             sections.clear();
@@ -977,6 +984,12 @@
                 if (name == null || !name.trim()) return;
                 arg = { name: name.trim() };
             } else arg = v || null;
+        }
+        if (what === 'busy') {
+            const r = await call('troubleBusyMany', ids);
+            if (!r || !r.ok) { toast(T('toast.failed'), 'bad'); return; }
+            toast(busyManyText(r), r.queued ? 'ok' : undefined);
+            return;
         }
         const r = await call('accountsBulk', ids, what, arg);
         if (!r || !r.ok) { toast(plainError(r && r.error) || T('toast.failed'), 'bad'); return; }
@@ -2536,7 +2549,7 @@
         // No GPU here: Fancy can't be used, so the Graphics choice becomes a note and Scene goes
         const noGpu = !!(window.ZSBFancy && window.ZSBFancy.noGpu);
         const opt = ([k, vals]) => ((k === 'mode' && on) || (k === 'scene' && (look.graphics !== 'fancy' || noGpu))) ? ''
-            : k === 'graphics' && noGpu ? `<div class="look-opt"><span>${H('look.graphics')}</span><p class="look-note">${H('look.graphics.noGpu')}</p></div>` : `<div class="look-opt"><span>${H('look.' + k)}</span><div class="seg" role="group" aria-label="${H('look.' + k)}">${vals.map(v => `<button class="${look[k] === v ? 'on' : ''}" aria-pressed="${look[k] === v}" data-act="lookSet" data-key="${k}" data-id="${v}">${H('look.' + k + '.' + v)}</button>`).join('')}</div></div>`;
+            : k === 'graphics' && noGpu ? `<div class="look-opt"><span>${H('look.graphics')}</span><p class="look-note">${H('look.graphics.noGpu')}</p></div>` : `<div class="look-opt"><span>${H('look.' + k)}</span><div class="seg" role="group" aria-label="${H('look.' + k)}">${vals.map(v => `<button class="${look[k] === v ? 'on' : ''}" aria-pressed="${look[k] === v}" data-act="lookSet" data-key="${k}" data-id="${v}">${H('look.' + k + '.' + v)}</button>`).join('')}</div>${k === 'graphics' && look.graphics === 'fancy' && window.clicker && window.clicker.highGpu === false ? `<p class="look-note">${H('look.graphics.restartGpu')}</p>` : ''}</div>`;
         const sw = (id, color) => `<button class="look-sw${look.accent === id ? ' on' : ''}" data-act="lookAccent" data-id="${id}" aria-pressed="${look.accent === id}"${color ? ` data-swatch="${color}"` : ''}><i></i>${H('look.accent.' + id)}</button>`;
         const warn = on ? LOOK.vars(look).warn : [];
         return `<div class="row look-row"><div class="main"><div class="title">${H('look.title')}</div><div class="desc">${H('look.desc')}</div></div><div class="look-body">
@@ -3033,19 +3046,25 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
     }
     function busyResult(b) {
         if (!b) return '';
-        const cls = { running: 'muted', found: 'tr-bad', clear: 'tr-ok', stopped: 'muted', failed: 'tr-warn' }[b.state] || 'muted';
+        const cls = { running: 'muted', queued: 'muted', found: 'tr-bad', clear: 'tr-ok', stopped: 'muted', failed: 'tr-warn', skipped: 'tr-warn' }[b.state] || 'muted';
+        if (b.state === 'skipped') return `<div class="small ${cls}">${H('busy.result.skipped', { why: busyWhy(b) })}</div>`;
         return `<div class="small ${cls}">${H('busy.result.' + b.state, { what: esc(b.what || ''), secs: b.secs || 0, min: Math.round((b.secs || 0) / 6) / 10 })}</div>`;
     }
     // Only the cause word is coloured: the Sessions and Busy test buttons beside it only look, so they stay plain.
-    const CAUSE_CLASS = { ok: 'muted', own: 'tr-warn', elsewhere: 'tr-bad', ip: 'tr-warn', behind: 'tr-warn' };
+    const CAUSE_CLASS = { ok: 'muted', own: 'tr-warn', used: 'tr-bad', elsewhere: 'tr-bad', ip: 'tr-warn', behind: 'tr-warn' };
     function troubleClicks() {
         const c = TR.clicks;
         if (!c) return `<p class="muted">${H('trouble.clicks.body')}</p>`;
-        const order = { elsewhere: 0, own: 1, ip: 2, behind: 3, ok: 4 };
+        const order = { elsewhere: 0, used: 1, own: 2, ip: 3, behind: 4, ok: 5 };
         const live = c.accounts.filter(a => a.running).sort((a, b) => order[a.cause] - order[b.cause] || (b.refused + b.ipRefused) - (a.refused + a.ipRefused));
         const rows = live.map(a => `<tr><td class="tr-name">${esc(a.name)}${folderTag(a.id)}</td><td>${esc(viaText(a.route))}</td>
             <td class="num">${a.refused}</td><td class="num">${a.ipRefused}</td><td class="num">${a.missed}<span class="muted">/${a.due}</span></td>
-            <td><span class="${CAUSE_CLASS[a.cause]}">${H('trouble.cause.' + a.cause)}</span>${a.cause === 'own' || a.cause === 'elsewhere' ? ` <button class="small" data-tr="toSessions" data-id="${esc(a.id)}">${H('trouble.tab.sessions')}</button>` : ''}${(a.cause === 'own' || a.cause === 'elsewhere' || a.cause === 'behind') && !(a.busy && a.busy.state === 'running') ? ` <button class="small" data-tr="busy" data-id="${esc(a.id)}" title="${esc(T('busy.tip'))}">${H(a.busy ? 'busy.again' : 'busy.btn')}</button>` : ''}${busyResult(a.busy)}${extraResult(a.extra)}</td></tr>`).join('');
+            <td><span class="${CAUSE_CLASS[a.cause]}">${H('trouble.cause.' + a.cause)}</span>${a.cause === 'own' || a.cause === 'used' || a.cause === 'elsewhere' ? ` <button class="small" data-tr="toSessions" data-id="${esc(a.id)}">${H('trouble.tab.sessions')}</button>` : ''}${(a.cause === 'own' || a.cause === 'used' || a.cause === 'elsewhere' || a.cause === 'behind') && !(a.busy && (a.busy.state === 'running' || a.busy.state === 'queued')) ? ` <button class="small" data-tr="busy" data-id="${esc(a.id)}" title="${esc(T('busy.tip'))}">${H(a.busy ? 'busy.again' : 'busy.btn')}</button>` : ''}${busyResult(a.busy)}${extraResult(a.extra)}</td></tr>`).join('');
+        // Busy test every account with a click problem at once (the core runs a few at a time); while any run, how many.
+        const testing = (a) => a.busy && (a.busy.state === 'running' || a.busy.state === 'queued');
+        const toTest = live.filter(a => a.cause !== 'ok' && !testing(a)).length;
+        const nRun = live.filter(a => a.busy && a.busy.state === 'running').length, nWait = live.filter(a => a.busy && a.busy.state === 'queued').length;
+        const busyTools = toTest || nRun || nWait ? `<div class="tr-tools">${toTest ? `<button class="small" data-tr="busyAll" title="${esc(T('busy.tip'))}">${H('busy.all', { n: toTest })}</button>` : ''}${nRun || nWait ? `<span class="muted">${H('busy.progress', { run: nRun, wait: nWait })}</span>` : ''}</div>` : '';
         const routeName = (id) => { const r = c.routes.find(x => x.id === id); return id === 'direct' ? T('trouble.via.direct') : (r && r.label) || id; };
         const tested = new Map(((c.tested && c.tested.routes) || []).map(x => [x.id, x]));
         const routes = c.routes.map(r => {
@@ -3057,7 +3076,7 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
             <span class="muted">${ip ? esc(ip) : H('trouble.routes.noIp')}</span>${test}
             <span>${r.down ? `<span class="tr-bad">${H('trouble.routes.down')}</span>` : H('trouble.routes.used', { used: r.used, max: r.max })}</span></li>`;
         }).join('');
-        return `<p class="muted">${H('trouble.clicks.body')}</p>
+        return `<p class="muted">${H('trouble.clicks.body')}</p>${busyTools}
             ${live.length ? `<div class="table-wrap"><table class="tr-table"><thead><tr><th>${H('trouble.clicks.account')}</th><th>${H('trouble.clicks.route')}</th>
                 <th class="num">${H('trouble.clicks.refused')}</th><th class="num">${H('trouble.clicks.ip')}</th><th class="num">${H('trouble.clicks.missed')}</th><th>${H('trouble.clicks.cause')}</th></tr></thead>
                 <tbody>${rows}</tbody></table></div>` : emptyHtml(H('trouble.clicks.none'))}
@@ -3129,6 +3148,21 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
                     await pullClicks(); drawTrouble();
                     const x = TR.clicks && TR.clicks.accounts.find(y => y.id === id);
                     if (!x || !x.busy || x.busy.state !== 'running') break;
+                }
+                return;
+            }
+            case 'busyAll': {
+                const ids = ((TR.clicks && TR.clicks.accounts) || []).filter(a => a.running && a.cause !== 'ok' && !(a.busy && (a.busy.state === 'running' || a.busy.state === 'queued'))).map(a => a.id);
+                const r = await call('troubleBusyMany', ids);
+                if (!r || !r.ok) { toast(T('toast.failed'), 'bad'); return; }
+                toast(busyManyText(r), r.queued ? 'ok' : undefined);
+                await pullClicks(); drawTrouble();
+                // Follow them while the Clicks view is open, until none run or wait.
+                while (TR.open && TR.view === 'clicks') {
+                    await new Promise(res => setTimeout(res, 5000));
+                    if (!TR.open || TR.view !== 'clicks') break;
+                    await pullClicks(); drawTrouble();
+                    if (!TR.clicks || !TR.clicks.accounts.some(y => y.busy && (y.busy.state === 'running' || y.busy.state === 'queued'))) break;
                 }
                 return;
             }

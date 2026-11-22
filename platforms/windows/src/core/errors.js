@@ -21,7 +21,7 @@ const GROUPS = {
     'CC-PLUG-01': 'manual', 'CC-PLUG-02': 'manual', 'CC-PLUG-03': 'manual', 'CC-PLUG-04': 'manual', 'CC-UNK-01': 'net',
     'CC-SLOW-01': 'manual', 'CC-AUTH-03': 'notice', 'CC-PROXY-01': 'route', 'CC-PROXY-02': 'route', 'CC-AUTH-04': 'auth',
     'CC-AUTH-05': 'notice', 'CC-AUTH-06': 'notice', 'CC-AUTH-07': 'notice', 'CC-AUTH-08': 'manual', 'CC-MAIN-01': 'manual',
-    'CC-NET-03': 'manual',
+    'CC-NET-03': 'manual', 'CC-PROXY-03': 'manual',
 };
 const CODES = Object.fromEntries(Object.entries(GROUPS).map(([code, group]) => [code, {
     group,

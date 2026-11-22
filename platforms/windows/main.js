@@ -20,6 +20,14 @@ const { t } = require('./src/core/text');
 const { version: VERSION, releaseStage: STAGE, statsUrl: STATS_URL, pluginCatalogUrl: CATALOG_URL } = require('./package.json');
 
 if (!app.requestSingleInstanceLock()) { app.quit(); return; }
+// Graphics: Fancy on a laptop with two graphics cards: ask for the dedicated one (Windows and macOS otherwise give
+// Electron the power-saving one, and Fancy lags; user report 2026-11-22). Read from the saved settings before the GPU
+// process starts, so a change applies at the next start; Simple keeps the power-saving card (the hub runs all day).
+const HIGH_GPU = (() => {
+    try { const s = JSON.parse(require('fs').readFileSync(path.join(app.getPath('userData'), 'settings.json'), 'utf8')); return !!(s && s.look && s.look.graphics === 'fancy'); } catch (_) { return false; }
+})();
+if (HIGH_GPU) app.commandLine.appendSwitch('force_high_performance_gpu');
+
 // Same id as the installer's Start-menu shortcut: Windows only shows notifications for a matching app id.
 if (process.platform === 'win32') app.setAppUserModelId('com.gothgirlzsb.clicker');
 
@@ -70,7 +78,8 @@ function createWindow() {
     win = new BrowserWindow({
         width: 1180, height: 820, minWidth: 420, minHeight: 500, title: t('app.name'),   // no icon: Windows uses the app's own (build/icon.png)
         backgroundColor: '#000000', autoHideMenuBar: true, show: !core.store.settings.startMinimized,
-        webPreferences: { preload: path.join(__dirname, 'src', 'app', 'preload.js'), contextIsolation: true, nodeIntegration: false },
+        webPreferences: { preload: path.join(__dirname, 'src', 'app', 'preload.js'), contextIsolation: true, nodeIntegration: false,
+            additionalArguments: ['--zsb-high-gpu=' + (HIGH_GPU ? '1' : '0')] },
     });
     win.loadFile(path.join(__dirname, 'panel', 'index.html'));
     win.on('close', (e) => {
@@ -197,7 +206,7 @@ function spawnWatchdog(dataDir, relaunch) {
     const args = process.argv.slice(1).filter(a => a !== '--updated' && a !== '--hidden');
     const byLauncher = process.platform === 'linux' && process.env.ZSB_HUB_LAUNCHER === '1';
     spawn(process.execPath, [script, dataDir, relaunch && !byLauncher ? '1' : '0', process.execPath, ...args, '--hidden'],
-        { detached: true, stdio: 'ignore', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1' } }).unref();
+        { detached: true, stdio: 'ignore', env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ZSB_WATCH_PID: String(process.pid) } }).unref();
 }
 
 app.whenReady().then(() => {

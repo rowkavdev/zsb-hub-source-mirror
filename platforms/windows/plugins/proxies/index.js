@@ -310,6 +310,8 @@ module.exports = {
             const routeOf = new Map(net.routes.map(r => [r.id, r]));
             const label = (rid) => rid === 'direct' ? 'This PC' : (state.proxies.find(x => x.id === rid) || {}).label || rid || '—';
             const sameIp = (p) => p.ip && state.proxies.filter(x => x.ip === p.ip).length > 1;
+            // Same exit IP as this PC's own: a VPS extra IP that isn't on the server falls back to the main one.
+            const sameAsDirect = (p) => p.ip && p.ip === state.directIp;
             const items = [
                 { id: 'direct', title: 'This PC\'s connection', sub: state.directIp ? `exit IP ${state.directIp}` : 'exit IP not known yet', meta: `${(routeOf.get('direct') || {}).used || 0} / ${net.maxPerIp} accounts`, on: picked === 'direct' },
                 ...state.proxies.map(p => {
@@ -317,13 +319,13 @@ module.exports = {
                     const status = r.down ? 'not working — its accounts wait' : p.kind === 'wg' && !tunnels.has(p.id) ? (p.error ? `tunnel down: ${p.error}` : 'starting the tunnel…')
                         : p.kind === 'local' && !relays.has(p.id) ? (p.error ? `can't send from ${p.localIp}: ${p.error}` : 'starting…')
                         : p.ok === false ? `failed the test: ${p.error}${p.kind === 'local' ? ` (is ${p.localIp} still set up on this server?)` : ''}` : p.ok ? `works · ${p.ms} ms` : 'not tested yet';
-                    return { id: p.id, title: p.label, sub: `${show(p)}${p.ip ? ` → ${p.ip}` : ''}${sameIp(p) ? ' (same exit IP as another proxy: they share 20)' : ''}`,
+                    return { id: p.id, title: p.label, sub: `${show(p)}${p.ip ? ` → ${p.ip}` : ''}${sameAsDirect(p) ? ` (same exit IP as this PC's connection: they share ${net.maxPerIp}${p.kind === 'local' || p.host === '127.0.0.1' ? ' — is its extra IP set up on the server?' : ''})` : sameIp(p) ? ` (same exit IP as another proxy: they share ${net.maxPerIp})` : ''}`,
                         meta: `${r.used || 0} / ${net.maxPerIp} accounts · ${status}`, on: picked === p.id };
                 }),
             ];
             const sel = state.proxies.find(x => x.id === picked);
             const working = state.proxies.filter(p => p.ok && !(routeOf.get(p.id) || {}).down).length;
-            const room = net.maxPerIp * (1 + new Set(state.proxies.filter(p => p.ok).map(p => p.ip || p.id)).size);
+            const room = net.maxPerIp * (1 + new Set(state.proxies.filter(p => p.ok && !sameAsDirect(p)).map(p => p.ip || p.id)).size);
             const rows = net.accounts.map(a => [a.name, a.running ? label(a.route) : 'not clicking', a.pin ? 'pinned' : 'auto']);
             return { blocks: [
                 { type: 'stats', items: [

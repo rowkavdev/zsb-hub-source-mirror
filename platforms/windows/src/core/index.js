@@ -270,7 +270,8 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
 
     const rpc = {
         state() {
-            const views = store.accounts.map(a => ({ ...engine.view(a), badges: plugins.badges(a.id), folder: a.folder && store.folder(a.folder) ? a.folder : null }));
+            const views = store.accounts.map(a => ({ ...engine.view(a), badges: plugins.badges(a.id), folder: a.folder && store.folder(a.folder) ? a.folder : null,
+                testQueued: (trouble.busy.get(a.id) || {}).state === 'queued' }));
             return {
                 version, startedAt, accounts: views, appIssues: appIssues(), totals: totals(views),
                 importJob: importJob && { total: importJob.total, done: importJob.done, ok: importJob.ok, failed: importJob.failed, current: importJob.current, running: importJob.running, stopping: importJob.running && importJob.stop },
@@ -397,6 +398,7 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
         troubleTestRoutes: () => trouble.testRoutes(),
         troubleBusyTest: (id) => trouble.busyTest(id),
         troubleBusyStop: (id) => trouble.busyStop(id),
+        troubleBusyMany: (ids) => trouble.busyMany(ids),
         troubleExtraCheck: (id) => trouble.extraCheck(id).then(({ run, ...x }) => x),
         troubleRevoke: (id, sid) => trouble.revoke(id, sid),
         troubleRevokeOthers: (id) => trouble.revokeOthers(id),
