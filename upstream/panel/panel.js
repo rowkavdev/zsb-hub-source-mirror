@@ -422,6 +422,27 @@
         $('#stopAll').disabled = !S.running;
     }
 
+    // A bar chart, one series: { title, labels, values, tips, scale, every } (the plugin `chart` block and the Overview
+    // graphs). Values below 0 hang under a zero line; `scale` is the least the axis spans each way (small differences
+    // don't fill the plot). Heights and positions go on through CSSOM after the draw (data-h / data-b, sizeCharts);
+    // an axis label on every `every`-th bar (default: about 12 across); tips are each bar's hover text.
+    function chartHtml(b) {
+        const vals = (Array.isArray(b.values) ? b.values : []).slice(0, 400).map(v => Number(v) || 0);
+        if (!vals.length) return '';
+        const labels = Array.isArray(b.labels) ? b.labels : [], tips = Array.isArray(b.tips) ? b.tips : [], scale = Math.max(0, Number(b.scale) || 0);
+        const neg = vals.some(v => v < 0), hi = Math.max(0, scale, ...vals), lo = neg ? Math.min(-scale, ...vals) : 0;
+        const pc = (v) => Math.round(v / (hi - lo || 1) * 1000) / 10, zero = pc(-lo), every = Math.max(1, Math.round(Number(b.every)) || Math.ceil(vals.length / 12));
+        return `<figure class="pchart">${b.title ? `<figcaption>${esc(b.title)}</figcaption>` : ''}
+            <div class="pchart-plot" role="img" aria-label="${esc(b.title || '')}">${neg ? `<div class="pchart-zero" data-b="${zero}"></div>` : ''}${vals.map((v, i) => {
+                const h = v ? Math.max(0.5, pc(Math.abs(v))) : 0;
+                return `<div class="pchart-bar" title="${esc(tips[i] || `${labels[i] || ''} · ${v}`)}"><i${v < 0 ? ' class="neg"' : ''} data-b="${v < 0 ? Math.max(0, zero - h) : zero}" data-h="${h}"></i></div>`; }).join('')}</div>
+            <div class="pchart-x" aria-hidden="true">${vals.map((_, i) => `<span>${i % every === 0 ? esc(labels[i] || '') : ''}</span>`).join('')}</div></figure>`;
+    }
+    const sizeCharts = (el) => {   // CSSOM: the CSP blocks inline styles
+        el.querySelectorAll('.pchart [data-h]').forEach(i => { i.style.height = i.dataset.h + '%'; });
+        el.querySelectorAll('.pchart [data-b]').forEach(i => { i.style.bottom = i.dataset.b + '%'; });
+    };
+
     // Only touch the DOM when the markup really changed: rebuilding it every refresh drops hovers and clicks.
     let lastHtml = new WeakMap();   // element -> markup; weak, so removed cards and dialogs are not kept alive by it
     function setHtml(sel, html, el) {
@@ -430,6 +451,7 @@
         lastHtml.set(el, html);
         el.innerHTML = html;
         el.querySelectorAll('[data-w]').forEach(i => { i.style.width = i.dataset.w + '%'; });   // CSSOM: the CSP blocks inline styles
+        sizeCharts(el);
     }
 
     // An error code's wording: from the text table (so edits show live), else what the app sent (plugin codes).
@@ -518,10 +540,65 @@
     // one; otherwise it moves on every 8 s (not with reduced motion), and a click shows the next one and holds it 30 s.
     const OV_ROT = ['look', 'ips', 'vault'];
     let ovRot = 0, ovRotHold = 0;
+    // The Overview graph: off by default (it fetches the hub's hourly history, core/income.js). The pick is this
+    // viewer's, kept in the browser. The history is fetched only while a graph shows, at most once a minute.
+    const OV_GRAPHS = ['off', 'income', 'clicking', 'money', 'tokens', 'networth'], OV_LEVELS = ['money', 'tokens', 'networth'];
+    let ovGraph = { what: 'off', range: '24h' }, ovHist = null, ovHistAt = 0, ovHistBusy = false;
+    try { const o = JSON.parse(localStorage.getItem('zsb.ovGraph') || 'null'); if (o && OV_GRAPHS.includes(o.what)) ovGraph = { what: o.what, range: o.range === '7d' ? '7d' : '24h' }; } catch (_) {}
+    function ovHistory() {
+        if (ovGraph.what === 'off' || ovHistBusy || Date.now() - ovHistAt < 60000) return;
+        ovHistBusy = true;
+        Promise.resolve(call('incomeHistory')).then(h => { ovHist = Array.isArray(h) ? h : []; }).catch(() => { if (!ovHist) ovHist = []; })
+            .finally(() => { ovHistBusy = false; ovHistAt = Date.now(); if (tab === 'overview') drawOverview(); });
+    }
+    // 24 hours: a bar an hour. 7 days: a bar per 6 hours, from local midnight. Income and Clicking are averages;
+    // Money, Tokens and Net worth are what the fleet gained or lost (the level at the end of each hour, minus the one before),
+    // leaving out an hour when the number of accounts that had reported changed (a restart, an account added): a fake jump.
+    function ovGraphHtml() {
+        const g = ovGraph;
+        const seg = (act, cur, list, label) => `<div class="seg" role="group" aria-label="${H(label)}">${list.map(v => `<button class="${v === cur ? 'on' : ''}" aria-pressed="${v === cur}" data-act="${act}" data-id="${v}">${H('overview.graph.' + v)}</button>`).join('')}</div>`;
+        const bar = `<div class="ov-graph-bar"><span class="ov-graph-label">${H('overview.graph')}</span>${seg('ovGraph', g.what, OV_GRAPHS, 'overview.graph')}${g.what === 'off' ? '' : seg('ovRange', g.range, ['24h', '7d'], 'overview.graph.range')}</div>`;
+        if (g.what === 'off') return bar;
+        if (!ovHist) return bar + `<p class="muted ov-graph-msg">${H('overview.graph.loading')}</p>`;
+        const six = g.range === '7d', n = six ? 28 : 24, step = six ? 6 : 1, level = OV_LEVELS.includes(g.what);
+        const cur = new Date(); cur.setMinutes(0, 0, 0); if (six) cur.setHours(cur.getHours() - cur.getHours() % 6);
+        const starts = Array.from({ length: n + 1 }, (_, i) => { const d = new Date(cur); d.setHours(d.getHours() - (n - 1 - i) * step); return d.getTime(); });
+        const pts = [];
+        let prev = null, prevN = null;
+        for (const b of ovHist) {
+            if (!level) { pts.push({ h: b.h, v: g.what === 'income' ? b.avg : b.clicking, n: b.clicking }); continue; }
+            const v = b[g.what];
+            if (typeof v !== 'number') continue;
+            if (prev != null) pts.push(b.reported === prevN ? { h: b.h, v: v - prev, at: v } : { h: b.h, skip: true, at: v });
+            prev = v; prevN = b.reported;
+        }
+        const fmt = (v) => (g.what === 'income' ? T('overview.income.value', { v: money(v) }) : g.what === 'clicking' ? String(Math.round(v)) : g.what === 'tokens' ? num(v) : money(v));
+        const signed = (v) => (v < 0 ? '−' : '+') + fmt(Math.abs(v));
+        const when = (s, e) => new Date(s).toLocaleString([], { weekday: 'short', hour: 'numeric' }) + (six ? '–' + new Date(e).toLocaleTimeString([], { hour: 'numeric' }) : '');
+        const slots = starts.slice(0, n).map((s, i) => {
+            const e = starts[i + 1], in_ = pts.filter(p => p.h >= s && p.h < e), d = new Date(s);
+            const label = six ? (d.getHours() === 0 ? d.toLocaleDateString([], { weekday: 'short' }) : '') : (d.getHours() % 3 === 0 ? d.toLocaleTimeString([], { hour: 'numeric' }) : '');
+            if (!in_.length) return { v: 0, label, tip: T('overview.graph.tip.none', { when: when(s, e) }) };
+            const avg = (f) => in_.reduce((t, p) => t + f(p), 0) / in_.length;
+            if (level) {
+                const ok = in_.filter(p => !p.skip), v = ok.reduce((t, p) => t + p.v, 0);
+                return { v, has: 1, label, tip: T(ok.length ? 'overview.graph.tip.change' : 'overview.graph.tip.skip', { when: when(s, e), v: signed(v), now: fmt(in_[in_.length - 1].at) }) };
+            }
+            const v = avg(p => p.v);
+            return { v, has: 1, label, tip: T(g.what === 'income' ? 'overview.graph.tip.income' : 'overview.graph.tip.clicking', { when: when(s, e), v: fmt(v), n: Math.round(avg(p => p.n)) }) };
+        });
+        if (!slots.some(x => x.has)) return bar + `<p class="muted ov-graph-msg">${H(level && !pts.length ? 'overview.graph.emptyNew' : 'overview.graph.empty')}</p>`;
+        const per = T(six ? 'overview.graph.per.6h' : 'overview.graph.per.1h');
+        const title = level ? T('overview.graph.cap.change', { what: T('overview.graph.' + g.what), per, now: fmt(prev) })
+            : T(g.what === 'income' ? 'overview.graph.cap.income' : 'overview.graph.cap.clicking', { per, peak: fmt(Math.max(...slots.map(x => x.v))) });
+        return bar + chartHtml({ title, values: slots.map(x => x.v), labels: slots.map(x => x.label), tips: slots.map(x => x.tip), every: 1 })
+            + (level ? `<p class="muted ov-note">${H('overview.graph.note')}</p>` : '');
+    }
     function drawOverview() {
         const acc = S.accounts, me = (a) => a.me || {};
         if (typingIn($('#tab-overview'))) return;
         if (!acc.length) { setHtml('#tab-overview', emptyHtml(H('overview.empty'), '', `<button class="small primary" data-act="add">${H('header.add')}</button>`)); return; }
+        if (tab === 'overview') ovHistory();
         const sum = (list, f) => list.reduce((s, a) => s + (Number(f(a)) || 0), 0);
         const has = (list, f) => list.some(a => f(a) != null);
         const total = (list, f, fmt) => (has(list, f) ? fmt(sum(list, f)) : '—');
@@ -590,7 +667,7 @@
         const rows = sorted.map(a => [a.name || a.id, ...(folders.length ? [folderName(a.folder) || '—'] : []), statusWord(a),
             income(a) == null ? '—' : money(income(a)), money(me(a).money), num(me(a).tokens), money(me(a).networth), me(a).premier == null ? '—' : Math.round(me(a).premier).toLocaleString(),
             me(a).rank && me(a).rank.name ? me(a).rank.name : '—', me(a).membership === 'pro' ? T('overview.pro.yes') : me(a).membership ? T('overview.pro.no') : '—']);
-        setHtml('#tab-overview', `${tiles}${folderHtml}${rankHtml}<h4 class="plug-head">${H('overview.all')}</h4>${table(cols, rows, true)}<p class="muted ov-note">${H('overview.note')}</p>`);
+        setHtml('#tab-overview', `${tiles}${ovGraphHtml()}${folderHtml}${rankHtml}<h4 class="plug-head">${H('overview.all')}</h4>${table(cols, rows, true)}<p class="muted ov-note">${H('overview.note')}</p>`);
     }
 
     // --- accounts ----------------------------------------------------------
@@ -1311,13 +1388,16 @@
 
     const cap = (t) => String(t).charAt(0).toUpperCase() + String(t).slice(1);
     // A list's rows. With s.summaries (one line per row, from the plugin) rows fold to that line and open with Edit.
+    // With s.reorder (the order matters, e.g. a queue) each row after the first has Move up. With s.summaryFirst the
+    // summary is the row's title and "Case 2" goes under it (rows that are best known by what they hold). s.images:
+    // a picture per row (https URL, or '' for none) in front of its title.
     function listHtml(s) {
         const rows = Array.isArray(s.value) ? s.value : [], fold = Array.isArray(s.summaries), open = openRows.get(s.key) || new Set();
         return rows.map((row, i) => {
-            const shut = fold && !open.has(i), sum = fold ? s.summaries[i] || '' : '';
+            const shut = fold && !open.has(i), sum = fold ? s.summaries[i] || '' : '', num = `${esc(cap(s.itemLabel || s.label || s.key))} ${i + 1}`, pic = Array.isArray(s.images) ? s.images[i] : '';
             return `<div class="prow${shut ? ' shut' : ''}" data-row="${i}">
-              <div class="prow-head"><div class="prow-title"><b>${esc(cap(s.itemLabel || s.label || s.key))} ${i + 1}</b>${sum ? `<span class="prow-sum">${esc(sum)}</span>` : ''}</div>
-                <div class="pbtns">${fold ? `<button class="small" data-row-toggle="${i}">${shut ? H('pluginmodal.editRow') : H('pluginmodal.doneRow')}</button>` : ''}<button class="small" data-row-del="${i}">${H('pluginmodal.removeRow')}</button></div></div>
+              <div class="prow-head">${pic ? tilePic(pic, ' prow-img') : ''}<div class="prow-title">${sum && s.summaryFirst ? `<b>${esc(sum)}</b><span class="prow-sum">${num}</span>` : `<b>${num}</b>${sum ? `<span class="prow-sum">${esc(sum)}</span>` : ''}`}</div>
+                <div class="pbtns">${fold ? `<button class="small" data-row-toggle="${i}">${shut ? H('pluginmodal.editRow') : H('pluginmodal.doneRow')}</button>` : ''}${s.reorder && i > 0 ? `<button class="small" data-row-up="${i}">${H('pluginmodal.upRow')}</button>` : ''}<button class="small" data-row-del="${i}">${H('pluginmodal.removeRow')}</button></div></div>
               <div class="prow-fields">${Object.entries(s.fields || {}).map(([fk, f]) => rowFieldHtml(fk, f, row[fk] ?? fieldDefault(f), !!(f.when && s.fields[f.when] && s.fields[f.when].type === 'boolean'))).join('')}</div></div>`;
         }).join('')
             + (rows.length ? '' : `<div class="muted">${H('pluginmodal.noRows')}</div>`)
@@ -1625,10 +1705,18 @@
             }
             const b = e.target.closest('button');
             const set = b && b.closest('.pset');
-            if (b && set && set.dataset.type === 'list' && (b.hasAttribute('data-row-add') || b.dataset.rowDel != null)) {
+            if (b && set && set.dataset.type === 'list' && (b.hasAttribute('data-row-add') || b.dataset.rowDel != null || b.dataset.rowUp != null)) {
                 const rows = readRows(set);
                 const open = openRows.get(set.dataset.key) || new Set();
                 if (b.hasAttribute('data-row-add')) { rows.push(Object.fromEntries(Object.entries(listSpec(set).fields || {}).filter(([, f]) => f.type !== 'heading').map(([fk, f]) => [fk, fieldDefault(f)]))); open.add(rows.length - 1); }
+                else if (b.dataset.rowUp != null) {
+                    const i = Number(b.dataset.rowUp);
+                    if (i > 0 && i < rows.length) {
+                        [rows[i - 1], rows[i]] = [rows[i], rows[i - 1]];
+                        const a = open.has(i - 1), c = open.has(i);
+                        open.delete(i - 1); open.delete(i); if (a) open.add(i); if (c) open.add(i - 1);
+                    }
+                }
                 else { rows.splice(Number(b.dataset.rowDel), 1); open.clear(); }
                 openRows.set(set.dataset.key, open);
                 saveList(set, rows, true);
@@ -1950,7 +2038,7 @@
             if (b.type === 'flow') return `<div class="pflow">${b.items.map((i, n) => `${n ? '<span class="pflow-arrow">→</span>' : ''}<div class="pflow-item${i.on ? ' on' : ''}"><b>${esc(i.label)}</b><span>${esc(i.on ? i.sub || '' : i.off || 'off')}</span></div>`).join('')}</div>`;
             if (b.type === 'tip') return `<div class="ptip"><b>${H('plugintab.tip')}</b> ${esc(b.text)}</div>`;
             if (b.type === 'checklist') return `<ul class="pcheck">${b.items.map(i => `<li class="${i.done ? 'done' : ''}"><span class="pcheck-mark">${i.done ? '✓' : ''}</span><div><div>${esc(i.label)}</div>${!i.done && i.hint ? `<div class="muted">${esc(i.hint)}</div>` : ''}</div></li>`).join('')}</ul>`;
-            if (b.type === 'list') { const sp = setting(b.key); return sp ? `<div class="psets">${pluginSettingHtml({ ...sp, label: '', help: '', summaries: b.summaries || [] })}</div>` : ''; }
+            if (b.type === 'list') { const sp = setting(b.key); return sp ? `<div class="psets">${pluginSettingHtml({ ...sp, label: '', help: '', summaries: b.summaries || [], summaryFirst: !!b.summaryFirst, images: b.images || [] })}</div>` : ''; }
             if (b.type === 'stats') return `<div class="statrow">${b.items.map(i => `<div class="stat"><span>${esc(i.label)}</span><b>${esc(i.value)}</b></div>`).join('')}</div>`;
             if (b.type === 'table') return b.rows.length ? `<div class="table-wrap"><table${b.wrap ? ' class="wrap"' : ''}><thead><tr>${b.columns.map(h => `<th>${esc(h)}</th>`).join('')}</tr></thead><tbody>${b.rows.map(r => `<tr>${r.map(v => `<td${v && typeof v === 'object' && v.action ? ' class="pcell-btn"' : ''}>${cellHtml(v)}</td>`).join('')}</tr>`).join('')}</tbody></table></div>`
                 : (b.empty ? emptyHtml(esc(b.empty), '', '', true) : '');
@@ -1970,6 +2058,7 @@
             if (b.type === 'tiles') return tilesHtml(b, p);
             if (b.type === 'wizard') return wizardHtml(b, p, settingsHtml);
             // A toolbar: settings without their labels (a search box), then buttons, on one row that wraps.
+            if (b.type === 'chart') return chartHtml(b);
             if (b.type === 'bar') return `<div class="ptoolbar">${(b.keys || []).length ? settingsHtml(b.keys, true) : ''}${(b.items || []).length ? pluginBlocks([{ type: 'buttons', items: b.items }], p) : ''}${b.text ? `<span class="muted ptoolbar-text">${esc(b.text)}</span>` : ''}</div>`;
             // Items like the game's inventory: picture, name, wear/float, price, a rarity stripe; click to pick.
             // A stack (qty: { n picked, of, action }) shows ×of, or n/of once picked with − + All on hover; those
@@ -2050,6 +2139,7 @@
         morph(el, tpl.content);
         el.querySelectorAll('[data-color]').forEach(i => i.style.setProperty('--rc', '#' + i.dataset.color));   // rarity, through CSSOM
         el.querySelectorAll('[data-w]').forEach(i => { i.style.width = i.dataset.w + '%'; });   // table progress bars, the same way
+        sizeCharts(el);   // chart bars
         el.querySelectorAll('.pshopg').forEach(shopSync);   // shop grid totals
         if (p) bindSettings(el, p.id);
     }
@@ -2543,6 +2633,12 @@ ${t.css || ''}` : ''); } catch (_) { themeSheet.replaceSync(''); }
                 return;
             }
             case 'ovRot': { const lookNow = S.accounts.some(needsAttention); if (lookNow && Date.now() > ovRotHold) ovRot = 0; ovRot++; ovRotHold = Date.now() + 30000; drawOverview(); return; }
+            case 'ovGraph': case 'ovRange': {
+                ovGraph = a === 'ovGraph' ? { ...ovGraph, what: id } : { ...ovGraph, range: id };
+                if (ovGraph.what === 'off') { ovHist = null; ovHistAt = 0; }   // nothing kept or fetched while off
+                try { localStorage.setItem('zsb.ovGraph', JSON.stringify(ovGraph)); } catch (_) {}
+                drawOverview(); return;
+            }
             case 'ovSort': {
                 const k = el.dataset.key;
                 ovSort = ovSort.key === k ? { key: k, dir: -ovSort.dir } : { key: k, dir: ['name', 'folder', 'status'].includes(k) ? 1 : -1 };

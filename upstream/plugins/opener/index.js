@@ -243,6 +243,58 @@ function today() {
     return state.today;
 }
 
+// ---- Opening stats ----
+// Every open that goes through (Open now, sets, the Armory shop queue) is counted as it lands: how many, what they cost
+// at the shop price (a ticket each included), what the drops were worth, event tickets used, favourited and event
+// drops, the best drop, plus the cash spent buying and the XP and rank-ups a run brought. Kept per day and item for
+// STATS_DAYS days, per day and account for STATS_ACCT_DAYS days, and all-time per item and per account.
+// Best drop and event drops come only from drops the site's answer lists: favourited ones, or all of them when the
+// drops are kept or sold by the hub (non-Pro) — Pro auto-sell answers with a total, not the drops it sold.
+// A totals object: { opened, cost, value, pv, tickets, spent, favs, events, xp, ranks, best: { name, price, acct, t } }.
+const STATS_DAYS = 400, STATS_ACCT_DAYS = 31;
+const STAT_KEYS = ['opened', 'cost', 'value', 'pv', 'tickets', 'spent', 'favs', 'events', 'xp', 'ranks'];
+function addStats(o, add) {
+    for (const k of STAT_KEYS) if (add[k]) o[k] = (o[k] || 0) + add[k];
+    if (add.best && (!o.best || add.best.price > o.best.price)) o.best = add.best;
+    return o;
+}
+function stats() {
+    if (!state.stats) {
+        // The Opener already kept all-time totals per item (state.items): they start the all-time counts per case.
+        const s = { since: Date.now(), days: {}, all: { i: {}, a: {} }, names: {}, accts: {}, pre: 0 };
+        for (const [id, it] of Object.entries(state.items || {})) {
+            if (!num(it.opened)) continue;
+            s.all.i[id] = addStats({}, it); s.names[id] = { name: it.name || 'item' }; s.pre += num(it.opened);
+        }
+        state.stats = s;
+    }
+    return state.stats;
+}
+// The day keys of a range: today, the last 7 or 30 days (today included), newest first.
+const statDays = (n) => Array.from({ length: n }, (_, i) => new Date(Date.now() - i * 86400000).toISOString().slice(0, 10));
+function track(aid, it, add, drops) {
+    try {
+        const s = stats(), d = day(), acct = (ctx.accounts.get(aid) || {}).name || s.accts[aid] || aid;
+        for (const x of drops || []) {
+            const price = num(x && x.price);
+            if (x && x.event && x.event.name) add.events = (add.events || 0) + 1;
+            if (price > 0 && (!add.best || price > add.best.price)) add.best = { name: String(((x.event && x.event.name) ? x.event.name + ' ' : '') + (x.name || 'a skin')).slice(0, 200), price, acct, t: Date.now() };
+        }
+        const dd = s.days[d] || (s.days[d] = { i: {}, a: {} });
+        if (!dd.a) dd.a = {};
+        if (!dd.h) dd.h = {};   // per hour (UTC), all items together: the graph of a day
+        for (const [o, k] of [[dd.i, it._id], [dd.a, aid], [dd.h, new Date().getUTCHours()], [s.all.i, it._id], [s.all.a, aid]]) addStats(o[k] || (o[k] = {}), add);
+        s.names[it._id] = { name: it.name, type: it.type };
+        s.accts[aid] = acct;
+        // Once a day: old days go, and old days' per-account split (the all-time totals keep it).
+        if (s.pruned !== d) {
+            s.pruned = d;
+            const keep = statDays(STATS_DAYS).pop(), keepA = statDays(STATS_ACCT_DAYS).pop();
+            for (const k of Object.keys(s.days)) { if (k < keep) delete s.days[k]; else if (k < keepA) { delete s.days[k].a; delete s.days[k].h; } }
+        }
+    } catch (e) { ctx.log('opening stats: ' + e.message, 'warn', aid); }
+}
+
 // Waits for the account to click normally again (see BACK_WAIT_MS): true when it's back, else a Stop saying why.
 async function waitBack(aid) {
     const limit = num(S('backWaitMs')) || BACK_WAIT_MS, from = Date.now();
@@ -310,6 +362,7 @@ function setCatalog(items) {
         .map(c => ({ value: c._id, label: `${c.kind}: ${c.name} — $${num(c.price).toLocaleString('en-US')}${num(c.rankNeeded) > 1 ? ` · rank ${c.rankNeeded}` : ''}${c.isNonBuyable ? ' · not sold, open only' : ''}` }));
     ctx.settings.setOptions('item', opts);
     ctx.settings.setOptions('sets.item', opts);
+    ctx.settings.setOptions('queue.item', opts);
 }
 
 // What happens to drops: the Drops settings, or a job's own (a job queued from the Armory shop with a custom profile).
@@ -480,14 +533,55 @@ async function stockOf(aid, id) {
 
 // Sets: other accounts open something else. A set has its own item, buy rules and accounts; an account on a set (the
 // first set that has it) opens that set's item, everyone else the main What to open. A set with no item yet doesn't count.
+// Case queue (openMode 'queue'): What to open is a list of cases ({ item, amount }) instead of one item, opened a batch
+// at a time in order, queueRounds times over per Open now. Each batch follows How to get them with its own amount: how
+// many to buy and open (a set amount; stock first, then that many), the most to buy (spare cash), or the most to open
+// (from stock). Accounts on a set open the set's item, as before. The job carries where it is: q = { i, round, t0,
+// opened, turnEnds }.
 const SET_KEYS = ['item', 'source', 'buyAmount', 'maxPrice', 'keepMoney', 'keepPct', 'spendPerRun', 'useTickets', 'buyTickets'];
+const QUEUE_GAP_MS = 1000;      // between two batches of a queue, while its turn has time left
 const setsOf = () => (Array.isArray(S('sets')) ? S('sets') : []);
 const onSet = (s, aid) => !!(s && s.item && s.accounts && (s.accounts.all || (s.accounts.ids || []).includes(aid)));
-const setOf = (aid) => setsOf().find(s => onSet(s, aid)) || null;
+const queueOn = () => S('openMode') === 'queue';
+const queueRows = () => (Array.isArray(S('queue')) ? S('queue') : []).filter(r => r && r.item);
+const rounds = () => Math.max(1, Math.min(100, Math.floor(num(S('queueRounds'))) || 1));
+// Loop forever: round after round until Stop, or until a whole round opens nothing (no cash or stock left).
+const forever = () => queueOn() && !!S('queueForever');
+const manyRounds = () => forever() || rounds() > 1;
+const roundOf = (q) => `round ${q.round}${forever() ? '' : ` of ${rounds()}`}`;
+// What an account opens, in order: [{ set }] on a set, the queue's cases ({ row }) or [{}] (What to open's item).
+const turnsOf = (aid) => {
+    const s = setsOf().find(x => onSet(x, aid));
+    if (s) return [{ set: s }];
+    if (!queueOn()) return [{}];
+    const rows = queueRows();
+    return rows.length ? rows.map(row => ({ row })) : [{ row: { item: '' } }];
+};
+const qOf = (aid) => { const j = jobs.get(aid); return j && !j.shop && j.q ? j.q : null; };
+// What it opens now (or next): where its queue is, else the first.
+const turnOf = (aid) => { const t = turnsOf(aid), q = qOf(aid); return t[q ? q.i % t.length : 0]; };
+const setOf = (aid) => turnOf(aid).set || null;
 const setName = (s) => String((s && s.name) || '').trim() || `Set ${setsOf().indexOf(s) + 1}`;
-// The settings an account opens with: its set's, or the main ones.
-const cfgOf = (aid) => { const s = setOf(aid); return (k) => (s && SET_KEYS.includes(k) ? s[k] : S(k)); };
-const opensHere = (aid) => ctx.settings.runsOn('accounts', aid) || !!setOf(aid);
+// The settings an account opens with: its set's, the queue case's (item and amount; the rest as set), or the main ones.
+const cfgFor = ({ set, row } = {}) => (k) => {
+    if (set) return SET_KEYS.includes(k) ? set[k] : S(k);
+    if (row && k === 'item') return row.item;
+    if (row && k === 'buyAmount') return Math.max(1, Math.floor(num(row.amount)));
+    if (row && k === 'buyCap') return S('source') === 'buy' ? Math.max(1, Math.floor(num(row.amount))) : 0;
+    if (row && k === 'openCap') return S('source') === 'owned' ? Math.max(1, Math.floor(num(row.amount))) : 0;
+    return S(k);
+};
+const cfgOf = (aid) => cfgFor(turnOf(aid));
+const opensHere = (aid) => ctx.settings.runsOn('accounts', aid) || setsOf().some(s => onSet(s, aid));
+const queued = (aid) => queueOn() && !!turnsOf(aid)[0].row;   // opens the case queue (not on a set)
+// The next batch of a queue after this one (practice goes through once), or null when it's done.
+const nextTurn = (aid, q, practice) => {
+    if (!queued(aid)) return null;   // the queue was turned off (or the account put on a set) on the way
+    const n = turnsOf(aid).length;
+    if (q.i + 1 < n) return { ...q, i: q.i + 1 };
+    if (!practice && (forever() ? num(q.ro) > 0 : q.round < rounds())) return { ...q, i: 0, round: q.round + 1, ro: 0 };
+    return null;
+};
 // Buys a set amount: 'amount' right away, 'stockAmount' once what's in stock is opened.
 const amountish = (C = S) => C('source') === 'amount' || C('source') === 'stockAmount';
 const buys = (C = S) => amountish(C) || C('source') === 'buy';
@@ -503,7 +597,9 @@ const budgetOf = (cash, C = S) => {
 function buyCount(cash, price, C = S) {
     if (!(price > 0)) return 0;
     const afford = Math.floor(budgetOf(cash, C) / (price + (ticketBuy(C) ? TICKET : 0)));
-    return C('source') === 'buy' ? afford : Math.min(Math.max(0, Math.floor(num(C('buyAmount')))), afford);
+    // A queue's case with spare cash: at most its amount.
+    if (C('source') === 'buy') return num(C('buyCap')) > 0 ? Math.min(afford, Math.floor(num(C('buyCap')))) : afford;
+    return Math.min(Math.max(0, Math.floor(num(C('buyAmount')))), afford);
 }
 // A job queued from the Armory shop: opens that item from stock (never buys, no tickets), drops by its own profile
 // ({ mode: 'custom', drops, under, fav }) or the Drops settings ('default'). fav: 'opener' (the Auto-favourite card),
@@ -547,6 +643,10 @@ async function run(aid, name, practice, cont, shop) {
     const rec = { t: Date.now(), acct: name, item: '', spent: 0, opened: 0, value: 0, cost: 0, pv: 0, favs: 0, xp: 0, rank: '', result: '', tickets: 0, ticketCost: 0, ...(shop ? { from: 'shop' } : {}) };
     let start = null, item = null;
     const C = shop ? shopCfg(shop) : cfgOf(aid);   // a shop job's own, its set's item and buy rules, or the main ones
+    // Case queue: which case (batch) of the queue this is.
+    const q = shop ? null : qOf(aid), qn = q ? turnsOf(aid).length : 0;
+    const qTxt = q && (qn > 1 || manyRounds()) ? `batch ${q.i % qn + 1} of ${qn}${manyRounds() && !practice ? `, ${roundOf(q)}` : ''}` : '';
+    if (!practice) p.q = qTxt ? { i: q.i % qn, n: qn, round: q.round, rounds: forever() ? 0 : rounds() } : null;
     const useT = ticketsOn(C), buyT = ticketBuy(C);
     let tickets = 0;
     try {
@@ -558,11 +658,15 @@ async function run(aid, name, practice, cont, shop) {
         item = catalog.items.find(c => c._id === C('item')) || (shop ? { _id: shop.id, name: shop.name || 'item', type: shop.type, price: 0, rankNeeded: 0, isNonBuyable: true } : null);
         if (!item) throw new Stop(C('item') ? 'the chosen item is no longer in the shop' : 'nothing chosen to open yet');
         rec.item = item.name; p.item = item.name;
+        if (qTxt && !cont) log(`${qTxt}: ${item.name}`);
         const rankId = num(start.rank && start.rank.id);
         if (num(item.rankNeeded) > rankId) throw new Stop(`${item.name} needs rank ${item.rankNeeded} (the account is ${(start.rank && start.rank.name) || 'rank ' + rankId})`);
         let perCall = Math.max(1, parseInt(start.caseOpenCount) || 1), mult = Math.max(1, parseInt(start.maxCaseOpenMultiplier) || 1);
         const perOpen = perCall * mult;
-        let stock = await stockOf(aid, item._id);
+        // A queue's case from stock: at most its amount (p.opened: what this batch opened in its earlier turns).
+        const capN = Math.floor(num(C('openCap')));
+        const stockNow = async () => { const n = await stockOf(aid, item._id); return capN > 0 ? Math.max(0, Math.min(n, capN - num(p.opened))) : n; };
+        let stock = await stockNow();
 
         // 1. cash -> items (whole opens when there's enough for one)
         // A backlog from runs that ran out of time is opened first; more is bought once it's down.
@@ -583,8 +687,9 @@ async function run(aid, name, practice, cont, shop) {
                     const pre = num((await getJson(aid, '/api/me')).money);
                     const br = await req(aid, '/api/cases', { method: 'POST', body: { id: item._id, type: item.type, amount: buy } });
                     const spent = Math.max(0, pre - num((await getJson(aid, '/api/me')).money));
-                    stock = await stockOf(aid, item._id);
+                    stock = await stockNow();
                     rec.spent += spent;
+                    if (spent) track(aid, item, { spent });
                     if (br.kind !== 'ok' && !spent) { catalog.at = 0; throw new Stop(`buying failed (${(br.json && br.json.error) || 'HTTP ' + br.status}), nothing was charged`); }
                     // Charged more than the shop said: the price moved. Stop buying everywhere until it's looked at.
                     if (spent / buy > price * 1.02) { paused = `charged $${(spent / buy).toFixed(2)} each instead of $${price} — check the price, then change the item or its max price`; log('buying stopped: ' + paused, 'error'); }
@@ -609,6 +714,7 @@ async function run(aid, name, practice, cont, shop) {
             const me = await getJson(aid, '/api/me');
             const spent = Math.max(0, pre - num(me.money));
             rec.spent += spent; rec.ticketCost += spent;
+            if (spent) track(aid, item, { spent });
             tickets = num(me.tickets); p.tickets = tickets; tix.set(aid, tickets);
             if (r.kind !== 'ok' || (r.json && r.json.error)) throw new Stop(`event tickets: ${(r.json && r.json.error) || 'HTTP ' + r.status}${spent ? '' : ', nothing was charged'}`);
             log(`bought ${count(n)} event ticket${n === 1 ? '' : 's'} for ${money(spent)}`, 'ok');
@@ -656,7 +762,9 @@ async function run(aid, name, practice, cont, shop) {
                     lane.phase = 'opening';
                 };
                 let fails = 0, full = 0, locks = 0, rates = 0, sizeSaid = '';
-                const ends = S('exclusive') ? Infinity : Date.now() + (num(S('turnMs')) || RUN_MS);
+                // A queue's next batch goes on in the same turn while it has time left (q.turnEnds).
+                const ends = S('exclusive') ? Infinity : q && q.turnEnds > Date.now() ? q.turnEnds : Date.now() + (num(S('turnMs')) || RUN_MS);
+                lane.ends = ends;
                 // Boosts: checked when opening starts, every BOOST_EVERY_MS and right as one ends; the open size follows.
                 const boost = { at: 0, end: 0, said: new Set() };
                 const boostCheck = async () => {
@@ -696,14 +804,17 @@ async function run(aid, name, practice, cont, shop) {
                         const v = Array.isArray(j) ? j.reduce((t, x) => t + num(x && x.price), 0) : num(j && j.totalValue);
                         rec.value += v; p.value += v;
                         // What they cost: the shop price, plus a ticket each when opened with tickets.
-                        if (num(item.price) > 0) { rec.cost += c * m * (num(item.price) + (useT ? TICKET : 0)); rec.pv += v; }
+                        const cost = num(item.price) > 0 ? c * m * (num(item.price) + (useT ? TICKET : 0)) : 0;
+                        if (cost) { rec.cost += cost; rec.pv += v; }
+                        const favd = j && !Array.isArray(j) && Array.isArray(j.favoritedSkins) ? j.favoritedSkins : [];
+                        track(aid, item, { opened: c * m, cost, value: v, pv: cost ? v : 0, tickets: useT ? c * m : 0, favs: favd.length }, Array.isArray(j) ? j : favd);
                         if (j && !Array.isArray(j)) {
                             const oid = ++hookOpenSeq;
                             if (Array.isArray(j.favoritedSkins) && j.favoritedSkins.length) setTimeout(save, 0);   // the drops list, once this open's are in
                             for (const f of Array.isArray(j.favoritedSkins) ? j.favoritedSkins : []) { rec.favs++; const d = hookDrop(f, (ctx.accounts.get(aid) || {}).name || aid, item.name, oid); keepDrop(aid, d); hookPush(d); log(`kept a favourited drop: ${f.event && f.event.name ? f.event.name + ' ' : ''}${f.name || 'a skin'}${f.price ? ` ($${num(f.price).toLocaleString('en-US')})` : ''}`, 'ok'); }
                         }
                         if (lane.opened % (perOpen * 25) < c * m) {
-                            stock = await stockOf(aid, item._id); p.left = stock; save();
+                            stock = await stockNow(); p.left = stock; save();
                             if (bySell || useT) {
                                 const me = await getJson(aid, '/api/me');
                                 if (bySell) inv.used = num(me.inventoryCount);   // drops can count more than the math says
@@ -735,7 +846,7 @@ async function run(aid, name, practice, cont, shop) {
                         }
                         if (++fails >= MAX_OPEN_FAILS) throw new Stop(`opening failed ${fails}× in a row (${(r.json && r.json.error) || 'HTTP ' + r.status})`);
                         await ctx.sleep(2000 * fails);
-                        stock = await stockOf(aid, item._id); p.left = stock;
+                        stock = await stockNow(); p.left = stock;
                     }
                     if (num(S('openGapMs'))) await ctx.sleep(num(S('openGapMs')));   // tests only: slows a run down to watch it
                     p.openMs += Date.now() - t0;
@@ -754,7 +865,13 @@ async function run(aid, name, practice, cont, shop) {
             }
         }
         rec.result = practice ? (plan.length ? 'practice' : 'practice — nothing to do') : rec.opened ? 'done' : 'nothing to open';
-        if (practice) { state.practiceAt = Date.now(); state.plans = { ...(state.plans || {}), [aid]: { t: Date.now(), name, lines: plan.length ? plan : ['nothing to do right now'] } }; }
+        if (practice) {
+            // Case queue: each batch's lines after the ones before it in this practice run.
+            const was = state.plans && state.plans[aid], prev = q && q.i > 0 && was && was.t >= num(q.t0) ? was.lines : [];
+            const head = qTxt ? `${qTxt}, ${item.name}` : '';
+            const lines = plan.length ? [...(head ? [head + ':'] : []), ...plan] : [head ? head + ': nothing to do right now' : 'nothing to do right now'];
+            state.practiceAt = Date.now(); state.plans = { ...(state.plans || {}), [aid]: { t: Date.now(), name, lines: [...prev, ...lines] } };
+        }
     } catch (e) {
         rec.result = e instanceof Stop ? e.message : 'error: ' + e.message;
         if (!(e instanceof Stop)) ctx.log('stopped: ' + e.message, 'error', aid);
@@ -770,6 +887,7 @@ async function run(aid, name, practice, cont, shop) {
                     rec.xp = Math.max(0, num(e.xp) - num(start.xp));
                     const r0 = num(start.rank && start.rank.id), r1 = num(e.rank && e.rank.id);
                     if (r1 > r0) { rec.rank = e.rank.name; today().ranks += r1 - r0; ctx.log(`ranked up to ${e.rank.name}`, 'ok', aid); }
+                    if (item && (rec.xp || r1 > r0)) track(aid, item, { xp: rec.xp, ranks: Math.max(0, r1 - r0) });
                     if (item) {
                         const it = (state.items[item._id] = state.items[item._id] || { name: item.name, opened: 0, spent: 0, value: 0, xp: 0 });
                         for (const k of ['opened', 'spent', 'value', 'xp', 'cost', 'pv', 'tickets']) it[k] = (it[k] || 0) + rec[k];
@@ -781,11 +899,27 @@ async function run(aid, name, practice, cont, shop) {
         for (const k of ['spent', 'opened', 'value', 'xp', 'favs', 'cost', 'pv', 'tickets']) t[k] = (t[k] || 0) + rec[k];
         state.last[aid] = Date.now();
         state.runs = [rec, ...(state.runs || [])].slice(0, 30);
-        // The job goes on after a break while there's more to open; otherwise it's done.
-        if (!practice && rec.left > 0 && !halted() && !lane.halt) jobs.set(aid, { practice: false, cont: true, at: Date.now() + (num(S('turnMs')) ? 500 : BREAK_MS), shop: shop || null });
-        else { jobs.delete(aid); if (!practice) { p.result = rec.result; p.at = Date.now(); } }
+        // The job goes on after a break while there's more to open; then (case queue) with the queue's next case,
+        // right away while the turn has time left, else after the break; otherwise it's done.
+        if (q && !practice) { q.opened = num(q.opened) + rec.opened; q.ro = num(q.ro) + rec.opened; }
+        const stopped = halted() || lane.halt, nx = q && !stopped && !(rec.left > 0) ? nextTurn(aid, q, practice) : null;
+        if (q && !practice && !stopped && !(rec.left > 0) && !nx && forever() && queued(aid))
+            log(`round ${q.round} of the queue had nothing left to open (no cash or stock) — looping stops after ${count(q.round - 1)} full round${q.round === 2 ? '' : 's'}`);
+        if (!practice && rec.left > 0 && !stopped) jobs.set(aid, { practice: false, cont: true, at: Date.now() + (num(S('turnMs')) ? 500 : BREAK_MS), shop: shop || null, q });
+        else if (nx) {
+            // The next batch goes to the back of the line, so accounts still waiting for their first get a lane first.
+            const te = lane.ends || q.turnEnds || 0, inTurn = practice || S('exclusive') || !te || Date.now() < te;
+            jobs.delete(aid);
+            jobs.set(aid, { practice, cont: false, at: Date.now() + (inTurn ? QUEUE_GAP_MS : num(S('turnMs')) ? 500 : BREAK_MS), q: { ...nx, turnEnds: inTurn && te !== Infinity ? te : 0 } });
+            if (!practice) { p.result = rec.result; p.at = Date.now(); }
+        } else {
+            jobs.delete(aid);
+            // A queue that opened something ends "done", even when its last batch had nothing left to open.
+            if (!practice) { p.result = q && q.opened && rec.result === 'nothing to open' ? 'done' : rec.result; p.at = Date.now(); }
+        }
         lanes.delete(aid);
-        if (ctx.accounts.setBusy) ctx.accounts.setBusy(aid, null);
+        // Others paused until done: an account with more of its queue to go stays held.
+        if (ctx.accounts.setBusy) ctx.accounts.setBusy(aid, nx && !practice && S('exclusive') ? 'waiting to open cases (others paused until done)' : null);
         save();
     }
 }
@@ -912,6 +1046,7 @@ module.exports = {
     start(c) {
         ctx = c;
         state = { last: {}, runs: [], items: {}, ...ctx.data.get() };
+        stats();   // started once, from the all-time per-item totals already kept
         hookUrl = state.hook ? ctx.secrets.unseal(state.hook) : null;
         hookQ = []; hookDead = ''; hookWait = 0;
         if (state.hook && !hookUrl) ctx.log('Discord webhook: the saved one can\'t be read on this computer — paste it again', 'warn');
@@ -947,7 +1082,7 @@ module.exports = {
         });
         ctx.panel.action('hookClear', () => { hookUrl = null; hookQ = []; hookDead = ''; delete state.hook; save(); return { message: 'Webhook removed.' }; });
         today();
-        ctx.settings.onChange((k) => { if (k === 'item' || k === 'maxPrice' || k === 'sets') paused = null; });
+        ctx.settings.onChange((k) => { if (k === 'item' || k === 'maxPrice' || k === 'sets' || k === 'queue' || k === 'openMode') paused = null; });
         // Fill the item list as soon as any account is clicking, so it can be chosen before the first run.
         const fill = async () => { if (catalog.items) return; const a = ctx.accounts.list().find(x => x.healthy); if (a) { try { await refreshCatalog(a.id); } catch (_) {} } };
         fill();
@@ -959,8 +1094,8 @@ module.exports = {
             const chosen = all.filter(a => cfgOf(a.id)('item'));
             if (!chosen.length) return { ok: false, error: 'Pick something to open first.' };
             halt = false;
-            for (const a of chosen) if (!lanes.has(a.id) && !(jobs.get(a.id) || {}).shop) {   // a shop job waiting keeps its place
-                jobs.set(a.id, { practice, cont: false, at: 0 });
+            for (const a of chosen) if (!lanes.has(a.id) && !(jobs.get(a.id) || {}).shop && !(jobs.get(a.id) || {}).q) {   // a shop job or a queue on its way keeps its place
+                jobs.set(a.id, { practice, cont: false, at: 0, q: queued(a.id) ? { i: 0, round: 1, t0: Date.now() } : null });
                 if (!practice) prog.delete(a.id);   // a new job: its progress starts over
                 // Others paused until done: the accounts waiting their turn are held from now, not only while opening.
                 if (!practice && S('exclusive') && ctx.accounts.setBusy) ctx.accounts.setBusy(a.id, 'waiting to open cases (others paused until done)');
@@ -1069,37 +1204,54 @@ module.exports = {
             // Sets in use: accounts on one open its item; the main What to open is for the rest (defs).
             const sets = setsOf(), setsOn = sets.some(s => s.item);
             const defs = chosen.filter(a => !setOf(a.id)), nd = defs.length;
+            // Case queue: What to open is the queue's cases (each row with its shop item) for the accounts not on a set.
+            const queue = queueOn(), qItems = queueRows().map(r => ({ row: r, item: itemOf(r.item) })), qReady = qItems.some(x => x.item);
+            const qText = () => qItems.map(x => `${x.item ? x.item.name : 'item not in the shop'} ×${count(Math.max(1, Math.floor(num(x.row.amount))))}`).join(' → ');
+            const multi = queue && manyRounds();
+            const roundsTxt = queue && forever() ? ', looping until you stop it' : queue && rounds() > 1 ? `, ${rounds()} rounds` : '';
+            const qHow = ({ amount: 'is bought, then opened', stockAmount: 'opens what\'s in stock, then that many are bought and opened', buy: 'is bought with the spare cash (at most that many), then opened', owned: 'opens from stock (at most that many)' })[S('source')] || 'is opened';
             const buying = buys(), keep = S('drops') === 'keep';
-            // The buy plan: each chosen account's cash (from its last check), what it buys and what's left.
             const price = item ? num(item.price) : 0, each = Math.floor(num(S('buyAmount')));
-            const plan = buying && item && price > 0 ? defs.map(a => {
-                const cash = num((ctx.accounts.stats(a.id) || {}).money), b = buyCount(cash, price);
-                return { name: a.name, cash, buy: b, cost: b * (price + (ticketBuy() ? TICKET : 0)), short: amountish() && b < each };
-            }) : [];
-            const planBuy = plan.reduce((s, p) => s + p.buy, 0), planCost = plan.reduce((s, p) => s + p.cost, 0), short = plan.filter(p => p.short).length;
             const usd = (v) => '$' + num(v).toLocaleString('en-US');
-            const blockedBuy = item && buying ? (item.isNonBuyable ? `${item.name} isn't sold in the shop — set Source to From stock`
+            // Each account's own plan: what it opens and what it buys (its set's settings, the queue's, or the main ones).
+            const planOne = (turn, cash) => {
+                const C = cfgFor(turn), it = itemOf(C('item')), pr = it ? num(it.price) : 0, by = buys(C);
+                const blocked = it && by && (it.isNonBuyable || (num(C('maxPrice')) > 0 && pr > num(C('maxPrice'))));
+                const b = it && by && !blocked ? buyCount(cash, pr, C) : 0;
+                return { C, set: turn.set || null, item: it, buying: by && !blocked, buy: b, cost: b * (pr + (ticketBuy(C) ? TICKET : 0)),
+                    short: !!(it && by && !blocked && amountish(C) && b < Math.floor(num(C('buyAmount')))) };
+            };
+            // A queue adds up over its cases (one round, each batch out of the cash the ones before leave); C, set and
+            // item are the case it's on (or starts with).
+            const planFor = (a) => {
+                const cash = num((ctx.accounts.stats(a.id) || {}).money), now = { ...planOne(turnOf(a.id), cash), cash };
+                if (!queued(a.id)) return now;
+                let left = cash;
+                const all = turnsOf(a.id).map(tn => { const x = planOne(tn, left); left -= x.cost; return x; });
+                return { ...now, queue: all, buying: all.some(x => x.buying), buy: all.reduce((t, x) => t + x.buy, 0), cost: all.reduce((t, x) => t + x.cost, 0), short: all.some(x => x.short) };
+            };
+            const plansOf = new Map(chosen.map(a => [a.id, planFor(a)]));
+            // The buy plan: each account on What to open, its cash (from its last check), what it buys and what's left.
+            const plan = buying && (queue ? qReady : item && price > 0) ? defs.map(a => { const pl = plansOf.get(a.id); return { name: a.name, cash: pl.cash, buy: pl.buy, cost: pl.cost, short: pl.short }; }) : [];
+            const planBuy = plan.reduce((s, p) => s + p.buy, 0), planCost = plan.reduce((s, p) => s + p.cost, 0), short = plan.filter(p => p.short).length;
+            const over = (it) => it.isNonBuyable || (num(S('maxPrice')) > 0 && num(it.price) > num(S('maxPrice')));
+            const qBlocked = queue && buying ? qItems.filter(x => x.item && over(x.item)).map(x => x.item.name) : [];
+            const blockedBuy = queue ? (qReady && qBlocked.length === qItems.filter(x => x.item).length ? `None of the queue's cases can be bought (not sold in the shop, or over your max price) — set Source to From stock` : null)
+                : item && buying ? (item.isNonBuyable ? `${item.name} isn't sold in the shop — set Source to From stock`
                 : num(S('maxPrice')) > 0 && price > num(S('maxPrice')) ? `${item.name} costs ${usd(price)}, over your max price of ${usd(S('maxPrice'))} — nothing is bought` : null) : null;
             const buyTxt = !item ? '' : S('source') === 'stockAmount' ? `Open the ${item.name} in stock, then buy ${count(each)} on each account (${money(planCost)} in all)` : S('source') === 'amount' ? `Buy ${count(each)} ${item.name} on each account (${money(planCost)} in all)` : `Buy ${item.name} with the spare cash (about ${money(planCost)} in all)`;
             const plans = Object.values(state.plans || {}).filter(x => chosen.some(a => a.name === x.name) && x.t > (state.practiceAt || 0) - 60000).sort((a, b) => b.t - a.t);
             const dropsTxt = dropsText();
-            const measured = item && state.items[item._id];
-            // Each account's own plan: what it opens and what it buys (its set's settings, or the main ones).
-            const planFor = (a) => {
-                const C = cfgOf(a.id), it = itemOf(C('item')), pr = it ? num(it.price) : 0, by = buys(C);
-                const blocked = it && by && (it.isNonBuyable || (num(C('maxPrice')) > 0 && pr > num(C('maxPrice'))));
-                const b = it && by && !blocked ? buyCount(num((ctx.accounts.stats(a.id) || {}).money), pr, C) : 0;
-                return { C, set: setOf(a.id), item: it, buying: by && !blocked, buy: b, cost: b * (pr + (ticketBuy(C) ? TICKET : 0)) };
-            };
+            const measured = !queue && item && state.items[item._id];
             // An account on two sets opens the first one's item: say which.
             const chosenOn = (s) => ctx.accounts.list().filter(a => s.item && setOf(a.id) === s).length;
             const setClash = ctx.accounts.list().filter(a => sets.filter(s => onSet(s, a.id)).length > 1).map(a => a.name);
-            const plansOf = new Map(chosen.map(a => [a.id, planFor(a)]));
             const ready = chosen.filter(a => plansOf.get(a.id).item);
-            const byItem = [...ready.reduce((m, a) => { const nm = plansOf.get(a.id).item.name; m.set(nm, (m.get(nm) || 0) + 1); return m; }, new Map())];
+            const byItem = [...ready.reduce((m, a) => { const pl = plansOf.get(a.id), nm = pl.queue ? `the queue (${qText()}${roundsTxt})` : pl.item.name; m.set(nm, (m.get(nm) || 0) + 1); return m; }, new Map())];
+            const allNames = [...new Set(ready.flatMap(a => (plansOf.get(a.id).queue || [plansOf.get(a.id)]).filter(x => x.item).map(x => x.item.name)))];
             const tBuy = ready.reduce((s, a) => s + plansOf.get(a.id).buy, 0), tCost = ready.reduce((s, a) => s + plansOf.get(a.id).cost, 0);
             const anyBuy = ready.some(a => plansOf.get(a.id).buying);
-            const itemsTxt = byItem.length <= 3 ? byItem.map(x => x[0]).join(', ') : `${byItem.length} items`;
+            const itemsTxt = allNames.length <= 3 ? allNames.join(', ') : `${allNames.length} items`;
             // How many really open at once: the setting, but at most PER_IP per exit IP the chosen accounts are on.
             const groups = ipGroups(), ips = new Set(chosen.map(a => ipOf(groups, a.id)));
             const setLanes = maxLanes(), maxLanes_ = Math.min(setLanes, PER_IP * Math.max(1, ips.size));
@@ -1113,6 +1265,7 @@ module.exports = {
                 if (l) return { text: (j && j.practice) || !p ? 'Practice run' : PHASE[l.phase] || l.phase, level: 'ok' };
                 if (j && j.practice) return { text: 'Practice run waiting', level: 'muted' };
                 if (j && j.cont) return { text: `On a break · back in ${dur(j.at - Date.now())}` };
+                if (j && j.q && (j.q.i || j.q.round > 1) && j.at > Date.now() + 1500) return { text: `Next batch in ${dur(j.at - Date.now())}` };
                 if (j) return { text: !a.healthy ? 'Waiting · not clicking' : ctx.accounts.busy && ctx.accounts.busy(a.id) ? 'Waiting · another plugin is using it' : ipFull(a.id) && maxLanes_ < setLanes ? `Waiting · ${PER_IP} at a time on this IP` : lanes.size >= maxLanes_ ? `Waiting · ${maxLanes_} at a time` : 'Waiting', level: 'muted' };
                 if (!a.healthy) return { text: 'Not clicking', level: 'muted' };
                 if (p && p.at) {
@@ -1124,7 +1277,13 @@ module.exports = {
                 return { text: 'Idle', level: 'muted' };
             };
             // Running first, then on a break, then waiting, then the rest in the usual order.
-            const rank = (a) => (lanes.has(a.id) ? 0 : jobs.has(a.id) && jobs.get(a.id).cont ? 1 : jobs.has(a.id) ? 2 : 3);
+            const rank = (a) => { const j = jobs.get(a.id); return lanes.has(a.id) ? 0 : j && (j.cont || (j.q && (j.q.i || j.q.round > 1))) ? 1 : j ? 2 : 3; };
+            // Case queue: which case the account is on ("2/3"; its round too, while it's on the way).
+            const qAt = (a) => {
+                const n = turnsOf(a.id).length, q = qOf(a.id);
+                if (!queued(a.id) || (n < 2 && !manyRounds())) return '';
+                return `${(q ? q.i % n : 0) + 1}/${n}${q && manyRounds() ? `, round ${q.round}${forever() ? '' : `/${rounds()}`}` : ''} · `;
+            };
             // A job queued from the Armory shop: running or waiting now (its own table below, not this one).
             const shopNow = (id) => (lanes.get(id) && lanes.get(id).shop) || (jobs.get(id) && jobs.get(id).shop) || null;
             // Event tickets: a column when any account opens with them (live while opening, else from its last check).
@@ -1139,7 +1298,7 @@ module.exports = {
                 const total = p && p.left != null ? p.opened + p.left : 0, r = rateOf(p), eta = on ? etaOf(p) : 0;
                 return [
                     a.name,
-                    ...(setsOn ? [pl.item ? (pl.set ? setName(pl.set) + ' · ' : '') + pl.item.name : { text: 'nothing chosen', level: 'muted' }] : []),
+                    ...(setsOn || queue ? [pl.item ? qAt(a) + (pl.set ? setName(pl.set) + ' · ' : '') + pl.item.name : { text: 'nothing chosen', level: 'muted' }] : []),
                     status(a),
                     total ? { bar: p.opened / total, text: `${count(p.opened)} / ${count(total)}` } : { text: '—', level: 'muted' },
                     p && p.left != null ? count(p.left) : '—',
@@ -1148,7 +1307,8 @@ module.exports = {
                     ...(tixOn ? [ticketsOn(pl.C) ? tixOf(a) : { text: 'off', level: 'muted' }] : []),
                     money(num(me.money)),
                     on ? { label: 'Stop', action: 'stopOne', arg: a.id }
-                        : pl.item && a.healthy ? { label: 'Open', action: 'openOne', arg: a.id, confirm: `${pl.buying ? pl.C('source') === 'stockAmount' ? `Open the ${pl.item.name} in stock, then buy ${count(Math.floor(num(pl.C('buyAmount'))))} and open those` : `Buy ${pl.item.name}${pl.C('source') === 'amount' ? ` (${count(Math.floor(num(pl.C('buyAmount'))))})` : ' with the spare cash'} and open it` : `Open the ${pl.item.name} in stock`} on ${a.name}? Drops are ${dropsTxt}.` } : '',
+                        : pl.item && a.healthy ? { label: 'Open', action: 'openOne', arg: a.id, confirm: pl.queue ? `Open the queue on ${a.name}: ${qText()}${roundsTxt}? Each batch ${qHow}. Drops are ${dropsTxt}.`
+                            : `${pl.buying ? pl.C('source') === 'stockAmount' ? `Open the ${pl.item.name} in stock, then buy ${count(Math.floor(num(pl.C('buyAmount'))))} and open those` : `Buy ${pl.item.name}${pl.C('source') === 'amount' ? ` (${count(Math.floor(num(pl.C('buyAmount'))))})` : ' with the spare cash'} and open it` : `Open the ${pl.item.name} in stock`} on ${a.name}? Drops are ${dropsTxt}.` } : '',
                 ];
             });
 
@@ -1188,27 +1348,38 @@ module.exports = {
             const tileGroups = catalog.items ? kinds.map(([k, title]) => ({ title, items: catalog.items.filter(c => c.kind === k)
                 .sort((x, y) => num(x.rankNeeded) - num(y.rankNeeded) || num(x.price) - num(y.price) || String(x.name).localeCompare(String(y.name)))
                 .map(c => ({ id: c._id, name: c.name, image: pic(c), sub: usd(c.price) + (num(c.rankNeeded) > 1 ? ` · rank ${c.rankNeeded}` : ''), meta: c.isNonBuyable ? 'not sold — open only' : '' })) })) : [];
-            const buyKeys = amountish() ? ['source', 'buyAmount', 'maxPrice', 'keepMoney'] : buying ? ['source', 'maxPrice', 'keepMoney', 'keepPct', 'spendPerRun'] : ['source'];
-            const buySum = !item ? 'pick what to open first' : !buying ? 'opens what\'s in stock, buys nothing' : blockedBuy ? 'not buying' : `${S('source') === 'stockAmount' ? 'stock first, then ' : ''}buys ${count(planBuy)} for ${money(planCost)}${nd > 1 ? ` on ${nd} accounts` : ''}`;
-            const ticketSum = item && ticketsOn() ? ` · event tickets${ticketBuy() ? ', buying them' : ''}` : '';
+            // The queue's rows say how many of each, so no Amount here.
+            const buyKeys = (amountish() ? ['source', 'buyAmount', 'maxPrice', 'keepMoney'] : buying ? ['source', 'maxPrice', 'keepMoney', 'keepPct', 'spendPerRun'] : ['source']).filter(k => !(queue && k === 'buyAmount'));
+            const picked = queue ? qReady : !!item;
+            const buySum = !picked ? 'pick what to open first' : !buying ? 'opens what\'s in stock, buys nothing' : blockedBuy ? 'not buying' : `${S('source') === 'stockAmount' ? 'stock first, then ' : ''}buys ${count(planBuy)} for ${money(planCost)}${nd > 1 ? ` on ${nd} accounts` : ''}${multi ? ' a round' : ''}`;
+            const ticketSum = picked && ticketsOn() ? ` · event tickets${ticketBuy() ? ', buying them' : ''}` : '';
             const steps = [
-                { id: 'item', title: 'What to open', image: item ? pic(item) : '', done: !!item,
-                    summary: (setsOn ? (nd ? 'everyone else: ' : 'no one else: ') : '') + (item ? `${item.name} · ${usd(price)} each` : 'pick a case, capsule or collection'),
-                    text: setsOn ? 'Accounts on a set open the set\'s item (More options → Sets); this is for everyone else.' : '',
-                    blocks: [{ type: 'tiles', key: 'item', search: true, next: true, groups: tileGroups,
+                { id: 'item', title: 'What to open', image: queue ? (qItems.find(x => x.item) ? pic(qItems.find(x => x.item).item) : '') : item ? pic(item) : '', done: picked,
+                    summary: (setsOn ? nd ? 'everyone else: ' : 'no one else: ' : '') + (queue ? (qItems.length ? `queue: ${qText()}${roundsTxt}` : 'add cases to the queue')
+                        : item ? `${item.name} · ${usd(price)} each` : 'pick a case, capsule or collection'),
+                    text: [queue ? 'The accounts open a batch of each case in order, top to bottom, then start again for each round. How to get them (step 2) applies to every case.' : '',
+                        setsOn ? 'Accounts on a set open the set\'s item (More options → Sets); this is for everyone else.' : ''].filter(Boolean).join(' '),
+                    keys: ['openMode'],
+                    blocks: queue ? [
+                        ...(catalog.items ? [] : [{ type: 'text', text: 'The shop list loads once one of the chosen accounts is clicking.' }]),
+                        { type: 'list', key: 'queue', summaryFirst: true, images: queueRows().map(r => { const it = itemOf(r.item); return it ? pic(it) : ''; }), summaries: queueRows().map(r => { const it = itemOf(r.item), k = Math.max(1, Math.floor(num(r.amount)));
+                            return `${it ? `${it.name} ×${count(k)} · ${usd(it.price)} each` : `item not in the shop ×${count(k)}`}`; }) },
+                        { type: 'settings', keys: ['queueForever', ...(forever() ? [] : ['queueRounds'])] },
+                    ] : [{ type: 'tiles', key: 'item', search: true, next: true, groups: tileGroups,
                         empty: 'The shop list loads once one of the chosen accounts is clicking.' }] },
-                { id: 'buy', title: 'How to get them', done: !!item && !blockedBuy, warn: blockedBuy || '',
+                { id: 'buy', title: 'How to get them', done: picked && !blockedBuy, warn: blockedBuy || '',
                     summary: buySum + ticketSum,
                     keys: [...buyKeys, 'useTickets', ...(ticketsOn() ? ['buyTickets'] : [])],
                     blocks: [
                         ...(blockedBuy ? [{ type: 'notice', level: 'warn', text: blockedBuy }] : []),
+                        ...(qBlocked.length && !blockedBuy ? [{ type: 'notice', level: 'warn', text: `Not bought (not sold in the shop, or over your max price): ${qBlocked.join(', ')} — ${qBlocked.length === 1 ? 'it opens' : 'they open'} from stock only.` }] : []),
                         ...(plan.length && !blockedBuy ? [
                             { type: 'stats', items: [
-                                { label: 'Price each', value: usd(price) },
-                                { label: amountish() ? (nd > 1 ? `Buying (${count(each)} each)` : 'Buying') : 'Spare cash buys', value: count(planBuy) },
+                                queue ? { label: 'Cases in the queue', value: count(qItems.filter(x => x.item).length) } : { label: 'Price each', value: usd(price) },
+                                { label: queue ? (multi ? 'Buying, first round' : 'Buying') : amountish() ? (nd > 1 ? `Buying (${count(each)} each)` : 'Buying') : 'Spare cash buys', value: count(planBuy) },
                                 { label: 'Total cost', value: money(planCost) },
                             ] },
-                            ...(short ? [{ type: 'notice', level: 'warn', text: `${short} account${short === 1 ? '' : 's'} can't cover ${count(each)}${num(S('keepMoney')) > 0 ? ` and keep ${money(num(S('keepMoney')))}` : ''} — ${short === 1 ? 'it buys' : 'they buy'} what the cash allows.` }] : []),
+                            ...(short ? [{ type: 'notice', level: 'warn', text: `${short} account${short === 1 ? '' : 's'} can't cover ${queue ? 'the whole queue' : count(each)}${num(S('keepMoney')) > 0 ? ` and keep ${money(num(S('keepMoney')))}` : ''} — ${short === 1 ? 'it buys' : 'they buy'} what the cash allows.` }] : []),
                             { type: 'table', empty: 'No accounts chosen yet.', columns: ['Account', 'Cash', 'Buys', 'Cost', 'Cash after'],
                                 rows: [...plan.map(p => [p.name, money(p.cash), p.short ? `${count(p.buy)} (short)` : count(p.buy), money(p.cost), money(p.cash - p.cost)]),
                                     ...(plan.length > 1 ? [['Total', money(plan.reduce((s, p) => s + p.cash, 0)), count(planBuy), money(planCost), money(plan.reduce((s, p) => s + p.cash - p.cost, 0))]] : [])] },
@@ -1274,11 +1445,12 @@ module.exports = {
                 title: !n ? 'Choose accounts to open on' : !ready.length ? 'Pick something to open' : `Ready to open ${itemsTxt}`,
                 ready: !!(n && ready.length), next: 'Review and open',
                 text: !n ? 'Step 3, Accounts.' : !ready.length ? 'Step 1, What to open.'
-                    : `${anyBuy ? `Buys ${count(tBuy)} for ${money(tCost)}${ready.some(a => ticketBuy(plansOf.get(a.id).C)) ? ' (tickets included)' : ''}` : 'Opens what\'s in stock'} on ${ready.length} account${ready.length === 1 ? '' : 's'}, ${maxLanes_} at a time · drops ${dropsTxt}${ready.some(a => ticketsOn(plansOf.get(a.id).C)) ? ' · with event tickets' : ''}${S('exclusive') ? ' · other plugins wait until it\'s done' : ''}${ready.length < n ? ` · ${n - ready.length} with nothing chosen` : ''}`,
+                    : `${anyBuy ? `Buys ${count(tBuy)} for ${money(tCost)}${multi ? ' in the first round' : ''}${ready.some(a => ticketBuy(plansOf.get(a.id).C)) ? ' (tickets included)' : ''}` : 'Opens what\'s in stock'} on ${ready.length} account${ready.length === 1 ? '' : 's'}, ${maxLanes_} at a time${queue && nd ? `, a batch of each case in turn${roundsTxt}` : ''} · drops ${dropsTxt}${ready.some(a => ticketsOn(plansOf.get(a.id).C)) ? ' · with event tickets' : ''}${S('exclusive') ? ' · other plugins wait until it\'s done' : ''}${ready.length < n ? ` · ${n - ready.length} with nothing chosen` : ''}`,
                 buttons: ready.length ? [
-                    { label: 'Open now', action: 'open', primary: true, confirm: !setsOn
-                        ? `${buying && !blockedBuy ? `${buyTxt} and open it` : `Open the ${item.name} in stock`} on ${n} account${n === 1 ? '' : 's'}? Drops are ${dropsTxt}.`
-                        : `Open on ${ready.length} account${ready.length === 1 ? '' : 's'}: ${byItem.map(([nm, k]) => `${nm} on ${k}`).join(', ')}${anyBuy ? ` (buying about ${money(tCost)} in all)` : ''}? Drops are ${dropsTxt}.` },
+                    { label: 'Open now', action: 'open', primary: true, confirm: !setsOn && queue
+                        ? `Open the queue on ${n} account${n === 1 ? '' : 's'}: ${qText()}${roundsTxt}? Each batch ${qHow}${anyBuy ? ` (about ${money(tCost)}${multi ? ' in the first round' : ' in all'})` : ''}. Drops are ${dropsTxt}.`
+                        : !setsOn ? `${buying && !blockedBuy ? `${buyTxt} and open it` : `Open the ${item.name} in stock`} on ${n} account${n === 1 ? '' : 's'}? Drops are ${dropsTxt}.`
+                        : `Open on ${ready.length} account${ready.length === 1 ? '' : 's'}: ${byItem.map(([nm, k]) => `${nm} on ${k}`).join(', ')}${anyBuy ? ` (buying about ${money(tCost)}${multi ? ' in the first round' : ' in all'})` : ''}? Drops are ${dropsTxt}.` },
                     { label: 'Practice run', action: 'preview' }] : [],
             };
             const wizard = { type: 'wizard', id: 'setup', steps, extras, finish };
@@ -1286,6 +1458,76 @@ module.exports = {
             // The account pills: wallet, then the open size (open count × multiplier, boosts included).
             const accountLines = Object.fromEntries(ctx.accounts.list().map(a => { const m = a.me || {};
                 return [a.id, [m.money != null ? `Wallet ${money(num(m.money))}` : 'Wallet not read yet', m.openCount ? `Opens ${count(num(m.openCount))} × ${count(num(m.openMult) || 1)}` : 'Open size not read yet']]; }));
+            // Opening stats: the chosen time and split, summed from the day buckets (all time from its own totals).
+            const statsCard = (() => {
+                const s = stats();
+                if (!Object.keys(s.all.i).length) return null;   // nothing opened yet
+                const RANGE = { today: [1, 'Today'], week: [7, 'Last 7 days'], month: [30, 'Last 30 days'], all: [0, 'All time'] };
+                const [nDays, label] = RANGE[S('statsRange')] || RANGE.today;
+                const byAcct = S('statsBy') === 'account', side = byAcct ? 'a' : 'i';
+                const sum = new Map();
+                const fold = (src) => { for (const [k, o] of Object.entries(src || {})) { if (!sum.has(k)) sum.set(k, {}); addStats(sum.get(k), o); } };
+                if (nDays) for (const d of statDays(nDays)) fold((s.days[d] || {})[side]); else fold(s.all[side]);
+                const list = [...sum].filter(([, o]) => o.opened || o.spent).sort((a, b) => num(b[1].opened) - num(a[1].opened));
+                const tot = list.reduce((acc, [, o]) => addStats(acc, o), {});
+                const nameOf = (k) => byAcct ? ((ctx.accounts.get(k) || {}).name || s.accts[k] || 'removed account') : ((s.names[k] || {}).name || 'item');
+                const anyT = list.some(([, o]) => o.tickets), anyE = list.some(([, o]) => o.events);
+                const rows = list.slice(0, 200).map(([k, o]) => [nameOf(k), count(num(o.opened)), money(num(o.cost)), money(num(o.value)), o.cost ? pct(num(o.pv), o.cost) : '—',
+                    ...(anyT ? [count(num(o.tickets))] : []), count(num(o.xp)), count(num(o.favs)), ...(anyE ? [count(num(o.events))] : []),
+                    o.best ? `${o.best.name} · $${o.best.price.toLocaleString('en-US', { maximumFractionDigits: 2 })}${byAcct ? '' : ` (${o.best.acct})`}` : '—']);
+                // Graph (off unless picked): the range per hour (today), per day, or per week when all time runs past 60 days.
+                const graph = S('statsGraph');
+                const chart = (() => {
+                    if (!graph || graph === 'off' || !tot.opened) return null;
+                    if (!coreAtLeast('1.2.21')) return { type: 'text', text: 'Graphs need ZSB Hub 1.2.21 or newer.' };
+                    const dayLabel = (k) => new Date(k + 'T12:00:00Z').toLocaleDateString('en-US', { month: 'short', day: 'numeric' });
+                    let unit = 'day', buckets;   // [label, totals]
+                    if (nDays === 1) {
+                        const base = Date.parse(day() + 'T00:00:00Z'), hrs = ((s.days[day()] || {}).h) || {};
+                        unit = 'hour';
+                        buckets = Array.from({ length: new Date().getUTCHours() + 1 }, (_, h) => [new Date(base + h * 3600000).toLocaleTimeString('en-US', { hour: 'numeric' }), hrs[h] || {}]);
+                    } else {
+                        const keys = Object.keys(s.days).sort();
+                        const all = nDays ? statDays(nDays).reverse() : keys.length ? statDays(Math.round((Date.parse(day()) - Date.parse(keys[0])) / 86400000) + 1).reverse() : [];
+                        buckets = all.map(k => [dayLabel(k), (s.days[k] || {}).i ? Object.values(s.days[k].i).reduce((acc, o) => addStats(acc, o), {}) : {}]);
+                        if (buckets.length > 60) {   // weeks, the newest ending today
+                            unit = 'week';
+                            const w = [];
+                            for (let end = buckets.length; end > 0; end -= 7) w.unshift(buckets.slice(Math.max(0, end - 7), end).reduce((acc, [l, o]) => (acc[0] = acc[0] || l, addStats(acc[1], o), acc), [null, {}]));
+                            buckets = w.map(([l, o]) => ['wk ' + l, o]);
+                        }
+                    }
+                    const G = {
+                        opened: ['Opened', (o) => num(o.opened), count, ' opened'],
+                        value: ['Drops worth', (o) => num(o.value), money, ' drops worth'],
+                        ret: ['Return', (o) => (o.cost ? 100 * num(o.pv) / o.cost - 100 : 0), (v) => Math.round(v + 100) + '%', ' back'],
+                    }[graph];
+                    if (!G) return null;
+                    const values = buckets.map(([, o]) => G[1](o)), peak = Math.max(...values);
+                    return { type: 'chart', title: `${G[0]} per ${unit}${graph === 'ret' ? ', against 100% (drops worth what they cost): up is more, down is less' : peak > 0 ? ` · peak ${G[2](peak)}` : ''}`,
+                        labels: buckets.map(([l]) => l), values: values.map(v => Math.round(v * 100) / 100),
+                        tips: buckets.map(([l, o], i) => `${l} · ${graph === 'ret' && !o.cost ? 'nothing priced opened' : G[2](values[i]) + G[3]}`),
+                        ...(graph === 'ret' ? { scale: 10 } : {}) };
+                })();
+                const notes = [
+                    ...(list.length > 200 ? [`The 200 with the most opened are listed (of ${count(list.length)}).`] : []),
+                    ...(!nDays && s.pre ? [byAcct ? `By account counts from ${new Date(s.since).toLocaleDateString()} on; by case also has the ${count(s.pre)} opened before that.` : `Includes ${count(s.pre)} opened before ${new Date(s.since).toLocaleDateString()}, counted per case only.`] : []),
+                    ...(list.some(([, o]) => o.opened && !o.best) ? ['Best drop and event drops count the drops the site lists back: favourited ones, or all of them when the drops are kept or sold by the hub. Pro auto-sell doesn\'t list what it sold.'] : []),
+                ];
+                return { type: 'card', id: 'openStats', title: 'Opening stats', open: true,
+                    summary: tot.opened ? `${label}: ${count(tot.opened)} opened · drops worth ${money(num(tot.value))}` : `${label}: nothing opened`,
+                    keys: ['statsRange', 'statsBy', 'statsGraph'], blocks: [
+                        ...(tot.opened || tot.spent ? [{ type: 'stats', items: [
+                            { label: 'Opened', value: count(num(tot.opened)) },
+                            { label: 'Spent', value: money(num(tot.spent)) },
+                            { label: 'Drops worth', value: money(num(tot.value)) + (tot.cost ? ` · ${pct(num(tot.pv), tot.cost)}` : '') },
+                            { label: 'XP', value: count(num(tot.xp)) + (tot.ranks ? ` · ${tot.ranks} rank-up${tot.ranks === 1 ? '' : 's'}` : '') },
+                        ] }] : []),
+                        ...(chart ? [chart] : []),
+                        { type: 'table', empty: `Nothing opened ${nDays === 1 ? 'today' : nDays ? `in the last ${nDays} days` : 'yet'}.`, columns: [byAcct ? 'Account' : 'Case', 'Opened', 'Cost', 'Drops worth', 'Return', ...(anyT ? ['Tickets'] : []), 'XP', 'Favourited', ...(anyE ? ['Event drops'] : []), 'Best drop'], rows },
+                        ...notes.map(text => ({ type: 'text', text })),
+                    ] };
+            })();
             const unseen = unseenDrops(), anyDrops = Object.values(state.drops || {}).some(l => l.length);
             const dropsBtn = anyDrops ? [{ type: 'buttons', items: [{ label: 'Check drops' + (unseen && !coreAtLeast('1.2.16') ? ` (${count(unseen)} new)` : ''), action: 'dropsOpen', badge: unseen, primary: unseen > 0 }] }] : [];
             return { pin: act.length ? 'running' : undefined, modal: dropsModal() || undefined, accountLines, blocks: [
@@ -1293,17 +1535,12 @@ module.exports = {
                 ...(paused ? [{ type: 'notice', level: 'bad', text: 'Buying is stopped: ' + paused }] : []),
                 ...(hero ? [] : [wizard]),
                 ...dropsBtn,
-                ...(rows.length ? [{ type: 'table', columns: ['Account', ...(setsOn ? ['Opens'] : []), 'Status', 'Opened', 'Left', 'Speed', 'Time left', ...(tixOn ? ['Tickets'] : []), 'Cash', ''], rows }] : []),
+                ...(rows.length ? [{ type: 'table', columns: ['Account', ...(setsOn || queue ? ['Opens'] : []), 'Status', 'Opened', 'Left', 'Speed', 'Time left', ...(tixOn ? ['Tickets'] : []), 'Cash', ''], rows }] : []),
                 ...(shopRows.length ? [{ type: 'section', title: 'Queued from the Armory shop', text: 'Opens what the shop bought, from stock — nothing is bought here. Each starts when its account is free.', blocks: [
                     { type: 'table', columns: ['Account', 'Opens', 'Status', 'Opened', 'Left', 'Drops', ''], rows: shopRows }] }] : []),
                 ...(plans.length && !act.length ? [{ type: 'section', title: 'Practice run — what Open now would do', blocks: [
                     { type: 'table', wrap: true, columns: ['Account', 'Would', 'When'], rows: plans.slice(0, 10).map(x => [x.name, x.lines.join(' · '), new Date(x.t).toLocaleTimeString()]) }] }] : []),
-                ...(t.opened ? [{ type: 'stats', items: [
-                    { label: 'Opened today', value: count(t.opened) },
-                    { label: 'Spent today', value: money(t.spent) },
-                    { label: 'Drops worth', value: money(t.value || 0) + (t.cost ? ` · ${pct(t.pv, t.cost)}` : '') },
-                    { label: 'XP today', value: count(t.xp) + (t.ranks ? ` · ${t.ranks} rank-up${t.ranks === 1 ? '' : 's'}` : '') },
-                ] }] : []),
+                ...(statsCard ? [statsCard] : []),
                 ...(hero ? [{ type: 'section', title: 'Setup', blocks: [wizard] }] : []),
                 { type: 'section', title: 'Recent runs', blocks: [{ type: 'table', empty: 'No runs yet.', columns: ['When', 'Account', 'Item', 'Spent', 'Opened', 'Drops worth', 'Result'],
                     rows: (state.runs || []).slice(0, 10).map(r => [new Date(r.t).toLocaleTimeString(), r.acct, r.item || '—', money(r.spent), count(r.opened), money(r.value || 0), r.result]) }] },

@@ -330,14 +330,28 @@ tr:last-child td { border-bottom: none; }
 .ibar i { display: block; background: var(--text-2); border-radius: 4px 4px 0 0; min-height: 2px; }
 .ibar:hover i { background: var(--white); }
 .ibar span { font-size: calc(10px * var(--fs-scale)); color: var(--muted); text-align: center; }
+/* Plugin chart block: bars from the baseline (or up and down from a zero line), sparse day/hour labels under it. */
+.pchart { margin: 4px 0 0; display: grid; gap: 6px; }
+.pchart figcaption { font-size: var(--fs-s); color: var(--text-2); }
+.pchart-plot { position: relative; display: flex; gap: 2px; height: 140px; border-bottom: 1px solid var(--line-2); }
+.pchart-bar { position: relative; flex: 1; min-width: 0; }
+.pchart-bar i { position: absolute; left: 0; right: 0; background: var(--text-2); border-radius: 4px 4px 0 0; }
+.pchart-bar i.neg { background: var(--muted); border-radius: 0 0 4px 4px; }
+.pchart-bar:hover i { background: var(--white); }
+.pchart-zero { position: absolute; left: 0; right: 0; border-top: 1px solid var(--text-2); }
+.pchart-x { display: flex; gap: 2px; }
+.pchart-x span { flex: 1; min-width: 0; font-size: calc(10px * var(--fs-scale)); color: var(--muted); white-space: nowrap; overflow: visible; }
 .pset-help { font-size: var(--fs-s); }
 .prow-f select { width: 100%; }
 .prows { display: grid; gap: 10px; }
 .prows > button { justify-self: start; }
 .prow { border: 1px solid var(--line); border-radius: var(--r-m); background: var(--bg); padding: 10px 12px; display: grid; gap: 10px; }
-.prow-head { display: flex; justify-content: space-between; align-items: center; font-size: var(--fs-m); }
+.prow-head { display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; gap: 8px 10px; font-size: var(--fs-m); }
+/* The title takes the room; on a narrow screen the buttons go under it instead of squeezing it. */
+.prow-head .prow-title { flex: 1 1 160px; }
+.prow-img { width: 48px; flex: none; }
 .prow-fields { display: grid; grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); gap: 10px; }
-.prow-f { display: grid; gap: 4px; font-size: var(--fs-m); min-width: 0; }
+.prow-f { display: grid; gap: 4px; align-content: start; font-size: var(--fs-m); min-width: 0; }
 .prow-wide { grid-column: 1 / -1; }
 .prow-label { font-size: var(--fs-s); color: var(--muted); }
 .modal-box .prow-f input[type="number"], .modal-box .prow-f input[type="text"] { width: 100%; }
@@ -704,6 +718,12 @@ table.wrap td:first-child, table.wrap td:last-child { white-space: nowrap; }
 .ov-rank-n { color: var(--muted); }
 .ov-rank-n b { color: var(--text); font-variant-numeric: tabular-nums; }
 .ov-note { margin-top: 10px; font-size: var(--fs-s); }
+.ov-graph-bar { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 10px; margin: 0 0 12px; }
+.ov-graph-label { font-size: var(--fs-s); color: var(--text-2); }
+.ov-graph-bar .seg { flex-wrap: wrap; }
+.ov-graph-bar .seg button { white-space: nowrap; }
+.ov-graph-msg { margin: 0 0 12px; font-size: var(--fs-s); }
+#tab-overview .pchart { margin: 0 0 4px; }
 .pchip-detail { color: var(--text-2); font-size: var(--fs-s); font-variant-numeric: tabular-nums; margin-left: 2px; }
 .ppicker.grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); }
 .ppicker.grid.cols-2 { grid-template-columns: repeat(2, minmax(0, 1fr)); }
@@ -933,6 +953,8 @@ html:not([data-graphics="fancy"]) .fx-edge { display: none; }
 .pwiz-row:hover .pwiz-go { color: var(--text); }
 .pwiz-img { width: 56px; flex: none; }
 .pwiz-start { flex-wrap: wrap; border-style: dashed; }
+/* The buttons go under the text when it would get narrower than this (a phone, a long "Ready to open …"). */
+.pwiz-start .pwiz-txt { flex: 1 1 220px; }
 .pwiz-start .pbtns { margin: 0; }
 .pwiz-extras h5 { margin: 0 0 8px; font-size: var(--fs-s); font-weight: 600; color: var(--text-2); }
 .pwiz-xgrid { display: grid; grid-template-columns: repeat(auto-fill, minmax(260px, 1fr)); gap: 8px; }
