@@ -13,7 +13,7 @@
     if (!doc) return;
     const reduce = root.matchMedia ? root.matchMedia('(prefers-reduced-motion: reduce)') : { matches: false };
     const FPS = 30, TAU = Math.PI * 2;
-    let on = false, sceneId = 'shards', scene = null, canvas = null, ctx = null, raf = 0, last = 0, prev = 0;
+    let on = false, sceneId = 'shards', scene = null, canvas = null, ctx = null, raf = 0, timer = 0, last = 0, prev = 0;
     let w = 0, h = 0, dpr = 1, mx = -1, my = -1, C = null, start = 0;
 
     // No GPU (a VPS desktop): WebGL is missing or runs on the CPU. Then all of Fancy stays off, the background and the
@@ -193,6 +193,20 @@
         if (!scene.gl && !scene.gpu) ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
         scene.init();
     }
+    // The glow loops in panel.css (fancy-breathe on the main button, fancy-alarm on cards with a problem), left to
+    // themselves, redraw the page at the screen's rate: 240 frames a second on a 240 Hz screen, against 30 for the
+    // background. On a laptop with two graphics cards each frame is also copied to the power-saving card, so Fancy kept
+    // it busy (user report 2026-11-22). They are paused here and stepped on this loop's clock: one frame for both.
+    const LOOPS = /^fancy-(breathe|alarm)$/, born = new WeakMap();
+    let loops = [], scanned = 0;
+    function stepLoops(now) {
+        if (now - scanned > 500) { scanned = now; loops = doc.getAnimations().filter(a => LOOPS.test(a.animationName || '')); }
+        for (const a of loops) {
+            if (a.playState === 'idle') continue;
+            if (a.playState !== 'paused') { born.set(a, now - (a.currentTime || 0)); a.pause(); }
+            a.currentTime = now - born.get(a);
+        }
+    }
     function frame(now) {
         raf = 0;
         if (!on || doc.hidden) return;
@@ -201,10 +215,15 @@
             prev = last = now;
             if (!scene.gl && !scene.gpu) { ctx.globalCompositeOperation = 'source-over'; ctx.clearRect(0, 0, w, h); }
             scene.draw((now - start) / 1000, reduce.matches ? 0 : dt);
+            if (!reduce.matches) stepLoops(now);
         }
-        if (!reduce.matches) raf = root.requestAnimationFrame(frame);
+        if (reduce.matches) return;
+        // Sleep until just before the next frame is due, instead of waking at every refresh of a fast screen.
+        const wait = last + 1000 / FPS - 2 - root.performance.now() - 6;
+        if (wait > 0) timer = root.setTimeout(() => { timer = 0; kick(); }, wait);
+        else raf = root.requestAnimationFrame(frame);
     }
-    const kick = () => { if (on && !raf && !doc.hidden) raf = root.requestAnimationFrame(frame); };
+    const kick = () => { if (on && !raf && !timer && !doc.hidden) raf = root.requestAnimationFrame(frame); };
 
     // Border glow on cards, rows and buttons: React Bits' Border Glow (MIT + Commons Clause, Copyright (c) 2026 David Haz),
     // done for the whole page at once. For the one under the mouse (and the card or row around a button) this sets
@@ -271,7 +290,10 @@
             last = prev = 0; kick();
         } else {
             if (raf) root.cancelAnimationFrame(raf);
-            raf = 0;
+            if (timer) root.clearTimeout(timer);
+            raf = timer = 0;
+            loops.forEach(a => { if (a.playState === 'paused') a.play(); });
+            loops = []; scanned = 0;
             if (canvas) canvas.remove();
             edges.forEach(s => s.remove());
             root.removeEventListener('pointermove', onMove);
