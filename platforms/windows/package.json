@@ -1,7 +1,7 @@
 {
   "name": "clicker",
   "productName": "ZSB Hub",
-  "version": "1.2.21",
+  "version": "1.2.22",
   "description": "ZSB Hub: case-clicker auto clicker with plugins",
   "main": "main.js",
   "private": true,

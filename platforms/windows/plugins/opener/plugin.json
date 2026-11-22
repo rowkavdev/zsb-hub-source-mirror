@@ -1,9 +1,9 @@
 {
   "id": "opener",
   "name": "Opener",
-  "version": "1.16.0",
+  "version": "1.17.0",
   "description": "A tool for opening cases, capsules or collections on the accounts you choose: Practice run shows what it would do, Open now buys a set amount (or what the spare cash covers, or uses what is in stock), opens it all and keeps or sells the drops. Keeps stats of every open: per case and per account, by day, with the best drop.",
-  "minCore": "1.2.14",
+  "minCore": "1.2.22",
   "main": "index.js",
   "tab": "Opener",
   "group": "farming",
@@ -152,7 +152,7 @@
       "type": "list",
       "label": "Sets",
       "itemLabel": "set",
-      "help": "A set opens something else on its own accounts. Accounts on a set open its item even when they are not ticked under Which accounts; everyone else opens the item above.",
+      "help": "A set opens something else on its own accounts: one item, or a queue of cases of its own. Accounts on a set open that even when they are not ticked under Which accounts; everyone else opens what step 1 says.",
       "fields": {
         "name": {
           "type": "text",
@@ -160,11 +160,65 @@
           "default": "",
           "placeholder": "e.g. Big cases"
         },
+        "open": {
+          "type": "choice",
+          "label": "Open",
+          "default": "",
+          "options": [
+            {
+              "value": "",
+              "label": "One item"
+            },
+            {
+              "value": "queue",
+              "label": "A queue of cases"
+            }
+          ]
+        },
         "item": {
           "type": "choice",
           "label": "Item",
           "dynamic": true,
-          "default": ""
+          "default": "",
+          "unless": "open"
+        },
+        "queue": {
+          "type": "list",
+          "label": "Case queue",
+          "itemLabel": "case",
+          "reorder": true,
+          "when": "open",
+          "help": "Opened in order, top to bottom: a batch of each, then the next. How many: bought and opened (Buy a set amount), the most to buy with spare cash, or the most to open from stock.",
+          "fields": {
+            "item": {
+              "type": "choice",
+              "label": "Case",
+              "dynamic": true,
+              "default": ""
+            },
+            "amount": {
+              "type": "number",
+              "label": "How many",
+              "default": 100,
+              "min": 1
+            }
+          }
+        },
+        "forever": {
+          "type": "boolean",
+          "label": "Loop forever",
+          "when": "open",
+          "default": false,
+          "help": "Goes round the queue until you press Stop, or until a whole round opens nothing."
+        },
+        "rounds": {
+          "type": "number",
+          "label": "Rounds (times through the queue)",
+          "default": 1,
+          "min": 1,
+          "max": 100,
+          "when": "open",
+          "unless": "forever"
         },
         "accounts": {
           "type": "accounts",
@@ -201,7 +255,8 @@
           "type": "number",
           "label": "Cases to buy on each (a set amount)",
           "default": 100,
-          "min": 1
+          "min": 1,
+          "unless": "open"
         },
         "maxPrice": {
           "type": "number",

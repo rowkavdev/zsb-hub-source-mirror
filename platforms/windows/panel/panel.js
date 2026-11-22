@@ -1332,6 +1332,9 @@
     // A plugin's settings window. Every change is saved as it's made; "Done" just closes it.
     const fieldDefault = (f) => f.type === 'accounts' ? { all: false, ids: [] } : f.type === 'list' ? [] : f.type === 'account' ? ''
         : f.type === 'choice' ? (f.default ?? ((f.options || [])[0] || {}).value ?? '') : f.default ?? '';
+    // A list field inside a list row holds entries of the simple types only (one line each).
+    const SUB_TYPES = new Set(['text', 'number', 'boolean', 'choice', 'account']);
+    const subFields = (f) => Object.entries(f.fields || {}).filter(([, x]) => SUB_TYPES.has(x.type));
     // Nothing saved yet: a "choose" line, so the first option doesn't look picked.
     // Options; consecutive ones with the same .group go under one heading (<optgroup>).
     const optionsHtml = (opts, value) => {
@@ -1346,24 +1349,33 @@
         ${value !== '' && value != null && !(opts || []).some(o => String(o.value) === String(value)) ? `<option value="${esc(value)}" selected>${esc(value)}</option>` : ''}</select>`;
     const accountSelect = (value, attr) => choiceSelect([{ value: '', label: T('pluginmodal.noAccount') }, ...S.accounts.map(a => ({ value: a.id, label: a.name || a.id }))], value, attr);
 
-    // One field of a list row.
-    // One field of a list row. f.when: shown only while that field of the row is set; f.exclude: an
-    // accounts field hides the account picked in that field (a route's receiver isn't also a sender).
-    function rowFieldHtml(fk, f, v, dep = false) {
+    // One field of a list row. f.when: shown only while that field of the row is set; f.unless: hidden while it is;
+    // f.exclude: an accounts field hides the account picked in that field (a route's receiver isn't also a sender).
+    // A list field (core 1.2.22+) holds entries of its own, one line each (e.g. a set's case queue); fa is the
+    // attribute its entries' controls use (data-sf), so they never pass for the row's own fields.
+    function rowFieldHtml(fk, f, v, dep = false, fa = 'data-f') {
         const label = `<span class="prow-label">${esc(f.label || fk)}</span>`;
-        const at = (cls = 'prow-f') => `class="${cls}${dep ? ' prow-dep' : ''}${f.newline ? ' prow-nl' : ''}"${f.when ? ` data-fwhen="${esc(f.when)}"` : ''}${f.help ? ` title="${esc(f.help)}"` : ''}`;
-        const help = f.help ? `<span class="prow-help">${esc(f.help)}</span>` : '';
+        const at = (cls = 'prow-f') => `class="${cls}${dep ? ' prow-dep' : ''}${f.newline ? ' prow-nl' : ''}"${f.when ? ` data-fwhen="${esc(f.when)}"` : ''}${f.unless ? ` data-funless="${esc(f.unless)}"` : ''}${f.help ? ` title="${esc(f.help)}"` : ''}`;
+        const help = f.help && fa === 'data-f' ? `<span class="prow-help">${esc(f.help)}</span>` : '';
         if (f.type === 'heading') return `<div ${at('prow-h')}><b>${esc(f.label || '')}</b>${f.help ? `<span>${esc(f.help)}</span>` : ''}</div>`;
-        if (f.type === 'boolean') return `<label ${at('prow-f prow-bool')}><span class="switch"><input type="checkbox" data-f="${esc(fk)}" ${v ? 'checked' : ''}><i></i></span> <span>${esc(f.label || fk)}</span></label>`;
-        if (f.type === 'account') return `<label ${at()}>${label}${accountSelect(v, `data-f="${esc(fk)}"`)}${help}</label>`;
-        if (f.type === 'choice') return `<label ${at()}>${label}${choiceSelect(f.options, v, `data-f="${esc(fk)}"`)}${help}</label>`;
+        if (f.type === 'boolean') return `<label ${at('prow-f prow-bool')}><span class="switch"><input type="checkbox" ${fa}="${esc(fk)}" ${v ? 'checked' : ''}><i></i></span> <span>${esc(f.label || fk)}</span></label>`;
+        if (f.type === 'account') return `<label ${at()}>${label}${accountSelect(v, `${fa}="${esc(fk)}"`)}${help}</label>`;
+        if (f.type === 'choice') return `<label ${at()}>${label}${choiceSelect(f.options, v, `${fa}="${esc(fk)}"`)}${help}</label>`;
+        if (f.type === 'list') {
+            const subs = Array.isArray(v) ? v : [];
+            return `<div ${at('prow-f prow-wide')} data-f="${esc(fk)}" data-ftype="list">${label}<div class="psubs">${subs.map((r, j) => `<div class="psub" data-sub="${j}">
+                ${subFields(f).map(([sk, x]) => rowFieldHtml(sk, x, (r || {})[sk] ?? fieldDefault(x), false, 'data-sf')).join('')}
+                <div class="pbtns">${!f.reorder ? '' : j > 0 ? `<button class="small" data-sub-up="${j}">${H('pluginmodal.upRow')}</button>`
+                    : `<button class="small pbtn-ghost" disabled tabindex="-1" aria-hidden="true">${H('pluginmodal.upRow')}</button>`}<button class="small" data-sub-del="${j}">${H('pluginmodal.removeRow')}</button></div></div>`).join('')}</div>
+              ${subs.length ? '' : `<span class="muted">${H('pluginmodal.noRows')}</span>`}${help}<button class="small" data-sub-add>${H('pluginmodal.addRow', { what: esc(f.itemLabel || f.label || fk) })}</button></div>`;
+        }
         if (f.type === 'accounts') {
             const ids = new Set((v && v.ids) || []), all = !!(v && v.all);
             return `<div ${at('prow-f prow-wide')} data-f="${esc(fk)}" data-ftype="accounts"${f.exclude ? ` data-exclude="${esc(f.exclude)}"` : ''}>${label}<div class="pchips">
                 <label class="pchip"><input type="checkbox" data-fall ${all ? 'checked' : ''}> ${H('pluginmodal.allShort')}</label>
                 ${S.accounts.map(a => `<label class="pchip"><input type="checkbox" data-facct value="${esc(a.id)}" ${all || ids.has(a.id) ? 'checked' : ''} ${all ? 'disabled' : ''}> ${esc(a.name || a.id)}${chipDetail(f, a)}</label>`).join('')}</div></div>`;
         }
-        return `<label ${at()}>${label}<input type="${f.type === 'number' ? 'number' : 'text'}"${f.type === 'number' && f.min != null ? ` min="${esc(f.min)}"` : ''}${f.type === 'number' && f.max != null ? ` max="${esc(f.max)}"` : ''} data-f="${esc(fk)}" value="${esc(v ?? '')}"${f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : ''}>${help}</label>`;
+        return `<label ${at()}>${label}<input type="${f.type === 'number' ? 'number' : 'text'}"${f.type === 'number' && f.min != null ? ` min="${esc(f.min)}"` : ''}${f.type === 'number' && f.max != null ? ` max="${esc(f.max)}"` : ''} ${fa}="${esc(fk)}" value="${esc(v ?? '')}"${f.placeholder ? ` placeholder="${esc(f.placeholder)}"` : ''}>${help}</label>`;
     }
 
     // f.detail: a figure from the account's last report next to its name in an accounts field ("tokens", "money").
@@ -1377,7 +1389,8 @@
     const ctlOn = (el) => !!el && (el.type === 'checkbox' ? el.checked : !['', 'none', '0'].includes(String(el.value)));
     // Show a row's fields that depend on another one, and keep the receiver out of the senders.
     function rowReveal(row) {
-        row.querySelectorAll('[data-fwhen]').forEach(el => { el.hidden = !ctlOn(row.querySelector(`[data-f="${CSS.escape(el.dataset.fwhen)}"]:not([data-ftype])`)); });
+        const ctl = (k) => row.querySelector(`[data-f="${CSS.escape(k)}"]:not([data-ftype])`);
+        row.querySelectorAll('[data-fwhen], [data-funless]').forEach(el => { el.hidden = (!!el.dataset.fwhen && !ctlOn(ctl(el.dataset.fwhen))) || (!!el.dataset.funless && ctlOn(ctl(el.dataset.funless))); });
         row.querySelectorAll('[data-exclude]').forEach(el => {
             const other = row.querySelector(`[data-f="${CSS.escape(el.dataset.exclude)}"]`), v = other ? other.value : '';
             el.querySelectorAll('[data-facct]').forEach(b => { const chip = b.closest('.pchip'); chip.hidden = !!v && b.value === v; if (chip.hidden) b.checked = false; });
@@ -1501,10 +1514,19 @@
         root.querySelectorAll('.prow').forEach(rowReveal);
         // A list: read every row back from the form, save the whole list.
         const listSpec = (set) => P().settings.find(x => x.key === set.dataset.key);
+        // A list inside a row: its entries, read back the same way.
+        const readSubs = (row, fk, f) => {
+            const el = row.querySelector(`[data-f="${CSS.escape(fk)}"][data-ftype="list"]`);
+            return !el ? [] : [...el.querySelectorAll('.psub')].map(sr => Object.fromEntries(subFields(f).map(([sk, x]) => {
+                const c = sr.querySelector(`[data-sf="${CSS.escape(sk)}"]`);
+                return [sk, !c ? fieldDefault(x) : x.type === 'boolean' ? c.checked : x.type === 'number' ? Number(c.value) : c.value];
+            })));
+        };
         const readRows = (set) => [...set.querySelectorAll('.prow')].map(row => {
             const out = {};
             for (const [fk, f] of Object.entries(listSpec(set).fields || {})) {
                 if (f.type === 'heading') continue;
+                if (f.type === 'list') { out[fk] = readSubs(row, fk, f); continue; }
                 if (f.type === 'accounts') {
                     const el = row.querySelector(`[data-f="${CSS.escape(fk)}"]`), all = el.querySelector('[data-fall]').checked;
                     out[fk] = { all, ids: [...el.querySelectorAll('[data-facct]')].filter(b => b.checked && !b.disabled).map(b => b.value) };
@@ -1719,6 +1741,17 @@
                 }
                 else { rows.splice(Number(b.dataset.rowDel), 1); open.clear(); }
                 openRows.set(set.dataset.key, open);
+                saveList(set, rows, true);
+                set.querySelectorAll('.prow').forEach(rowReveal);
+            } else if (b && set && set.dataset.type === 'list' && (b.hasAttribute('data-sub-add') || b.dataset.subDel != null || b.dataset.subUp != null)) {
+                // A list inside a row: add, move up or remove one of its entries. The row stays open.
+                const fk = b.closest('[data-ftype="list"]').dataset.f, ri = Number(b.closest('.prow').dataset.row), f = listSpec(set).fields[fk];
+                const rows = readRows(set), subs = rows[ri][fk];
+                if (b.hasAttribute('data-sub-add')) subs.push(Object.fromEntries(subFields(f).map(([sk, x]) => [sk, fieldDefault(x)])));
+                else if (b.dataset.subUp != null) { const j = Number(b.dataset.subUp); if (j > 0 && j < subs.length) [subs[j - 1], subs[j]] = [subs[j], subs[j - 1]]; }
+                else subs.splice(Number(b.dataset.subDel), 1);
+                const open = openRows.get(set.dataset.key) || new Set();
+                open.add(ri); openRows.set(set.dataset.key, open);
                 saveList(set, rows, true);
                 set.querySelectorAll('.prow').forEach(rowReveal);
             } else if (b && b.dataset.rowToggle != null) {

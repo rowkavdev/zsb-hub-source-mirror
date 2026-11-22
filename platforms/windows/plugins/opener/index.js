@@ -363,6 +363,7 @@ function setCatalog(items) {
     ctx.settings.setOptions('item', opts);
     ctx.settings.setOptions('sets.item', opts);
     ctx.settings.setOptions('queue.item', opts);
+    ctx.settings.setOptions('sets.queue.item', opts);
 }
 
 // What happens to drops: the Drops settings, or a job's own (a job queued from the Armory shop with a custom profile).
@@ -531,28 +532,35 @@ async function stockOf(aid, id) {
     return it ? num(it.amount) : 0;
 }
 
-// Sets: other accounts open something else. A set has its own item, buy rules and accounts; an account on a set (the
-// first set that has it) opens that set's item, everyone else the main What to open. A set with no item yet doesn't count.
+// Sets: other accounts open something else. A set has its own item (or a case queue of its own: open 'queue', its queue
+// rows, rounds and forever), buy rules and accounts; an account on a set (the first set that has it) opens that, everyone
+// else the main What to open. A set with nothing to open yet doesn't count.
 // Case queue (openMode 'queue'): What to open is a list of cases ({ item, amount }) instead of one item, opened a batch
 // at a time in order, queueRounds times over per Open now. Each batch follows How to get them with its own amount: how
 // many to buy and open (a set amount; stock first, then that many), the most to buy (spare cash), or the most to open
-// (from stock). Accounts on a set open the set's item, as before. The job carries where it is: q = { i, round, t0,
-// opened, turnEnds }.
+// (from stock). Accounts on a set open the set's item or its own queue (the set's buy rules, Rounds and Loop forever).
+// The job carries where it is: q = { i, round, t0, opened, ro, turnEnds }.
 const SET_KEYS = ['item', 'source', 'buyAmount', 'maxPrice', 'keepMoney', 'keepPct', 'spendPerRun', 'useTickets', 'buyTickets'];
 const QUEUE_GAP_MS = 1000;      // between two batches of a queue, while its turn has time left
 const setsOf = () => (Array.isArray(S('sets')) ? S('sets') : []);
-const onSet = (s, aid) => !!(s && s.item && s.accounts && (s.accounts.all || (s.accounts.ids || []).includes(aid)));
+const amt = (r) => Math.max(1, Math.floor(num(r && r.amount)));   // a queue row's How many
+const setQueue = (s) => !!(s && s.open === 'queue');
+const setRows = (s) => (Array.isArray(s && s.queue) ? s.queue : []).filter(r => r && r.item);
+const setReady = (s) => !!(s && (setQueue(s) ? setRows(s).length : s.item));
+const onSet = (s, aid) => setReady(s) && !!(s.accounts && (s.accounts.all || (s.accounts.ids || []).includes(aid)));
 const queueOn = () => S('openMode') === 'queue';
 const queueRows = () => (Array.isArray(S('queue')) ? S('queue') : []).filter(r => r && r.item);
-const rounds = () => Math.max(1, Math.min(100, Math.floor(num(S('queueRounds'))) || 1));
-// Loop forever: round after round until Stop, or until a whole round opens nothing (no cash or stock left).
-const forever = () => queueOn() && !!S('queueForever');
-const manyRounds = () => forever() || rounds() > 1;
-const roundOf = (q) => `round ${q.round}${forever() ? '' : ` of ${rounds()}`}`;
-// What an account opens, in order: [{ set }] on a set, the queue's cases ({ row }) or [{}] (What to open's item).
+// Rounds and Loop forever (round after round until Stop, or until a whole round opens nothing): a set's queue has its
+// own (s), step 1's queue the main settings (no s).
+const rounds = (s) => Math.max(1, Math.min(100, Math.floor(num(s ? s.rounds : S('queueRounds'))) || 1));
+const forever = (s) => (s ? setQueue(s) && !!s.forever : queueOn() && !!S('queueForever'));
+const manyRounds = (s) => forever(s) || rounds(s) > 1;
+const roundOf = (q, s) => `round ${q.round}${forever(s) ? '' : ` of ${rounds(s)}`}`;
+// What an account opens, in order: [{ set }] on a set, its set's queue ({ set, row }), step 1's queue ({ row }) or [{}]
+// (What to open's item).
 const turnsOf = (aid) => {
     const s = setsOf().find(x => onSet(x, aid));
-    if (s) return [{ set: s }];
+    if (s) return setQueue(s) ? setRows(s).map(row => ({ set: s, row })) : [{ set: s }];
     if (!queueOn()) return [{}];
     const rows = queueRows();
     return rows.length ? rows.map(row => ({ row })) : [{ row: { item: '' } }];
@@ -562,24 +570,24 @@ const qOf = (aid) => { const j = jobs.get(aid); return j && !j.shop && j.q ? j.q
 const turnOf = (aid) => { const t = turnsOf(aid), q = qOf(aid); return t[q ? q.i % t.length : 0]; };
 const setOf = (aid) => turnOf(aid).set || null;
 const setName = (s) => String((s && s.name) || '').trim() || `Set ${setsOf().indexOf(s) + 1}`;
-// The settings an account opens with: its set's, the queue case's (item and amount; the rest as set), or the main ones.
+// The settings an account opens with: its set's or the main ones, with a queue case's item and amount.
 const cfgFor = ({ set, row } = {}) => (k) => {
-    if (set) return SET_KEYS.includes(k) ? set[k] : S(k);
+    const own = (x) => (set && SET_KEYS.includes(x) ? set[x] : S(x));
     if (row && k === 'item') return row.item;
-    if (row && k === 'buyAmount') return Math.max(1, Math.floor(num(row.amount)));
-    if (row && k === 'buyCap') return S('source') === 'buy' ? Math.max(1, Math.floor(num(row.amount))) : 0;
-    if (row && k === 'openCap') return S('source') === 'owned' ? Math.max(1, Math.floor(num(row.amount))) : 0;
-    return S(k);
+    if (row && k === 'buyAmount') return amt(row);
+    if (row && k === 'buyCap') return own('source') === 'buy' ? amt(row) : 0;
+    if (row && k === 'openCap') return own('source') === 'owned' ? amt(row) : 0;
+    return own(k);
 };
 const cfgOf = (aid) => cfgFor(turnOf(aid));
 const opensHere = (aid) => ctx.settings.runsOn('accounts', aid) || setsOf().some(s => onSet(s, aid));
-const queued = (aid) => queueOn() && !!turnsOf(aid)[0].row;   // opens the case queue (not on a set)
+const queued = (aid) => !!turnsOf(aid)[0].row;   // opens a case queue (step 1's, or its set's)
 // The next batch of a queue after this one (practice goes through once), or null when it's done.
 const nextTurn = (aid, q, practice) => {
-    if (!queued(aid)) return null;   // the queue was turned off (or the account put on a set) on the way
-    const n = turnsOf(aid).length;
+    if (!queued(aid)) return null;   // the queue was turned off (or the account moved to a set without one) on the way
+    const n = turnsOf(aid).length, s = setOf(aid);
     if (q.i + 1 < n) return { ...q, i: q.i + 1 };
-    if (!practice && (forever() ? num(q.ro) > 0 : q.round < rounds())) return { ...q, i: 0, round: q.round + 1, ro: 0 };
+    if (!practice && (forever(s) ? num(q.ro) > 0 : q.round < rounds(s))) return { ...q, i: 0, round: q.round + 1, ro: 0 };
     return null;
 };
 // Buys a set amount: 'amount' right away, 'stockAmount' once what's in stock is opened.
@@ -644,9 +652,9 @@ async function run(aid, name, practice, cont, shop) {
     let start = null, item = null;
     const C = shop ? shopCfg(shop) : cfgOf(aid);   // a shop job's own, its set's item and buy rules, or the main ones
     // Case queue: which case (batch) of the queue this is.
-    const q = shop ? null : qOf(aid), qn = q ? turnsOf(aid).length : 0;
-    const qTxt = q && (qn > 1 || manyRounds()) ? `batch ${q.i % qn + 1} of ${qn}${manyRounds() && !practice ? `, ${roundOf(q)}` : ''}` : '';
-    if (!practice) p.q = qTxt ? { i: q.i % qn, n: qn, round: q.round, rounds: forever() ? 0 : rounds() } : null;
+    const q = shop ? null : qOf(aid), qn = q ? turnsOf(aid).length : 0, qs = q ? setOf(aid) : null;
+    const qTxt = q && (qn > 1 || manyRounds(qs)) ? `batch ${q.i % qn + 1} of ${qn}${manyRounds(qs) && !practice ? `, ${roundOf(q, qs)}` : ''}` : '';
+    if (!practice) p.q = qTxt ? { i: q.i % qn, n: qn, round: q.round, rounds: forever(qs) ? 0 : rounds(qs) } : null;
     const useT = ticketsOn(C), buyT = ticketBuy(C);
     let tickets = 0;
     try {
@@ -903,7 +911,7 @@ async function run(aid, name, practice, cont, shop) {
         // right away while the turn has time left, else after the break; otherwise it's done.
         if (q && !practice) { q.opened = num(q.opened) + rec.opened; q.ro = num(q.ro) + rec.opened; }
         const stopped = halted() || lane.halt, nx = q && !stopped && !(rec.left > 0) ? nextTurn(aid, q, practice) : null;
-        if (q && !practice && !stopped && !(rec.left > 0) && !nx && forever() && queued(aid))
+        if (q && !practice && !stopped && !(rec.left > 0) && !nx && queued(aid) && forever(setOf(aid)))
             log(`round ${q.round} of the queue had nothing left to open (no cash or stock) — looping stops after ${count(q.round - 1)} full round${q.round === 2 ? '' : 's'}`);
         if (!practice && rec.left > 0 && !stopped) jobs.set(aid, { practice: false, cont: true, at: Date.now() + (num(S('turnMs')) ? 500 : BREAK_MS), shop: shop || null, q });
         else if (nx) {
@@ -1202,14 +1210,20 @@ module.exports = {
             const itemOf = (id) => catalog.items && catalog.items.find(x => x._id === id);
             const item = itemOf(S('item'));
             // Sets in use: accounts on one open its item; the main What to open is for the rest (defs).
-            const sets = setsOf(), setsOn = sets.some(s => s.item);
+            const sets = setsOf(), setsOn = sets.some(setReady);
             const defs = chosen.filter(a => !setOf(a.id)), nd = defs.length;
             // Case queue: What to open is the queue's cases (each row with its shop item) for the accounts not on a set.
             const queue = queueOn(), qItems = queueRows().map(r => ({ row: r, item: itemOf(r.item) })), qReady = qItems.some(x => x.item);
-            const qText = () => qItems.map(x => `${x.item ? x.item.name : 'item not in the shop'} ×${count(Math.max(1, Math.floor(num(x.row.amount))))}`).join(' → ');
+            const qTextOf = (rows) => rows.map(r => { const it = itemOf(r.item); return `${it ? it.name : 'item not in the shop'} ×${count(amt(r))}`; }).join(' → ');
+            const qText = () => qTextOf(queueRows());
             const multi = queue && manyRounds();
-            const roundsTxt = queue && forever() ? ', looping until you stop it' : queue && rounds() > 1 ? `, ${rounds()} rounds` : '';
-            const qHow = ({ amount: 'is bought, then opened', stockAmount: 'opens what\'s in stock, then that many are bought and opened', buy: 'is bought with the spare cash (at most that many), then opened', owned: 'opens from stock (at most that many)' })[S('source')] || 'is opened';
+            // s: a set's queue (its own Rounds and Loop forever), else step 1's.
+            const roundsTxtOf = (s) => forever(s) ? ', looping until you stop it' : rounds(s) > 1 ? `, ${rounds(s)} rounds` : '';
+            const roundsTxt = queue ? roundsTxtOf() : '';
+            const qHowOf = (src) => ({ amount: 'is bought, then opened', stockAmount: 'opens what\'s in stock, then that many are bought and opened', buy: 'is bought with the spare cash (at most that many), then opened', owned: 'opens from stock (at most that many)' })[src] || 'is opened';
+            const qHow = qHowOf(S('source'));
+            // The queue an account opens, said out: its set's, or step 1's.
+            const queueTxt = (s) => s ? `${qTextOf(setRows(s))}${roundsTxtOf(s)}` : `${qText()}${roundsTxt}`;
             const buying = buys(), keep = S('drops') === 'keep';
             const price = item ? num(item.price) : 0, each = Math.floor(num(S('buyAmount')));
             const usd = (v) => '$' + num(v).toLocaleString('en-US');
@@ -1244,13 +1258,15 @@ module.exports = {
             const dropsTxt = dropsText();
             const measured = !queue && item && state.items[item._id];
             // An account on two sets opens the first one's item: say which.
-            const chosenOn = (s) => ctx.accounts.list().filter(a => s.item && setOf(a.id) === s).length;
+            const chosenOn = (s) => ctx.accounts.list().filter(a => setReady(s) && setOf(a.id) === s).length;
             const setClash = ctx.accounts.list().filter(a => sets.filter(s => onSet(s, a.id)).length > 1).map(a => a.name);
             const ready = chosen.filter(a => plansOf.get(a.id).item);
-            const byItem = [...ready.reduce((m, a) => { const pl = plansOf.get(a.id), nm = pl.queue ? `the queue (${qText()}${roundsTxt})` : pl.item.name; m.set(nm, (m.get(nm) || 0) + 1); return m; }, new Map())];
+            const byItem = [...ready.reduce((m, a) => { const pl = plansOf.get(a.id), nm = pl.queue ? `the ${pl.set ? setName(pl.set) + ' ' : ''}queue (${queueTxt(pl.set)})` : pl.item.name; m.set(nm, (m.get(nm) || 0) + 1); return m; }, new Map())];
             const allNames = [...new Set(ready.flatMap(a => (plansOf.get(a.id).queue || [plansOf.get(a.id)]).filter(x => x.item).map(x => x.item.name)))];
             const tBuy = ready.reduce((s, a) => s + plansOf.get(a.id).buy, 0), tCost = ready.reduce((s, a) => s + plansOf.get(a.id).cost, 0);
             const anyBuy = ready.some(a => plansOf.get(a.id).buying);
+            // Any queue going round more than once (step 1's or a set's): what's bought is for its first round.
+            const multiAll = ready.some(a => queued(a.id) && manyRounds(setOf(a.id)));
             const itemsTxt = allNames.length <= 3 ? allNames.join(', ') : `${allNames.length} items`;
             // How many really open at once: the setting, but at most PER_IP per exit IP the chosen accounts are on.
             const groups = ipGroups(), ips = new Set(chosen.map(a => ipOf(groups, a.id)));
@@ -1280,9 +1296,9 @@ module.exports = {
             const rank = (a) => { const j = jobs.get(a.id); return lanes.has(a.id) ? 0 : j && (j.cont || (j.q && (j.q.i || j.q.round > 1))) ? 1 : j ? 2 : 3; };
             // Case queue: which case the account is on ("2/3"; its round too, while it's on the way).
             const qAt = (a) => {
-                const n = turnsOf(a.id).length, q = qOf(a.id);
-                if (!queued(a.id) || (n < 2 && !manyRounds())) return '';
-                return `${(q ? q.i % n : 0) + 1}/${n}${q && manyRounds() ? `, round ${q.round}${forever() ? '' : `/${rounds()}`}` : ''} · `;
+                const n = turnsOf(a.id).length, q = qOf(a.id), s = setOf(a.id);
+                if (!queued(a.id) || (n < 2 && !manyRounds(s))) return '';
+                return `${(q ? q.i % n : 0) + 1}/${n}${q && manyRounds(s) ? `, round ${q.round}${forever(s) ? '' : `/${rounds(s)}`}` : ''} · `;
             };
             // A job queued from the Armory shop: running or waiting now (its own table below, not this one).
             const shopNow = (id) => (lanes.get(id) && lanes.get(id).shop) || (jobs.get(id) && jobs.get(id).shop) || null;
@@ -1307,7 +1323,7 @@ module.exports = {
                     ...(tixOn ? [ticketsOn(pl.C) ? tixOf(a) : { text: 'off', level: 'muted' }] : []),
                     money(num(me.money)),
                     on ? { label: 'Stop', action: 'stopOne', arg: a.id }
-                        : pl.item && a.healthy ? { label: 'Open', action: 'openOne', arg: a.id, confirm: pl.queue ? `Open the queue on ${a.name}: ${qText()}${roundsTxt}? Each batch ${qHow}. Drops are ${dropsTxt}.`
+                        : pl.item && a.healthy ? { label: 'Open', action: 'openOne', arg: a.id, confirm: pl.queue ? `Open the ${pl.set ? setName(pl.set) + ' ' : ''}queue on ${a.name}: ${queueTxt(pl.set)}? Each batch ${qHowOf(pl.C('source'))}. Drops are ${dropsTxt}.`
                             : `${pl.buying ? pl.C('source') === 'stockAmount' ? `Open the ${pl.item.name} in stock, then buy ${count(Math.floor(num(pl.C('buyAmount'))))} and open those` : `Buy ${pl.item.name}${pl.C('source') === 'amount' ? ` (${count(Math.floor(num(pl.C('buyAmount'))))})` : ' with the spare cash'} and open it` : `Open the ${pl.item.name} in stock`} on ${a.name}? Drops are ${dropsTxt}.` } : '',
                 ];
             });
@@ -1358,7 +1374,7 @@ module.exports = {
                     summary: (setsOn ? nd ? 'everyone else: ' : 'no one else: ' : '') + (queue ? (qItems.length ? `queue: ${qText()}${roundsTxt}` : 'add cases to the queue')
                         : item ? `${item.name} · ${usd(price)} each` : 'pick a case, capsule or collection'),
                     text: [queue ? 'The accounts open a batch of each case in order, top to bottom, then start again for each round. How to get them (step 2) applies to every case.' : '',
-                        setsOn ? 'Accounts on a set open the set\'s item (More options → Sets); this is for everyone else.' : ''].filter(Boolean).join(' '),
+                        setsOn ? 'Accounts on a set open the set\'s item or queue (More options → Sets); this is for everyone else.' : ''].filter(Boolean).join(' '),
                     keys: ['openMode'],
                     blocks: queue ? [
                         ...(catalog.items ? [] : [{ type: 'text', text: 'The shop list loads once one of the chosen accounts is clicking.' }]),
@@ -1421,13 +1437,16 @@ module.exports = {
                 { id: 'boosts', title: 'Boosts', summary: boostKinds().length ? `keeps ${boostKinds().map(k => ({ caseOpenCountBoost: 'open count', caseOpenMultiplierBoost: 'multiplier', caseOpenCashback: 'cashback' })[k]).join(', ')} running while opening${S('boostBuy') ? ' · buys with ammo' : ''}` : 'off — opens at the account’s own size',
                     keys: ['boostCount', 'boostMult', 'boostCashback', ...(boostKinds().length ? ['boostBuy', ...(S('boostBuy') ? ['boostKeepAmmo'] : [])] : [])] },
                 { id: 'sets', title: 'Sets', summary: sets.length ? `${sets.length} set${sets.length === 1 ? '' : 's'} — other accounts open something else` : 'off — every account opens the same item',
-                    text: 'A set has its own item, buying and accounts. Its accounts open that even when not ticked under Accounts; everyone else opens step 1\'s item.',
+                    text: 'A set has its own item or case queue, buying and accounts. Its accounts open that even when not ticked under Accounts; everyone else opens what step 1 says.',
                     blocks: [
                         ...(setClash.length ? [{ type: 'notice', level: 'warn', text: `On more than one set: ${setClash.join(', ')} — each opens its first set's item.` }] : []),
-                        { type: 'list', key: 'sets', summaries: sets.map(s => {
-                            const it = itemOf(s.item), k = chosenOn(s);
-                            if (!s.item) return `${s.name ? setName(s) + ': ' : ''}no item yet — not used`;
-                            return `${s.name ? setName(s) + ': ' : ''}${it ? it.name : 'item not in the shop'} · ${({ amount: `buys ${count(Math.floor(num(s.buyAmount)))} each`, stockAmount: `stock first, then buys ${count(Math.floor(num(s.buyAmount)))} each`, buy: 'buys with spare cash', owned: 'from stock' })[s.source] || ''}${s.useTickets ? ` · event tickets${s.buyTickets ? ', buying them' : ''}` : ''} · ${k} account${k === 1 ? '' : 's'}`;
+                        { type: 'list', key: 'sets', images: sets.map(s => { const it = itemOf(setQueue(s) ? (setRows(s)[0] || {}).item : s.item); return it ? pic(it) : ''; }), summaries: sets.map(s => {
+                            const it = itemOf(s.item), k = chosenOn(s), nm = s.name ? setName(s) + ': ' : '', qd = setQueue(s);
+                            if (!setReady(s)) return `${nm}${qd ? 'no cases in its queue yet' : 'no item yet'} — not used`;
+                            const n = Math.floor(num(s.buyAmount));
+                            const how = qd ? ({ amount: 'buys each case\'s amount', stockAmount: 'stock first, then buys each case\'s amount', buy: 'buys with spare cash', owned: 'from stock' })[s.source]
+                                : ({ amount: `buys ${count(n)} each`, stockAmount: `stock first, then buys ${count(n)} each`, buy: 'buys with spare cash', owned: 'from stock' })[s.source];
+                            return `${nm}${qd ? `queue: ${queueTxt(s)}` : it ? it.name : 'item not in the shop'} · ${how || ''}${s.useTickets ? ` · event tickets${s.buyTickets ? ', buying them' : ''}` : ''} · ${k} account${k === 1 ? '' : 's'}`;
                         }) },
                     ] },
                 { id: 'hook', title: 'Discord',
@@ -1445,12 +1464,12 @@ module.exports = {
                 title: !n ? 'Choose accounts to open on' : !ready.length ? 'Pick something to open' : `Ready to open ${itemsTxt}`,
                 ready: !!(n && ready.length), next: 'Review and open',
                 text: !n ? 'Step 3, Accounts.' : !ready.length ? 'Step 1, What to open.'
-                    : `${anyBuy ? `Buys ${count(tBuy)} for ${money(tCost)}${multi ? ' in the first round' : ''}${ready.some(a => ticketBuy(plansOf.get(a.id).C)) ? ' (tickets included)' : ''}` : 'Opens what\'s in stock'} on ${ready.length} account${ready.length === 1 ? '' : 's'}, ${maxLanes_} at a time${queue && nd ? `, a batch of each case in turn${roundsTxt}` : ''} · drops ${dropsTxt}${ready.some(a => ticketsOn(plansOf.get(a.id).C)) ? ' · with event tickets' : ''}${S('exclusive') ? ' · other plugins wait until it\'s done' : ''}${ready.length < n ? ` · ${n - ready.length} with nothing chosen` : ''}`,
+                    : `${anyBuy ? `Buys ${count(tBuy)} for ${money(tCost)}${multiAll ? ' in the first round' : ''}${ready.some(a => ticketBuy(plansOf.get(a.id).C)) ? ' (tickets included)' : ''}` : 'Opens what\'s in stock'} on ${ready.length} account${ready.length === 1 ? '' : 's'}, ${maxLanes_} at a time${queue && nd ? `, a batch of each case in turn${roundsTxt}` : ''} · drops ${dropsTxt}${ready.some(a => ticketsOn(plansOf.get(a.id).C)) ? ' · with event tickets' : ''}${S('exclusive') ? ' · other plugins wait until it\'s done' : ''}${ready.length < n ? ` · ${n - ready.length} with nothing chosen` : ''}`,
                 buttons: ready.length ? [
                     { label: 'Open now', action: 'open', primary: true, confirm: !setsOn && queue
-                        ? `Open the queue on ${n} account${n === 1 ? '' : 's'}: ${qText()}${roundsTxt}? Each batch ${qHow}${anyBuy ? ` (about ${money(tCost)}${multi ? ' in the first round' : ' in all'})` : ''}. Drops are ${dropsTxt}.`
+                        ? `Open the queue on ${n} account${n === 1 ? '' : 's'}: ${qText()}${roundsTxt}? Each batch ${qHow}${anyBuy ? ` (about ${money(tCost)}${multiAll ? ' in the first round' : ' in all'})` : ''}. Drops are ${dropsTxt}.`
                         : !setsOn ? `${buying && !blockedBuy ? `${buyTxt} and open it` : `Open the ${item.name} in stock`} on ${n} account${n === 1 ? '' : 's'}? Drops are ${dropsTxt}.`
-                        : `Open on ${ready.length} account${ready.length === 1 ? '' : 's'}: ${byItem.map(([nm, k]) => `${nm} on ${k}`).join(', ')}${anyBuy ? ` (buying about ${money(tCost)}${multi ? ' in the first round' : ' in all'})` : ''}? Drops are ${dropsTxt}.` },
+                        : `Open on ${ready.length} account${ready.length === 1 ? '' : 's'}: ${byItem.map(([nm, k]) => `${nm} on ${k}`).join(', ')}${anyBuy ? ` (buying about ${money(tCost)}${multiAll ? ' in the first round' : ' in all'})` : ''}? Drops are ${dropsTxt}.` },
                     { label: 'Practice run', action: 'preview' }] : [],
             };
             const wizard = { type: 'wizard', id: 'setup', steps, extras, finish };
