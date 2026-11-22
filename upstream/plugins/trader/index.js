@@ -269,10 +269,10 @@ async function lookUp(terms) {
 
 // --- Send by the inventory filters ------------------------------------------
 // The "By inventory filters" preset: each sender sends everything the game's inventory filters match (the same filters
-// as View inventory: Patterns, Favorites, Rarity, …), in the inventory's sort order, up to its trade limit. Favourited
-// items stay put unless "Include favourited items" is on, whatever the Favorites filter says.
+// as View inventory: Patterns, Favourites, Rarity, …), in the inventory's sort order, up to its trade limit. Favourited
+// items stay put unless "Include favourited items" is on, whatever the Favourites filter says.
 const filtOn = () => !!S('oneFilt');
-const FILT_NAMES = { invExterior: 'Exterior', invRarity: 'Rarity', invFavs: 'Favorites', invStSv: 'StatTrak/Souvenir', invQuality: 'Quality',
+const FILT_NAMES = { invExterior: 'Exterior', invRarity: 'Rarity', invFavs: 'Favourites', invStSv: 'StatTrak/Souvenir', invQuality: 'Quality',
     invEvent: 'Event', invFloatRank: 'Float rank', invPatterns: 'Patterns' };
 const FILT_VALUES = { only: 'Only', all: 'Only', All: 'Only', none: 'None', None: 'None', 0: 'Common', 1: 'Rare', 2: 'Epic', 3: 'Legendary' };
 function filterLabel() {
@@ -281,7 +281,7 @@ function filterLabel() {
     return parts.length ? parts.join(', ') : 'no filter (the whole inventory)';
 }
 const filtKey = () => 'filt:' + invQuery();
-// "Favorites: Only" with favourited items locked: nothing could go.
+// "Favourites: Only" with favourited items locked: nothing could go.
 const filtFavsOnly = () => S('invFavs') === 'only' && !S('oneFavs');
 // The sender's items the filters match, in the inventory's order: the others, and the favourited ones apart. Reads pages
 // until `want` sendable ones are in (all of them when want is Infinity), or PAGES_MAX.
@@ -467,7 +467,7 @@ const PRESETS = [
     { id: 'genesis', title: 'Genesis', sub: 'Genesis terminals only', item: 'Genesis Terminal', tokens: '' },
     { id: 'deadhand', title: 'Dead Hand', sub: 'Dead Hand terminals only', item: 'Dead Hand Terminal', tokens: '' },
     { id: 'tokens_terminals', title: 'Tokens + terminals', sub: 'all of both', item: 'Terminal', tokens: 'all' },
-    { id: 'filters', title: 'By inventory filters', sub: 'all that match: Patterns, Favorites, Rarity…', filt: true, item: '', tokens: '' },
+    { id: 'filters', title: 'By inventory filters', sub: 'all that match: Patterns, Favourites, Rarity…', filt: true, item: '', tokens: '' },
     { id: 'custom', title: 'Custom', sub: 'type the item and amounts below' },
 ];
 function presetNow() {
@@ -500,7 +500,7 @@ function oneProblem() {
     if (!to || !byId.has(to)) return 'Pick who receives.';
     if (Number.isNaN(tokens)) return 'Tokens: type a number like 500K or 2.5M, or "all".';
     if (Number.isNaN(want)) return 'How many: type a number, or leave it empty for all.';
-    if (filtOn() && filtFavsOnly()) return 'Favorites: Only picks favourited items — switch on "Include favourited items" to send them.';
+    if (filtOn() && filtFavsOnly()) return 'Favourites: Only picks favourited items — switch on "Include favourited items" to send them.';
     if (!terms.length && !filtOn() && !tokens && !ids.some(id => picksFor(id).length)) return 'Pick what to send: a preset, item names or tokens, or items from View inventory.';
     if (!ids.length) return 'Pick who sends: click one or more accounts in the list, or All.';
     if (!byId.get(to).healthy) return `${byId.get(to).name} isn't clicking — start it first.`;
@@ -1219,7 +1219,7 @@ module.exports = {
                 ] };
             })() : null;
             const oneSendBtns = one && one.running && !practice && (one.total > 1 || one.loop)
-                ? [{ label: one.halt ? 'Stopping…' : 'Stop', action: 'oneStop', danger: true, disabled: !!one.halt }]
+                ? [{ label: one.halt ? 'Stopping…' : 'Stop', action: 'oneStop', disabled: !!one.halt }]
                 : [{ label: practice ? 'Practice send' : fromIds.length > 1 ? `Send ${fromIds.length} trades` : 'Send trade', action: 'oneSend', primary: true, disabled: !!oneWhy,
                     ...(practice ? {} : { confirm: fromIds.length > 1 ? `Send ${fromIds.length} trades now? Trades can't be undone.` : "Send this trade now? A trade can't be undone." }) }];
             // Preview: an overlay like the Opener's drops — per sender a row of item cards (picture, wear, price), the same
@@ -1287,7 +1287,7 @@ module.exports = {
                                 { type: 'settings', keys: ['invSearch'] },
                                 { type: 'settings', keys: INV_KEYS.slice(1), filters: true },
                                 ...(invFiltered() ? [{ type: 'buttons', items: [{ label: 'Reset filters', action: 'invReset' }] }] : [{ type: 'notice', level: 'warn', text: 'No filter set: each sender sends its whole inventory (up to its trade limit).' }]),
-                                ...(filtFavsOnly() ? [{ type: 'notice', level: 'warn', text: 'Favorites: Only picks favourited items — they stay put unless "Include favourited items" is on.' }] : []),
+                                ...(filtFavsOnly() ? [{ type: 'notice', level: 'warn', text: 'Favourites: Only picks favourited items — they stay put unless "Include favourited items" is on.' }] : []),
                                 { type: 'settings', keys: ['oneCount', 'oneFavs', 'oneTokens', 'oneLoop'] },
                             ] : [
                                 { type: 'settings', keys: ['oneItem', 'oneCount', 'oneFavs', 'oneTokens', 'oneLoop'] },
@@ -1331,7 +1331,7 @@ module.exports = {
                 finish: { title: fan && fan.running ? 'Sending…' : fanWhy ? 'Send' : `Send ${count(fanTotal)} tokens`, ready: !fanWhy, next: 'Review and send',
                     text: fanWhy && !(fan && fan.running) ? fanWhy : `${count(fanTk)} tokens to each of ${fanTo.length} account${fanTo.length === 1 ? '' : 's'} from ${fanA ? fanA.name : '?'} — ${count(fanTotal)} in all, ${fanTo.length} trade${fanTo.length === 1 ? '' : 's'} one after another.`,
                     buttons: fan && fan.running && !practice && fan.total > 1
-                        ? [{ label: fan.halt ? 'Stopping…' : 'Stop', action: 'fanStop', danger: true, disabled: !!fan.halt }]
+                        ? [{ label: fan.halt ? 'Stopping…' : 'Stop', action: 'fanStop', disabled: !!fan.halt }]
                         : [{ label: practice ? 'Practice send' : fanTo.length > 1 ? `Send ${fanTo.length} trades` : 'Send trade', action: 'fanSend', primary: true, disabled: !!fanWhy,
                         ...(practice ? {} : { confirm: `Send ${count(fanTk)} tokens to each of ${fanTo.length} account${fanTo.length === 1 ? '' : 's'} (${count(fanTotal)} in all)? Trades can't be undone.` }) }],
                     blocks: [] } },
@@ -1369,7 +1369,7 @@ module.exports = {
                     title: live ? (busy.size ? 'Trader — on, trading now' : 'Trader — on') : 'Trader — off',
                     summary: !routes.length ? 'add a route first' : practice ? 'practice: nothing is sent unless you press Practice run' : `live · ${routes.length} route${routes.length === 1 ? '' : 's'}, every ${every} min`,
                     keys: ['runMode'], blocks: routes.length ? [{ type: 'buttons', items: running && !practice
-                        ? [{ label: routeHalt ? 'Stopping…' : 'Stop', action: 'checkStop', danger: true, disabled: routeHalt }]
+                        ? [{ label: routeHalt ? 'Stopping…' : 'Stop', action: 'checkStop', disabled: routeHalt }]
                         : [{ label: practice ? 'Practice run' : 'Run now', action: 'check', primary: true }] }] : [] },
                 ...problems.map(text => ({ type: 'notice', level: 'warn', text })),
                 ...(plans.length ? [{ type: 'table', wrap: true, columns: ['From', 'To', 'The last practice run would', 'When'], rows: plans.slice(0, 15).map(x => [x.from, x.to, x.what, new Date(x.t).toLocaleTimeString()]) }] : []),

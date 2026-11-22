@@ -1179,7 +1179,7 @@ module.exports = {
                     eta ? `about ${dur(eta)} left` : done ? 'working out the time left' : '',
                     worth ? `drops worth ${money(worth)} so far` : '',
                     act.length > running ? `${running} at a time` : ''].filter(Boolean).join(' · '),
-                buttons: [{ label: act.length === 1 ? 'Stop' : 'Stop all', action: 'stop', danger: true }],
+                buttons: [{ label: act.length === 1 ? 'Stop' : 'Stop all', action: 'stop' }],
             } : null;
 
             // What to open: the shop's list as pictures, by kind (search over all of it).

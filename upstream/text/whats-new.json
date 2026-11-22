@@ -1,5 +1,12 @@
 {
   "_how": "One entry per released version, newest first. Each line is one bullet; **bold** works. Shown once after an update, and used as the release notes on GitHub. npm run release refuses a version with no entry here.",
+  "1.2.20": [
+    "**One notice when the site can't be reached** — when none of the clicking accounts can reach case-clicker.com (a dropped connection, or a VPS whose DNS stopped answering), the hub shows one notice at the top instead of a network error on every account. Cards read **Waiting for the site**, and clicking picks up by itself once it's back.",
+    "**Fewer false \"something else is clicking\" warnings** — when a batch's answer got lost and the retry was refused as too fast, the first try had in fact landed. The hub now counts it that way: no extra-clicks warning, and no slow-down for that account.",
+    "**Error counts mean what they say** — Troubleshoot and the shared report count each time a problem started, not every check while it lasted.",
+    "**Quieter site sockets** — when the direct socket connection fails, the hub uses the check window for sockets for the next 10 minutes instead of trying the direct way first every time.",
+    "**Proxy manager: a VPS's extra IPs** — a VPS with additional IPs set up on its network interface can use each one as a route of its own (20 more accounts per IP) with **Use this server's extra IPs**; no proxy software needed. Update Proxy manager to 1.3.0 in the Plugins tab."
+  ],
   "1.2.19": [
     "**Add account works when this PC is full** — the sign-in window now always opens on this PC's own connection (like imports), and the account then starts on the least used route with room, proxies included. Before, it could sign in through a proxy and never register.",
     "Small fix: the log line after the hub restarted itself reads properly."

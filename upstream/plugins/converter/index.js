@@ -537,7 +537,7 @@ module.exports = {
                 finish: { title: lanes.size ? `Converting ${lanes.size} now` : !n ? 'Choose accounts first' : !steps.length ? 'Switch on a step' : practice ? 'Practice run' : live ? `Live: ${steps.join(', ')}` : 'Run once',
                     ready: n > 0 && steps.length > 0, next: 'Run',
                     text: !n || !steps.length ? '' : practice ? 'Shows what a run would do on each account, without changing anything.' : live ? `Every ${every} min on ${n} account${n === 1 ? '' : 's'}; Run now starts one straight away.` : `The Converter is off: Run now does one run of ${steps.join(', ')}.`,
-                    buttons: n ? [{ label: practice ? 'Practice run' : 'Run now', action: 'run', primary: true }, ...(lanes.size ? [{ label: 'Stop', action: 'stop', danger: true }] : [])] : [] } },
+                    buttons: n ? [{ label: practice ? 'Practice run' : 'Run now', action: 'run', primary: true }, ...(lanes.size ? [{ label: 'Stop', action: 'stop' }] : [])] : [] } },
                 { type: 'section', title: 'Recent runs', blocks: [{ type: 'table', empty: 'No runs yet.', columns: ['When', 'Account', 'Cases sold', 'Spent', 'Open size', 'Opened', 'Tokens', 'Dragon Lores', 'Result'],
                     rows: (state.runs || []).slice(0, 10).map(r => [new Date(r.t).toLocaleTimeString(), r.acct, money(r.sold), money(r.spent), r.size || '—', r.size ? count(r.opened) : `${count(r.opened)} opens`, count(r.tokens), r.tries ? `${count(r.dlores)} / ${count(r.tries)}` : '—', r.result]) }] },
             ] };

@@ -21,6 +21,7 @@ const GROUPS = {
     'CC-PLUG-01': 'manual', 'CC-PLUG-02': 'manual', 'CC-PLUG-03': 'manual', 'CC-PLUG-04': 'manual', 'CC-UNK-01': 'net',
     'CC-SLOW-01': 'manual', 'CC-AUTH-03': 'notice', 'CC-PROXY-01': 'route', 'CC-PROXY-02': 'route', 'CC-AUTH-04': 'auth',
     'CC-AUTH-05': 'notice', 'CC-AUTH-06': 'notice', 'CC-AUTH-07': 'notice', 'CC-AUTH-08': 'manual', 'CC-MAIN-01': 'manual',
+    'CC-NET-03': 'manual',
 };
 const CODES = Object.fromEntries(Object.entries(GROUPS).map(([code, group]) => [code, {
     group,
@@ -33,7 +34,9 @@ class Errors extends EventEmitter {
         super();
         this.codes = { ...CODES };
         this.active = new Map();   // `${acct}|${code}` -> { acct, code, detail, count, first, last }
-        this.counts = new Map();   // code -> times raised since start (for the report)
+        // code -> times it started since the app started (for the report and the diagnostics). Raising one that's
+        // already on doesn't count again: some are raised on every check while they last, which read as thousands.
+        this.counts = new Map();
     }
 
     define(code, { text, fix, group = 'manual' }) {
@@ -46,8 +49,8 @@ class Errors extends EventEmitter {
         if (!this.codes[code]) { detail = code + (detail ? ' ' + detail : ''); code = 'CC-UNK-01'; }
         const key = (acct || '') + '|' + code, now = Date.now();
         const cur = this.active.get(key);
-        this.counts.set(code, (this.counts.get(code) || 0) + 1);
         if (cur) { cur.count++; cur.last = now; if (detail) cur.detail = detail; return; }
+        this.counts.set(code, (this.counts.get(code) || 0) + 1);
         this.active.set(key, { acct: acct || null, code, detail, count: 1, first: now, last: now });
         this.emit('change');
     }

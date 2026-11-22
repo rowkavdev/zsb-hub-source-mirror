@@ -1382,7 +1382,7 @@ module.exports = {
                 finish: { title: farming ? 'Farming now' : !n ? 'Choose accounts first' : practice ? 'Practice run' : S('on') ? `Live on ${n} account${n === 1 ? '' : 's'}` : 'Run once',
                     ready: n > 0 && on > 0, next: 'Run',
                     text: !n ? '' : practice ? 'Shows what one check would do, without playing.' : S('on') ? `Checks every ${num(S('everyMin'))} min with ${on} game${on === 1 ? '' : 's'}; Run now checks straight away.` : 'Star farming is off: Run now does one check now.',
-                    buttons: n ? [{ label: practice ? 'Practice run' : 'Run now', action: 'run', primary: true }, ...(farming ? [{ label: 'Stop', action: 'stop', danger: true }] : [])] : [] } },
+                    buttons: n ? [{ label: practice ? 'Practice run' : 'Run now', action: 'run', primary: true }, ...(farming ? [{ label: 'Stop', action: 'stop' }] : [])] : [] } },
                 { type: 'section', title: 'Recent battles', blocks: [{ type: 'table', empty: 'No battles yet.', columns: ['When', 'Host', 'Players', 'Rounds', 'Each paid'],
                     rows: (state.history || []).slice(0, 10).map(h => [new Date(h.t).toLocaleTimeString(), h.host, String(h.players || 2), String(h.rounds), money(h.price)]) }] },
             ] };

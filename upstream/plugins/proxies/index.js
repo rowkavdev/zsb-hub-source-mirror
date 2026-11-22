@@ -12,6 +12,9 @@
  * WireGuard configs (pasted whole, one or more) work too: each runs in its own local helper (wireguard.js) that offers
  * the tunnel as a SOCKS5 proxy on 127.0.0.1, and that becomes the route.
  *
+ * Extra IPs on this computer (a VPS's additional IPs): "Use this server's extra IPs" finds its public IPv4 addresses
+ * besides the one it already uses, and each gets a local relay (localips.js) that sends from that address.
+ *
  * Accepted (one per line or comma separated): host:port, host:port:user:pass, user:pass@host:port, user:pass:host:port,
  * http(s)://[user:pass@]host:port, socks5://host:port. SOCKS5 with a password can't work here (the browser engine
  * doesn't support it) and is turned away with a reason.
@@ -19,12 +22,14 @@
 
 const crypto = require('crypto');
 const wg = require('./wireguard');
+const lip = require('./localips');
 
 let ctx = null;
 let state = null;            // saved: { proxies: [{ id, label, scheme, host, port, user, pass, ip, ms, ok, error, at }], directIp }
 let checking = false;
 let picked = null;           // the proxy picked in the list (its details and buttons show below it)
 const tunnels = new Map();   // WireGuard entry id -> running helper { port, stop }
+const relays = new Map();    // extra-IP entry id -> running relay { port, stop }
 let stopping = false;
 
 const S = (k) => ctx.settings.get(k);
@@ -113,13 +118,15 @@ function mask(text) {
     }
     return sc + rest;
 }
-const show = (p) => p.kind === 'wg' ? `WireGuard · ${p.endpoint}` : `${p.scheme === 'socks5' ? 'socks5://' : ''}${p.user ? p.user + ':••••@' : ''}${p.host}:${p.port}`;
+const show = (p) => p.kind === 'wg' ? `WireGuard · ${p.endpoint}` : p.kind === 'local' ? `this computer's ${p.localIp}` : `${p.scheme === 'socks5' ? 'socks5://' : ''}${p.user ? p.user + ':••••@' : ''}${p.host}:${p.port}`;
 const idOf = (p) => 'p' + crypto.createHash('sha1').update(`${p.scheme}|${p.host}|${p.port}|${p.user}`).digest('hex').slice(0, 8);
 
-// A WireGuard entry is a route only while its helper runs (its local SOCKS5 port).
+// A WireGuard or extra-IP entry is a route only while its helper or relay runs (its local SOCKS5 port).
+const localPort = (p) => p.kind === 'wg' ? (tunnels.get(p.id) || {}).port : p.kind === 'local' ? (relays.get(p.id) || {}).port : null;
+const usable = (p) => (p.kind !== 'wg' && p.kind !== 'local') || !!localPort(p);
 function publish() {
-    ctx.network.setRoutes(state.proxies.filter(p => p.kind !== 'wg' || tunnels.has(p.id)).map(p => ({ id: p.id, label: p.label, ip: p.ip || null,
-        proxy: p.kind === 'wg' ? { scheme: 'socks5', host: '127.0.0.1', port: tunnels.get(p.id).port } : { scheme: p.scheme, host: p.host, port: p.port, user: p.user, pass: p.pass } })));
+    ctx.network.setRoutes(state.proxies.filter(usable).map(p => ({ id: p.id, label: p.label, ip: p.ip || null,
+        proxy: p.kind === 'wg' || p.kind === 'local' ? { scheme: 'socks5', host: '127.0.0.1', port: localPort(p) } : { scheme: p.scheme, host: p.host, port: p.port, user: p.user, pass: p.pass } })));
     const opts = [{ value: 'auto', label: 'Auto (spread)' }, { value: 'direct', label: 'This PC\'s connection' }, ...state.proxies.map(p => ({ value: p.id, label: `${p.label}${p.ip ? ' · ' + p.ip : ''}` }))];
     ctx.settings.setOptions('pinRoute', opts);
 }
@@ -155,6 +162,47 @@ async function startTunnels() {
     testAll();
 }
 
+// Every extra-IP entry's relay running. One that can't start is tried again later.
+async function startRelays() {
+    const todo = state.proxies.filter(p => p.kind === 'local' && !relays.has(p.id) && !p.starting && Date.now() >= (p.retryAt || 0));
+    if (!todo.length) return;
+    for (const p of todo) {
+        p.starting = true;
+        try {
+            const r = await lip.startRelay(p.localIp);
+            if (stopping) { r.stop(); break; }
+            relays.set(p.id, r); p.error = null;
+        } catch (e) {
+            Object.assign(p, { ok: false, error: e.message, retryAt: Date.now() + 5 * 60000 });
+            ctx.log(`${p.label}: ${e.message}`, 'warn');
+        } finally { p.starting = false; }
+    }
+    publish(); save();
+    testAll();
+}
+
+// "Use this server's extra IPs": every public IPv4 address on this computer's adapters, except the one it already
+// clicks from and ones already added, becomes an entry with its own relay.
+async function addLocalIps() {
+    const d = await ctx.network.probe('direct');
+    if (d.ok) state.directIp = d.ip;
+    const all = lip.listLocalIps();
+    if (!all.length) return { ok: false, error: 'This computer has no public IP address on its network adapters (normal for a home PC behind a router). On a VPS, an additional IP has to be added to the server\'s network interface first (your provider\'s guide shows how), then press this again.' };
+    const fresh = all.filter(a => a.ip !== state.directIp && !state.proxies.some(p => p.kind === 'local' && p.localIp === a.ip));
+    if (!fresh.length) {
+        return all.length === 1 && all[0].ip === state.directIp
+            ? { ok: false, error: `This computer has one public IP (${all[0].ip}), and it's already This PC's connection. An additional IP has to be added to the server's network interface first (your provider's guide shows how).` }
+            : { message: 'Every extra IP on this computer is already in the list.' };
+    }
+    let n = state.proxies.filter(p => p.kind === 'local').length;
+    for (const a of fresh) {
+        state.proxies.push({ id: 'l' + crypto.createHash('sha1').update('local|' + a.ip).digest('hex').slice(0, 8), kind: 'local', label: `Extra IP ${++n}`, localIp: a.ip, ip: null, ok: null, error: null, at: 0 });
+    }
+    save();
+    await startRelays();
+    return { message: `Added ${fresh.length} extra IP${fresh.length === 1 ? '' : 's'} (${fresh.map(a => a.ip).join(', ')}) — testing ${fresh.length === 1 ? 'it' : 'them'} now. Each one is room for ${ctx.network.state().maxPerIp} more accounts.` };
+}
+
 // Every proxy's exit IP and speed (and this PC's), a few at a time.
 async function testAll() {
     if (checking) return;
@@ -164,7 +212,7 @@ async function testAll() {
         if (d.ok) state.directIp = d.ip;
         let changed = false;
         for (let i = 0; i < state.proxies.length; i += 4) {
-            await Promise.all(state.proxies.slice(i, i + 4).filter(p => p.kind !== 'wg' || tunnels.has(p.id)).map(async (p) => {
+            await Promise.all(state.proxies.slice(i, i + 4).filter(usable).map(async (p) => {
                 const r = await ctx.network.probe(p.id);
                 if (r.ok && p.ip !== r.ip) changed = true;
                 Object.assign(p, r.ok ? { ok: true, ip: r.ip, ms: r.ms, error: null } : { ok: false, error: r.error }, { at: Date.now() });
@@ -222,9 +270,11 @@ module.exports = {
         publish();
         setTimeout(testAll, 1500);
         startTunnels();
-        ctx.every(5000, () => startTunnels());
+        startRelays();
+        ctx.every(5000, () => { startTunnels(); startRelays(); });
         ctx.every(60000, () => { if (Date.now() - (state.testedAt || 0) >= Math.max(2, num(S('checkEveryMin'))) * 60000) { state.testedAt = Date.now(); testAll(); } });
         ctx.panel.action('add', () => addPasted());
+        ctx.panel.action('localips', () => addLocalIps());
         ctx.panel.action('test', () => { testAll(); return { message: 'Testing every proxy — results show up here in a moment.' }; });
         ctx.panel.action('pick', (id) => { picked = picked === id ? null : String(id); return { ok: true }; });
         ctx.panel.action('remove', () => {
@@ -232,17 +282,27 @@ module.exports = {
             if (!p) return { ok: false, error: 'Pick a proxy first.' };
             state.proxies = state.proxies.filter(x => x !== p); picked = null; save();
             if (tunnels.has(p.id)) { const t = tunnels.get(p.id); tunnels.delete(p.id); t.stop(); }
+            if (relays.has(p.id)) { const t = relays.get(p.id); relays.delete(p.id); t.stop(); }
             for (const a of ctx.network.state().accounts) if (a.pin === p.id) ctx.network.pin(a.id, null);
             publish();
             return { message: `Removed ${p.label}; its accounts move to another route.` };
         });
+        // Pins every ticked account (a folder's name ticks the whole folder) to one route, or back to automatic.
         ctx.panel.action('pin', () => {
-            const aid = S('pinAccount'), rid = S('pinRoute');
-            if (!aid) return { ok: false, error: 'Pick an account first.' };
-            const r = ctx.network.pin(aid, rid === 'auto' ? null : rid);
-            if (!r.ok) return r;
-            const name = (ctx.accounts.get(aid) || {}).name || aid;
-            return { message: rid === 'auto' ? `${name} is spread automatically again.` : `${name} now goes through ${rid === 'direct' ? 'this PC\'s connection' : (state.proxies.find(x => x.id === rid) || {}).label || rid}.` };
+            const pick = S('pinAccounts') || {}, rid = S('pinRoute');
+            const net = ctx.network.state();
+            const ids = pick.all ? net.accounts.map(a => a.id) : (pick.ids || []).filter(id => net.accounts.some(a => a.id === id));
+            if (!ids.length) return { ok: false, error: 'Tick some accounts (or a folder) first.' };
+            if (!rid) return { ok: false, error: 'Pick where they go through.' };
+            for (const aid of ids) { const r = ctx.network.pin(aid, rid === 'auto' ? null : rid); if (!r.ok) return r; }
+            const one = ids.length === 1, who = one ? (ctx.accounts.get(ids[0]) || {}).name || ids[0] : `${ids.length} accounts`;
+            if (rid === 'auto') return { message: `${who} ${one ? 'is' : 'are'} spread automatically again.` };
+            const where = rid === 'direct' ? 'this PC\'s connection' : (state.proxies.find(x => x.id === rid) || {}).label || rid;
+            // The site allows maxPerIp clicking per exit IP: say so when more are pinned there than can click.
+            const after = ctx.network.state(), groupOf = (id) => (after.routes.find(r => r.id === id) || {}).group;
+            const there = after.accounts.filter(a => a.pin && groupOf(a.pin) === groupOf(rid)).length;
+            const over = there > after.maxPerIp ? ` ${there} accounts are pinned there and ${after.maxPerIp} can click at once, so the rest wait for a slot.` : '';
+            return { message: `${who} now go${one ? 'es' : ''} through ${where}.${over}` };
         });
 
         ctx.panel.tab('Proxies', () => {
@@ -255,7 +315,8 @@ module.exports = {
                 ...state.proxies.map(p => {
                     const r = routeOf.get(p.id) || {};
                     const status = r.down ? 'not working — its accounts wait' : p.kind === 'wg' && !tunnels.has(p.id) ? (p.error ? `tunnel down: ${p.error}` : 'starting the tunnel…')
-                        : p.ok === false ? `failed the test: ${p.error}` : p.ok ? `works · ${p.ms} ms` : 'not tested yet';
+                        : p.kind === 'local' && !relays.has(p.id) ? (p.error ? `can't send from ${p.localIp}: ${p.error}` : 'starting…')
+                        : p.ok === false ? `failed the test: ${p.error}${p.kind === 'local' ? ` (is ${p.localIp} still set up on this server?)` : ''}` : p.ok ? `works · ${p.ms} ms` : 'not tested yet';
                     return { id: p.id, title: p.label, sub: `${show(p)}${p.ip ? ` → ${p.ip}` : ''}${sameIp(p) ? ' (same exit IP as another proxy: they share 20)' : ''}`,
                         meta: `${r.used || 0} / ${net.maxPerIp} accounts · ${status}`, on: picked === p.id };
                 }),
@@ -278,10 +339,11 @@ module.exports = {
                     ] },
                 { type: 'card', id: 'add', open: !state.proxies.length, title: 'Add proxies', summary: 'paste a list — any common format', keys: ['paste'],
                     blocks: [
-                        { type: 'buttons', items: [{ label: 'Add', action: 'add', primary: true }] },
+                        { type: 'buttons', items: [{ label: 'Add', action: 'add', primary: true }, { label: 'Use this server\'s extra IPs', action: 'localips' }] },
+                        { type: 'text', text: 'A VPS with additional IPs: once they\'re set up on the server\'s network interface, "Use this server\'s extra IPs" adds each one as a route of its own (20 more accounts per IP, no proxy software needed).' },
                         ...((state.lastSkipped || []).length ? [{ type: 'table', wrap: true, columns: ['Skipped', 'Why'], rows: state.lastSkipped.map(x => [x.text, x.why]) }] : []),
                     ] },
-                { type: 'card', id: 'accounts', open: false, title: 'Accounts', summary: `spread by themselves, 20 per exit IP · ${net.accounts.filter(a => a.pin).length} pinned`, keys: ['pinAccount', 'pinRoute'],
+                { type: 'card', id: 'accounts', open: false, title: 'Accounts', summary: `spread by themselves, 20 per exit IP · ${net.accounts.filter(a => a.pin).length} pinned`, keys: ['pinAccounts', 'pinRoute'],
                     blocks: [
                         { type: 'buttons', items: [{ label: 'Apply', action: 'pin' }] },
                         ...(rows.length ? [{ type: 'table', columns: ['Account', 'Goes through', 'How'], rows }] : []),
@@ -294,7 +356,7 @@ module.exports = {
             return a && a.running && a.route && a.route !== 'direct' ? 'via ' + ((state.proxies.find(x => x.id === a.route) || {}).label || a.route) : null;
         });
     },
-    stop() { picked = null; stopping = true; for (const t of tunnels.values()) t.stop(); tunnels.clear(); },
+    stop() { picked = null; stopping = true; for (const t of tunnels.values()) t.stop(); tunnels.clear(); for (const r of relays.values()) r.stop(); relays.clear(); },
 };
 
 const num = (v) => (Number.isFinite(Number(v)) ? Number(v) : 0);
