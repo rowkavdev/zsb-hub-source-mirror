@@ -59,6 +59,10 @@ const MARGIN_START = 400, MARGIN_STEP = 500, MARGIN_MAX = 5000, MARGIN_MIN = 150
 const MARGIN_HIGH = 1400, MARGIN_EASE_HIGH = 250, MARGIN_EASE_HIGH_AFTER = 10;
 // Refusals on one exit IP this close together are the IP's limit, not one account's cooldown.
 const IP_BURST_MS = 10000;
+// A refusal whose Retry-After is a quarter of the click interval or more (15 s of a minute) isn't the IP's limit: the
+// hub's batch came a whole interval after its last one, so the account's own wait had started again — something else
+// clicked it moments before. A batch just a little early is told to wait a second or two.
+const USED_RA_PART = 4;
 // A due batch isn't sent within BUNCH_MS of another account's on the same IP (slots are seconds apart; only a stall
 // of the app, e.g. while starting many accounts, puts two that close).
 const BUNCH_MS = 150;
@@ -78,6 +82,8 @@ class Engine extends EventEmitter {
         this.relogin = new Map(); // id -> timer for the next sign-in try (auto-recover)
         this.reloginMs = RELOGIN_MS;
         this.bulkStop = false;    // Stop all: freed slots aren't handed on
+        this.directIp = null;     // this PC's exit IP, from the last probe of 'direct' (it shares the per-IP cap too)
+        this.sharedSeen = '';     // the shared-IP set last raised as CC-PROXY-03 (a dismissed banner stays away until it changes)
     }
 
     // Auto-recover switches (see the top).
@@ -198,13 +204,57 @@ class Engine extends EventEmitter {
         // Accounts waiting for room (CC-RATE-01) start now that there may be some. (Read before the moves above: any
         // stop clears that error for everyone.)
         for (const a of this.store.accounts) if (a.token && !this.run.has(a.id) && (waiting.has(a.id) || this.errors.has(a.id, 'CC-RATE-01'))) this.start(a.id);
+        this.checkSharedIps();
         this.emit('change');
     }
     hasRoute(id) { return id === 'direct' || !!(this.routes && this.routes.has(id)); }
     pinnedElsewhere(r) { const a = this.store.get(r.id); return !!(a && a.routePin && a.routePin !== r.route && this.hasRoute(a.routePin)); }
     routeDown(id) { const k = routeKey(id); return !!k && (this.errors.has(k, 'CC-PROXY-01') || this.errors.has(k, 'CC-PROXY-02')); }
-    // Routes with the same exit IP count as one for the per-IP cap.
-    groupOf(id) { const x = id !== 'direct' && this.routes && this.routes.get(id); return x && x.ip ? 'ip:' + x.ip : 'route:' + id; }
+    // Routes with the same exit IP count as one for the per-IP cap, this PC's connection included (a proxy that isn't
+    // set up right can fall back to the server's own IP).
+    groupOf(id) {
+        const ip = id === 'direct' ? this.directIp : ((this.routes && this.routes.get(id)) || {}).ip;
+        return ip ? 'ip:' + ip : 'route:' + id;
+    }
+    routeName(id) { return id === 'direct' ? "This PC's connection" : ((this.routes && this.routes.get(id)) || {}).label || id; }
+
+    // Connections that leave on one exit IP share its clicking places. Said once per set as a hub notice (CC-PROXY-03),
+    // and the accounts over that IP's limit move to a connection with room, or wait for one (CC-RATE-01): clicking
+    // over the limit gets batches refused for every account on the IP.
+    checkSharedIps() {
+        const byIp = new Map();
+        for (const id of ['direct', ...(this.routes ? this.routes.keys() : [])]) {
+            const g = this.groupOf(id);
+            if (g.startsWith('ip:')) byIp.set(g, [...(byIp.get(g) || []), id]);
+        }
+        const shared = [...byIp.entries()].filter(([, ids]) => ids.length > 1);
+        const sig = shared.map(([g, ids]) => g + '=' + ids.join(',')).join(';');
+        if (!shared.length) { this.sharedSeen = ''; this.errors.clear(null, 'CC-PROXY-03'); return; }
+        const max = this.settings.maxPerIp;
+        let moved = 0, waiting = 0;
+        for (const [g] of shared) {
+            // The last started go first; pinned accounts stay where they were pinned.
+            const over = [...this.run.values()].filter(r => this.groupOf(r.route) === g && !this.noClicks(r.id)).reverse();
+            let extra = over.length - max;
+            for (const r of over) {
+                if (extra <= 0) break;
+                const a = this.store.get(r.id);
+                if (!a || r.held || (a.routePin && a.routePin === r.route)) continue;
+                const to = this.pickRoute(r.id);
+                this.stop(r.id, { keepResume: true, quiet: true });
+                if (to) a.route = to;
+                if (this.start(r.id).ok) moved++; else waiting++;
+                extra--;
+            }
+        }
+        if (sig === this.sharedSeen) return;
+        this.sharedSeen = sig;
+        const names = (ids) => ids.map(id => this.routeName(id)).join(', ').replace(/, ([^,]*)$/, ' and $1');
+        const what = shared.map(([g, ids]) => `${names(ids)} leave on the same IP (${g.slice(3)})`).join('; ');
+        const after = moved || waiting ? ` — moved ${moved} account${moved === 1 ? '' : 's'} to a connection with room${waiting ? `, ${waiting} wait for one` : ''}` : '';
+        this.log.add(null, `Same exit IP: ${what}. They share one IP's ${max} clicking places${after}`, 'warn');
+        this.errors.raise(null, 'CC-PROXY-03', what + after);
+    }
     usedIn(group, except) { let n = 0; for (const r of this.run.values()) if (r.id !== except && this.groupOf(r.route) === group && !this.noClicks(r.id)) n++; return n; }
     // Off: runs without clicking (see the top).
     noClicks(id) { const a = this.store.get(id); return !!a && a.type === 'off'; }
@@ -235,6 +285,7 @@ class Engine extends EventEmitter {
         const t0 = Date.now();
         const r = await this.site.t.request({ path: '/cdn-cgi/trace', route: id, timeoutMs: 15000, headers: this.site.headers() });
         const ip = r.status === 200 && /(?:^|\n)ip=([^\n]+)/.exec(r.body || '');
+        if (ip && id === 'direct' && this.directIp !== ip[1].trim()) { this.directIp = ip[1].trim(); this.checkSharedIps(); this.emit('change'); }
         return ip ? { ok: true, ip: ip[1].trim(), ms: Date.now() - t0 } : { ok: false, error: r.error || 'HTTP ' + r.status };
     }
 
@@ -501,15 +552,19 @@ class Engine extends EventEmitter {
             const now = Date.now(), g = this.groupOf(r.route);
             // Another account on the same exit IP refused moments ago: it's the IP's limit, not this account's cooldown,
             // so a bigger margin wouldn't help (it only slows every batch down). Just move it to a quieter moment.
+            // A long Retry-After says the account was clicked elsewhere (see USED_RA_PART): not the IP, and not the hub's
+            // pace either, so no bigger margin; and it doesn't mark the IP as busy for the accounts next to it.
+            const ra0 = Number.isFinite(res.retryAfter) && res.retryAfter >= 0 && res.retryAfter <= 900 ? res.retryAfter : null;
+            const used = ra0 != null && ra0 * 1000 >= this.settings.clickIntervalMs / USED_RA_PART;
             this.ipRefused = this.ipRefused || new Map();
-            const ipBurst = now - (this.ipRefused.get(g) || 0) < IP_BURST_MS;
-            this.ipRefused.set(g, now);
-            // Kept for an hour for Troubleshoot > Clicks: when, and whether it was the IP's limit.
-            (r.refusals || (r.refusals = [])).push({ t: now, ip: ipBurst });
+            const ipBurst = !used && now - (this.ipRefused.get(g) || 0) < IP_BURST_MS;
+            if (!used) this.ipRefused.set(g, now);
+            // Kept for an hour for Troubleshoot > Clicks: when, and whether it was the IP's limit or a click from elsewhere.
+            (r.refusals || (r.refusals = [])).push({ t: now, ip: ipBurst, used });
             while (r.refusals.length && r.refusals[0].t < now - 3600000) r.refusals.shift();
             if (!ipBurst) this.emit('refused', r.id);
             const was = r.margin;
-            if (!ipBurst) r.margin = acct.clickMarginMs = Math.min(MARGIN_MAX, r.margin + MARGIN_STEP);
+            if (!ipBurst && !used) r.margin = acct.clickMarginMs = Math.min(MARGIN_MAX, r.margin + MARGIN_STEP);
             // A full interval (plus margin) after the refused try, at the quietest moment of the minute on this IP —
             // not "now + a minute", which kept the accounts refused together bunched together.
             // The site says when the next batch is allowed (Retry-After, seconds; documented for /api/click since 2026-11):
@@ -520,7 +575,9 @@ class Engine extends EventEmitter {
             r.lastClick = (ra != null && !ipBurst ? now + wait : this.freeSlot(r.route, now + wait, r.id)) - this.period(r);
             if (ra != null) r.retryAfter = ra;
             this.store.saveAccountsSoon();
-            if (r.margin > was) this.log.add(r.id, `The site said too fast — waiting ${(r.margin / 1000).toFixed(2)} s extra between batches from now on${ra != null ? ` (next try in ${Math.round(wait / 1000)} s, as the site asked)` : ''}`, 'warn');
+            if (used && now - (r.usedNotedAt || 0) > 10 * 60000) { r.usedNotedAt = now; this.log.add(r.id, `The site refused a batch: the account was clicked somewhere else moments before (next try in ${Math.round(wait / 1000)} s, as the site asked)`, 'warn'); }
+            else if (used) { /* said in the last 10 minutes */ }
+            else if (r.margin > was) this.log.add(r.id, `The site said too fast — waiting ${(r.margin / 1000).toFixed(2)} s extra between batches from now on${ra != null ? ` (next try in ${Math.round(wait / 1000)} s, as the site asked)` : ''}`, 'warn');
             else if (ipBurst && now - (r.ipNotedAt || 0) > 10 * 60000) { r.ipNotedAt = now; this.log.add(r.id, 'The site said too fast for this IP (other accounts on it too) — its batches move to a quieter moment in the minute', 'warn'); }
             else if (ra != null && now - (r.raNotedAt || 0) > 10 * 60000) { r.raNotedAt = now; this.log.add(r.id, `The site refused a batch — next try in ${Math.round(wait / 1000)} s, as the site asked`, 'warn'); }
         }
@@ -690,7 +747,7 @@ class Engine extends EventEmitter {
         if (!r) return { running: false };
         const hour = (r.refusals || []).filter(x => x.t >= now - 3600000);
         const { due, missed } = this.behind(r);
-        return { running: true, refused: hour.filter(x => !x.ip).length, ipRefused: hour.filter(x => x.ip).length, missed, due, retryAfter: r.retryAfter ?? null,
+        return { running: true, refused: hour.filter(x => !x.ip).length, ipRefused: hour.filter(x => x.ip).length, usedRefused: hour.filter(x => x.used).length, missed, due, retryAfter: r.retryAfter ?? null,
             marginMs: r.margin, pct: this.stability(acct).pct, upMs: now - r.startedAt };
     }
 

@@ -139,8 +139,10 @@ const LOOKS = [
             line: 'rgba(255, 255, 255, .09)', 'line-2': 'rgba(255, 255, 255, .17)',
             text: '#f6f6f8', 'text-2': '#d0d0d8', muted: '#ababb5', white: '#ffffff', 'on-white': '#000000',
         },
-        // the camo, dimmed so text over it reads
-        wash: (art) => `linear-gradient(rgb(8 9 15 / .66), rgb(8 9 15 / .66)), url(${art('art/alpine.svg')}) 0 0 / 720px 720px`,
+        // the camo, dimmed so text over it reads. A picture drawn once from art/alpine.svg (node tools/render-alpine.js):
+        // the SVG itself is noise filters, which a PC drawing without its graphics card ran again on every scroll frame
+        // (5 fps against 220 with the picture).
+        wash: (art) => `linear-gradient(rgb(8 9 15 / .66), rgb(8 9 15 / .66)), url(${art('art/alpine.webp')}) 0 0 / 720px 720px`,
         fill: 'var(--white)',
         css: () => [
             `:root { --panel-grad: linear-gradient(180deg, rgb(54 54 62 / .76), rgb(38 38 45 / .8)); }`,

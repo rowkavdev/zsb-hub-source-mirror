@@ -1,7 +1,7 @@
 {
   "id": "proxies",
   "name": "Proxy manager",
-  "version": "1.3.0",
+  "version": "1.3.1",
   "description": "Runs accounts through your own proxies or WireGuard configs, 20 per exit IP (the site's limit), so one install can click more than 20. Paste proxies (HTTP with or without user:pass, SOCKS5 without) or WireGuard configs, or use a VPS's additional IPs, test them, and pin accounts to one if you like; the rest are spread by themselves.",
   "minCore": "1.0.6",
   "main": "index.js",

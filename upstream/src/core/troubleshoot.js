@@ -32,6 +32,7 @@ const FOREIGN = (s) => s.kind === 'other' || s.kind === 'hubElsewhere';
 const BUSY_MS = 120000;        // how long a busy test watches at most
 const BUSY_EVERY_MS = 10000;   // how often it reads /api/me
 const BUSY_SETTLE_MS = 3000;   // after the hub's last request, before the first reading (a plugin call may still land)
+const BUSY_PARALLEL = 4;       // busy tests at once when many are asked for (each reads the site 3 times every 10 s)
 const sleep = (ms) => new Promise(res => setTimeout(res, ms));
 const EXTRA_EVERY_MS = 15 * 60000;   // extra-clicks check per clicking account
 const EXTRA_SOON_MS = 2 * 60000;     // after a refused batch, check again if the last one is older than this
@@ -81,7 +82,8 @@ class Troubleshoot {
     constructor({ store, engine, site, log, errors, pluginBusy, timing }) {
         this.store = store; this.engine = engine; this.site = site; this.log = log; this.errors = errors;
         this.pluginBusy = pluginBusy || (() => null);   // account id -> { plugin, what } while a plugin job has it
-        this.timing = { busyMs: BUSY_MS, everyMs: BUSY_EVERY_MS, settleMs: BUSY_SETTLE_MS, extraClearMs: EXTRA_EVERY_MS, ...(timing || {}) };
+        this.timing = { busyMs: BUSY_MS, everyMs: BUSY_EVERY_MS, settleMs: BUSY_SETTLE_MS, extraClearMs: EXTRA_EVERY_MS, busyParallel: BUSY_PARALLEL, ...(timing || {}) };
+        this.busyQueue = [];       // account ids waiting for a busy test (busyMany), oldest first
         this.busy = new Map();     // account id -> the last busy test: { state: running|found|clear|stopped|failed, … }
         this.extra = new Map();    // account id -> { base: last counter reading, last: last result }
         this.watched = new Map();  // account id -> when watch() last ran
@@ -270,12 +272,49 @@ class Troubleshoot {
         this.busy.set(id, test);
         this.log.add(id, 'Busy test: clicking paused for up to 2 minutes, watching for anything else using the account', 'info');
         this.runBusy(id, r, held, test).catch(e => { test.state = 'failed'; test.why = e.message; })
-            .finally(() => { this.engine.release(id, held); test.endedAt = Date.now(); delete test.stop; this.engine.emit('change'); });
+            .finally(() => { this.engine.release(id, held); test.endedAt = Date.now(); delete test.stop; this.engine.emit('change'); this.busyPump(); });
         return { ok: true, startedAt };
+    }
+
+    // Busy tests on many accounts: they wait in a queue and run busyParallel at a time, so a fleet's worth doesn't pause
+    // every account at once or hit the site with all their readings together. Accounts that can't be tested (stopped,
+    // already testing, a plugin using it) are left out and counted. Returns at once.
+    busyMany(ids) {
+        const out = { ok: true, queued: 0, skipped: {} };
+        for (const id of [...new Set(Array.isArray(ids) ? ids : [])]) {
+            const acct = this.store.get(id), r = this.engine.run.get(id), t = this.busy.get(id);
+            const why = !acct || !r ? 'stopped' : r.held || (t && (t.state === 'running' || t.state === 'queued')) ? 'running'
+                : this.pluginBusy(id) ? 'plugin' : null;
+            if (why) { out.skipped[why] = (out.skipped[why] || 0) + 1; continue; }
+            this.busy.set(id, { state: 'queued', queuedAt: Date.now() });
+            this.busyQueue.push(id); out.queued++;
+        }
+        if (out.queued) { this.engine.emit('change'); this.busyPump(); }
+        return out;
+    }
+
+    // Starts queued busy tests while fewer than busyParallel run; each one that ends calls it again.
+    busyPump() {
+        const running = () => [...this.busy.values()].filter(t => t.state === 'running').length;
+        while (this.busyQueue.length && running() < this.timing.busyParallel) {
+            const id = this.busyQueue.shift(), t = this.busy.get(id);
+            if (!t || t.state !== 'queued') continue;
+            this.busy.delete(id);
+            const res = this.busyTest(id);
+            // It couldn't start after all (stopped meanwhile, a plugin took it, the route went down): say so on its row.
+            if (!res.ok) this.busy.set(id, { state: 'skipped', why: res.why, what: res.what, endedAt: Date.now() });
+        }
+        this.engine.emit('change');
     }
 
     busyStop(id) {
         const t = this.busy.get(id);
+        if (t && t.state === 'queued') {
+            this.busyQueue = this.busyQueue.filter(x => x !== id);
+            this.busy.set(id, { state: 'stopped', endedAt: Date.now() });
+            this.engine.emit('change');
+            return { ok: true };
+        }
         if (!t || t.state !== 'running') return { ok: false };
         t.stop = true;
         return { ok: true };
@@ -408,6 +447,7 @@ class Troubleshoot {
             let cause = null;
             if (h.running) {
                 if (h.refused >= 2 && seen && seen.others) cause = 'elsewhere';
+                else if (h.usedRefused >= 2) cause = 'used';
                 else if (h.refused >= 2) cause = 'own';
                 else if (h.ipRefused >= 2) cause = 'ip';
                 else if (h.missed >= 3) cause = 'behind';
