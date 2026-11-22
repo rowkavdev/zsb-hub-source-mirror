@@ -16,6 +16,7 @@ const { ORIGIN } = require('./dev');
 
 const WS_URL = 'wss://ws.' + new URL(ORIGIN).host.replace(/^www\./, '') + '/socket.io/?EIO=4&transport=websocket';
 const CONNECT_MS = 15000;
+const DIRECT_SKIP_MS = 10 * 60000;
 
 // Events land in a queue; wait() takes the first matching one (earlier ones included).
 function queue() {
@@ -109,13 +110,18 @@ function createSockets({ partition, evalInWindow, prepareWindow, log, client: cl
         if (prepareWindow && !(await prepareWindow(30000, route))) throw new Error('the check window did not get through Cloudflare');
         return openInWindow(token, (js) => evalInWindow(js, route), client);
     };
+    // After a direct socket fails, the next ones go straight through the check window for a while: on some connections
+    // the direct one never works, and each try logged a warning (the most common line in shared logs, 2026-11-21).
+    let directFailedAt = 0;
     return {
         // client: the X-CC-Client value for the handshake (the core passes it; else the app's own).
         async open(token, route = 'direct', client = clientOf()) {
             if (route !== 'direct' && evalInWindow) return inWindow(token, route, client);
+            if (evalInWindow && Date.now() - directFailedAt < DIRECT_SKIP_MS) return inWindow(token, route, client);
             try { return await openDirect(token, partition, client); } catch (e) {
                 if (!evalInWindow) throw e;
-                log.add(null, `Site socket: ${e.message} — trying through the check window`, 'warn');
+                directFailedAt = Date.now();
+                log.add(null, `Site socket: ${e.message} — using the check window for sockets for the next ${DIRECT_SKIP_MS / 60000} min`, 'warn');
                 return inWindow(token, route, client);
             }
         },

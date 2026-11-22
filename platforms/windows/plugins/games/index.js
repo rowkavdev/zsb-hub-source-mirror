@@ -525,7 +525,7 @@ module.exports = {
                     ready: !!(n || xp), next: 'Run',
                     text: !n && !xp ? '' : practice ? 'Shows what a run would play on each account, without betting.' : live ? `Every ${Math.max(5, num(S('everyMin')))} min; Run now starts straight away.` : 'Games is off: Run now plays once.',
                     buttons: n || xp ? (busy.size && !practice
-                        ? [{ label: halt ? 'Stopping…' : busy.size === 1 ? 'Stop' : `Stop all ${busy.size}`, action: 'stop', danger: true, disabled: halt }]
+                        ? [{ label: halt ? 'Stopping…' : busy.size === 1 ? 'Stop' : `Stop all ${busy.size}`, action: 'stop', disabled: halt }]
                         : [{ label: practice ? 'Practice run' : 'Run now', action: 'run', primary: true }]) : [] } },
                 { type: 'section', title: 'Recent runs', blocks: [{ type: 'table', empty: 'No runs yet.', columns: ['When', 'Account', 'Plays', 'Net', 'Rewards', 'Result'],
                     rows: (state.runs || []).slice(0, 10).map(r => [new Date(r.t).toLocaleTimeString(), r.acct, String(r.plays), tok(r.net), tok(r.rewards) + (r.cash ? ` · $${r.cash}` : ''), r.result]) }] },

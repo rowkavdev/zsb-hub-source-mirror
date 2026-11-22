@@ -458,7 +458,7 @@
 
     function drawBanners() {
         setHtml('#banners', importBanner() + S.appIssues.map(i => `
-            <div class="banner${i.code === 'CC-MAIN-01' ? '' : ' closable'} ${i.code === 'CC-CF-01' || i.code === 'CC-SITE-02' || i.code === 'CC-MAIN-01' || /^CC-PROXY-/.test(i.code) ? 'warn' : 'bad'}">
+            <div class="banner${i.code === 'CC-MAIN-01' ? '' : ' closable'} ${i.code === 'CC-CF-01' || i.code === 'CC-SITE-02' || i.code === 'CC-NET-03' || i.code === 'CC-MAIN-01' || /^CC-PROXY-/.test(i.code) ? 'warn' : 'bad'}">
               <span class="code">${esc(i.code)}</span>
               <div class="text"><b>${esc(issueText(i))}</b> <span class="muted">${esc(issueFix(i))}</span>${i.detail ? `<div class="muted">${esc(i.detail)}</div>` : ''}</div>
               ${issueAction(i)}
@@ -1193,12 +1193,13 @@
         if (!n) return H('plugins.accounts.none', { label });
         return H('plugins.accounts.some', { label, n, total });
     }
-    const needsAccounts = (p) => p.settings.some(s => s.type === 'accounts' && !(s.value && (s.value.all || (s.value.ids || []).length)));
+    // optional: an accounts picker that is a tool (e.g. which accounts to pin to a proxy), not what the plugin runs on.
+    const needsAccounts = (p) => p.settings.some(s => s.type === 'accounts' && !s.optional && !(s.value && (s.value.all || (s.value.ids || []).length)));
 
     const catalogEntry = (id) => ((S.catalog && S.catalog.entries) || []).find(e => e.id === id);
 
     function pluginCard(p) {
-        const acc = p.settings.filter(s => s.type === 'accounts'), ce = catalogEntry(p.id), upd = ce && ce.update;
+        const acc = p.settings.filter(s => s.type === 'accounts' && !s.optional), ce = catalogEntry(p.id), upd = ce && ce.update;
         return `
             <div class="row plug">
               <div class="main">
@@ -1360,7 +1361,7 @@
                       <span>${esc(name)}</span><span class="muted">${mine.length}</span></label>${mine.map(row).join('')}` : '';
                 }).join('');
             return `<div class="pset" data-key="${key}" data-type="accounts">${label}
-                <label class="pick-all"><span class="switch"><input type="checkbox" data-pick="all" ${v.all ? 'checked' : ''}><i></i></span><span>${H('pluginmodal.all')} <span class="muted">${H('pluginmodal.allHint')}</span></span></label>
+                ${s.optional ? '' : `<label class="pick-all"><span class="switch"><input type="checkbox" data-pick="all" ${v.all ? 'checked' : ''}><i></i></span><span>${H('pluginmodal.all')} <span class="muted">${H('pluginmodal.allHint')}</span></span></label>`}
                 ${S.accounts.length > 1 ? `<div class="pick-tools"><button class="small" data-pick="every" ${v.all ? 'disabled' : ''}>${H('pluginmodal.selectAll')}</button><button class="small" data-pick="clear" ${v.all ? 'disabled' : ''}>${H('pluginmodal.clear')}</button>
                   ${S.accounts.length > 8 ? `<input class="pick-search" data-pick="search" aria-label="${H('pluginmodal.search')}" placeholder="${H('pluginmodal.search')}">` : ''}</div>` : ''}
                 <div class="pick-list pick-pills">${list}</div>
@@ -1437,8 +1438,10 @@
         });
         const redrawList = (set, rows) => { const sp = { ...listSpec(set), value: rows }; set.querySelector('.prows').innerHTML = listHtml(sp); };
         const saveList = (set, rows, redraw) => { if (redraw) redrawList(set, rows); return call('pluginSetting', id, set.dataset.key, rows).then(r => { if (r && !r.ok) toast(plainError(r.error), 'bad'); return refresh(); }); };
+        // An optional picker (a tool, e.g. the Proxy manager's) has no "All accounts" switch.
+        const isAll = (set) => { const x = set.querySelector('[data-pick="all"]'); return !!(x && x.checked); };
         const countAccounts = (set) => {
-            const boxes = [...set.querySelectorAll('[data-pick="acct"]')], all = set.querySelector('[data-pick="all"]').checked;
+            const boxes = [...set.querySelectorAll('[data-pick="acct"]')], all = isAll(set);
             const c = set.querySelector('.pick-count');
             if (c) c.textContent = all ? T('pluginmodal.countAll') : T('pluginmodal.count', { n: boxes.filter(b => b.checked).length, total: boxes.length });
             // Folder boxes: ticked when all their accounts are, half when some are.
@@ -1449,7 +1452,7 @@
         };
         // The ticked accounts live in set.dataset.ids, so turning "All accounts" off goes back to them.
         const saveAccounts = (set) => {
-            const all = set.querySelector('[data-pick="all"]').checked, was = new Set(JSON.parse(set.dataset.ids || '[]'));
+            const all = isAll(set), was = new Set(JSON.parse(set.dataset.ids || '[]'));
             set.querySelectorAll('[data-pick="acct"]').forEach(b => { b.disabled = all; b.checked = all || was.has(b.value); });
             set.querySelectorAll('[data-pick="every"], [data-pick="clear"]').forEach(b => { b.disabled = all; });
             countAccounts(set);

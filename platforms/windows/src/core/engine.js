@@ -62,6 +62,10 @@ const IP_BURST_MS = 10000;
 // A due batch isn't sent within BUNCH_MS of another account's on the same IP (slots are seconds apart; only a stall
 // of the app, e.g. while starting many accounts, puts two that close).
 const BUNCH_MS = 150;
+// No clicking account gets through (CC-NET-03): one notice for the hub. These are what each account has then; while it's
+// on they're left off the cards (each says Waiting for the site) instead of the same red error on every one.
+const OUTAGE_SEEN = new Set(['CC-NET-01', 'CC-NET-02', 'CC-SITE-01']);
+const OUTAGE_HIDE = new Set([...OUTAGE_SEEN, 'CC-SLOW-01']);
 
 class Engine extends EventEmitter {
     // auth.refresh(account) -> new token or null (silent re-login)
@@ -359,6 +363,18 @@ class Engine extends EventEmitter {
         }
     }
 
+    // Every clicking account (2 or more) can't reach the site, or only gets errors from it: the PC's connection or the
+    // site, not the accounts. One notice for the hub; it goes as soon as one of them gets through again.
+    checkOutage() {
+        const live = [...this.run.values()].filter(r => !r.refreshing && !r.held && !this.noClicks(r.id) && !this.routeDown(r.route));
+        const down = live.length >= 2 && live.every(r => this.errors.list(r.id).some(i => OUTAGE_SEEN.has(i.code)));
+        const on = this.errors.has(null, 'CC-NET-03');
+        if (down) {
+            if (!on) this.log.add(null, `None of the ${live.length} clicking accounts can reach case-clicker.com — they carry on by themselves once it's back`, 'warn');
+            this.errors.raise(null, 'CC-NET-03', `${live.length} accounts`);
+        } else if (on) { this.errors.clear(null, 'CC-NET-03'); this.log.add(null, 'case-clicker.com can be reached again', 'ok'); }
+    }
+
     tick() {
         const t = Date.now(), s = this.settings;
         // Site under maintenance: no clicks or vault (they'd only be refused and count as missed batches); one
@@ -374,7 +390,7 @@ class Engine extends EventEmitter {
             this.maint = false;
             for (const r of this.run.values()) { r.firstDueAt = t + this.period(r); r.okTimes = []; r.lastClick = Math.min(r.lastClick, t - this.period(r)); }
         }
-        if (t - (this.behindAt || 0) >= BEHIND_CHECK_MS) { this.behindAt = t; this.checkBehind(); }
+        if (t - (this.behindAt || 0) >= BEHIND_CHECK_MS) { this.behindAt = t; this.checkBehind(); this.checkOutage(); }
         const probed = new Set();
         for (const r of this.run.values()) {
             if (r.refreshing || r.held) continue;
@@ -463,6 +479,23 @@ class Engine extends EventEmitter {
         // A refused batch ("too fast") isn't retried: another try within seconds is refused too (the
         // refusal seems to restart the site's cooldown). Network hiccups are still retried.
         const res = await this.call(r, type === 'cases' ? '/api/caseClick' : '/api/click', { method: 'POST', body: { clicks: n }, tries: 4, retryOn: ['site', 'net', 'timeout'] });
+        const landed = r.landed || (r.landed = { money: 0, cases: 0, unsure: 0 });
+        // "Too fast" on a retry, right after a try that failed on the way back (timed out, 5xx, dropped): that try
+        // most likely landed and started the cooldown. It isn't the hub's pace, so no bigger margin and no refusal on
+        // record (that slowed every batch and set off the extra-clicks check). Its clicks may be on the counters, so
+        // the extra-clicks check starts over instead of counting them as someone else's (stats 2026-11-21: refusals
+        // and CC-AUTH-07 rose in step on two installs). It isn't a missed batch either.
+        if (res.kind === 'rate' && res.attempts > 1) {
+            const now = Date.now();
+            landed.unsure++;
+            (r.okTimes || (r.okTimes = [])).push(now);
+            this.errors.clear(r.id, 'CC-RATE-02');
+            const ra = Number.isFinite(res.retryAfter) && res.retryAfter >= 0 && res.retryAfter <= 900 ? res.retryAfter : null;
+            // The next batch goes when the site said, else a whole interval from now.
+            r.lastClick = ra != null ? now + Math.max(RA_MIN_MS, ra * 1000 + RA_PAD_MS) - this.period(r) : now;
+            this.emit('change');
+            return;
+        }
         if (res.kind === 'rate') {
             r.rateLimited++; r.clean = 0;
             const now = Date.now(), g = this.groupOf(r.route);
@@ -494,7 +527,6 @@ class Engine extends EventEmitter {
         // landed: what this run's batches added to the account's lifetime counters (money clicks; cases from case clicks),
         // for Troubleshoot's extra-clicks check. unsure counts batches that may have landed without the hub knowing
         // (a failed or retried send); the check starts over after one of those.
-        const landed = r.landed || (r.landed = { money: 0, cases: 0, unsure: 0 });
         if (res.kind !== 'ok') { if (res.kind !== 'gone') r.failedBatches++; if (res.kind !== 'rate' && res.kind !== 'gone') landed.unsure++; return; }
         if (res.attempts > 1) landed.unsure++;
         if (type === 'cases') landed.cases += Number(res.json && res.json.amount) || 0; else landed.money += n;
@@ -504,6 +536,7 @@ class Engine extends EventEmitter {
             r.margin = acct.clickMarginMs = high ? Math.max(MARGIN_HIGH, r.margin - MARGIN_EASE_HIGH) : Math.max(MARGIN_MIN, r.margin - MARGIN_EASE);
         }
         r.clicks += n; r.lastClickOkAt = Date.now();
+        if (this.errors.has(null, 'CC-NET-03')) this.checkOutage();
         (r.okTimes || (r.okTimes = [])).push(r.lastClickOkAt);
         acct.lastClickAt = r.lastClickOkAt; this.store.saveAccountsSoon();
         this.emit('click', r.id, n); this.emit('change');
@@ -664,7 +697,8 @@ class Engine extends EventEmitter {
     // What the panel shows per account.
     view(acct) {
         const r = this.run.get(acct.id);
-        const issues = this.errors.list(acct.id);
+        const outage = !!r && this.errors.has(null, 'CC-NET-03');
+        const issues = this.errors.list(acct.id).filter(i => !(outage && OUTAGE_HIDE.has(i.code)));
         const s = this.settings;
         const perHour = s.clicksPerBatch * 3600000 / s.clickIntervalMs;
         let status;
@@ -672,7 +706,7 @@ class Engine extends EventEmitter {
         else if (r.refreshing) status = 'reconnecting';
         else if (r.held) status = 'testing';
         else if (this.errors.has(routeKey(r.route), 'CC-CF-01')) status = 'needs-you';
-        else if (this.errors.has(null, 'CC-SITE-02')) status = 'waiting';
+        else if (this.errors.has(null, 'CC-SITE-02') || outage) status = 'waiting';
         else if (this.routeDown(r.route)) status = 'proxy-down';
         else if (issues.some(i => (this.errors.codes[i.code] || {}).group !== 'notice')) status = 'problem';
         else status = acct.type === 'off' ? 'no-clicks' : 'clicking';

@@ -1,14 +1,14 @@
 {
   "repository": "GothGirlZSB/zsb-hub-releases",
-  "tag": "v1.2.19",
-  "releaseId": 453235549,
-  "publishedAt": "2026-11-20T22:20:53Z",
-  "releaseUrl": "https://github.com/GothGirlZSB/zsb-hub-releases/releases/tag/v1.2.19",
+  "tag": "v1.2.20",
+  "releaseId": 454030304,
+  "publishedAt": "2026-11-21T22:32:44Z",
+  "releaseUrl": "https://github.com/GothGirlZSB/zsb-hub-releases/releases/tag/v1.2.20",
   "asset": {
-    "id": 773544603,
-    "name": "ZSB-Hub-Setup-1.2.19.exe",
-    "size": 106975978,
-    "digest": "sha256:a852d73fc8efee472662c5864186bd247ccb7dfa9f06f5991867a18d855bf66c"
+    "id": 777073353,
+    "name": "ZSB-Hub-Setup-1.2.20.exe",
+    "size": 106979979,
+    "digest": "sha256:35e4820ad213bac7ac7eafef6e389ee936ecb5fc82d5172a945ee8be750b7567"
   },
-  "fileCount": 81
+  "fileCount": 82
 }

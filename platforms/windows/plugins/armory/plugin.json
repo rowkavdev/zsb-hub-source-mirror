@@ -1,7 +1,7 @@
 {
   "id": "armory",
   "name": "Armory",
-  "version": "1.21.0",
+  "version": "1.21.1",
   "description": "Star farming for the Armory: one list of accounts and the games they farm XP with (battles, jackpot, upgrade, Guess the Rank, blackjack, crash, dice and plinko (by the Games plugin when it is on, otherwise by the Armory itself)). Keeps every pass going. Credits are spent by hand in the Armory shop tab. Starts off, in practice mode.",
   "minCore": "1.2.14",
   "main": "index.js",
@@ -11,7 +11,7 @@
   "settings": {
     "accounts": {
       "type": "accounts",
-      "label": "Star farming accounts"
+      "label": "Accounts"
     },
     "passes": {
       "type": "boolean",
@@ -133,7 +133,7 @@
     },
     "keepTokens": {
       "type": "number",
-      "label": "Keep tokens",
+      "label": "Keep tokens (never spend below this)",
       "default": 0,
       "min": 0
     },
@@ -196,7 +196,7 @@
     },
     "keepMoney": {
       "type": "number",
-      "label": "Keep cash ($)",
+      "label": "Keep cash ($, never spend below this)",
       "default": 0,
       "min": 0
     },

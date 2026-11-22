@@ -1,7 +1,7 @@
 {
   "id": "trader",
   "name": "Trader",
-  "version": "1.13.0",
+  "version": "1.13.1",
   "description": "Moves tokens and items between your accounts: one trade at a time, or by trade routes you set up (from which accounts, to which account, and what goes: tokens, terminals, skins over a price or by name). Both sides must be accounts in this app and clicking. Starts in practice mode.",
   "minCore": "1.2.14",
   "main": "index.js",
@@ -259,7 +259,7 @@
         },
         "fFloatRank": {
           "type": "choice",
-          "label": "Float Rank",
+          "label": "Float rank",
           "default": "",
           "when": "filt",
           "options": [
@@ -387,7 +387,7 @@
         },
         {
           "value": "rank",
-          "label": "Float Ranks"
+          "label": "Float ranks"
         }
       ],
       "page": true
@@ -464,7 +464,7 @@
     },
     "invFavs": {
       "type": "choice",
-      "label": "Favorites",
+      "label": "Favourites",
       "select": true,
       "default": "",
       "options": [
@@ -555,7 +555,7 @@
     },
     "invFloatRank": {
       "type": "choice",
-      "label": "Float Rank",
+      "label": "Float rank",
       "select": true,
       "default": "",
       "options": [
