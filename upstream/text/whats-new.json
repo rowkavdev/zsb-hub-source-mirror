@@ -1,5 +1,8 @@
 {
   "_how": "One entry per released version, newest first. Each line is one bullet; **bold** works. Shown once after an update, and used as the release notes on GitHub. npm run release refuses a version with no entry here.",
+  "1.2.24": [
+    "**Fancy is much lighter on laptops** — the glowing main button and the glow on cards with a problem used to redraw the window at your screen's full refresh rate (up to 240 times a second). They now move together with the background, about 30 times a second, so the power-saving graphics card on a two-card laptop has far less to do. They look the same."
+  ],
   "1.2.23": [
     "**Busy test many accounts at once** — tick accounts in select mode and Busy test them together, or press **Busy test all with problems** in Troubleshoot → Clicks. They run 4 at a time; the rest wait their turn.",
     "**Two connections on one IP** — if a proxy leaves on the same IP as this PC's connection (on a VPS: an extra IP that isn't set up on the server, so it falls back to the main one), the hub now says so and counts them as one IP. Accounts over that IP's limit move to a connection with room, instead of all of them getting batches refused. The Proxy manager (1.3.1) marks such a proxy too.",
