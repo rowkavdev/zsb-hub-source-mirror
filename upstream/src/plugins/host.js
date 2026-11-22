@@ -9,12 +9,14 @@
  * accounts an operation runs on, { all, ids }. An accounts setting always starts with none chosen;
  * "all" includes accounts added later. Plugins ask with ctx.settings.runsOn(key, accountId).
  * More: account (one account id, '' = none), and list ({ fields: { key: spec } }) — rows of the
- * other types, e.g. trade routes; a list starts empty and holds up to 50 rows.
+ * other types, e.g. trade routes; a list starts empty and holds up to 50 rows. A list's field may be a list
+ * itself (core 1.2.22+; its entries: number, text, boolean, choice, account), e.g. each set's own case queue.
  * manifest.tab: the title of the plugin's own tab (ctx.panel.tab) — its setup lives there, and the
  * Plugins tab shows "Open" instead of a settings dialog. manifest.group (optional): the tab bar drop-down its
  * tabs go in ('farming', 'trading', or a name of its own); without one, "More". A tab's content
  * may return pin: 'a few words' (e.g. 'running'): while set, the tab sits on the bar by itself with those words.
- * Any setting may have help (a line under it) and when: '<boolean key>' (shown only while that's on).
+ * Any setting may have help (a line under it) and when: '<boolean key>' (shown only while that's on). A list
+ * row's field may have when: '<field>' (shown while that field is set) and unless: '<field>' (hidden while it is).
  * A choice with dynamic: true gets its options from the plugin (ctx.settings.setOptions), e.g. a
  * list read from the site; until then any value is kept.
  *
@@ -195,7 +197,7 @@ class PluginHost {
         else if (spec.type === 'choice') {
             const opts = this.optionsFor(p, spec);
             if (!(spec.dynamic && !opts.length) && !opts.some(o => o.value === value)) return { ok: false, error: 'Not one of the choices' };
-            value = String(value);
+            value = value == null ? '' : String(value);   // a dynamic choice with no options yet has no default: '' (was "null")
         } else if (spec.type === 'accounts') {
             if (!value || typeof value !== 'object') return { ok: false, error: 'Not an account list' };
             const k = known();
@@ -609,9 +611,15 @@ class PluginHost {
             settings: Object.entries(p.manifest.settings || {}).filter(([, spec]) => !spec.hidden).map(([key, spec]) => ({
                 key, ...spec, value: ((this.cfg(id).settings || {})[key]) ?? settingDefault(spec),
                 ...(spec.type === 'choice' ? { options: this.optionsFor(p, spec, key) } : {}),
-                ...(spec.type === 'list' ? { fields: Object.fromEntries(Object.entries(spec.fields || {}).map(([fk, fs]) => [fk, fs.type === 'choice' ? { ...fs, options: this.optionsFor(p, fs, key + '.' + fk) } : fs])) } : {}),
+                ...(spec.type === 'list' ? { fields: this.rowFields(p, spec.fields, key) } : {}),
             })),
         }));
+    }
+
+    // A list's fields, each dynamic choice with its options (set as 'list.field', or 'list.field.field' a level down).
+    rowFields(p, fields, key) {
+        return Object.fromEntries(Object.entries(fields || {}).map(([fk, fs]) => [fk, fs.type === 'choice' ? { ...fs, options: this.optionsFor(p, fs, key + '.' + fk) }
+            : fs.type === 'list' ? { ...fs, fields: this.rowFields(p, fs.fields, key + '.' + fk) } : fs]));
     }
 
     async runAction(id, name, arg) {

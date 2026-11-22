@@ -1,5 +1,9 @@
 {
   "_how": "One entry per released version, newest first. Each line is one bullet; **bold** works. Shown once after an update, and used as the release notes on GitHub. npm run release refuses a version with no entry here.",
+  "1.2.22": [
+    "**Case queues in Opener sets** (Opener 1.17.0) — asked for by a user: under More options → Sets, a set can now open A queue of cases instead of one item. Its accounts open a batch of each of its cases in order, with the set's own buying rules, its own Rounds, or Loop forever until you press Stop. Each set can have a different queue, so different accounts can work through different cases at the same time. The set shows its first case's picture, and the page says which batch and round each account is on.",
+    "**Lists inside settings rows** — plugin settings can now hold a list inside a row (the Opener's set queues are the first), with Add, Move up and Remove for each entry."
+  ],
   "1.2.21": [
     "**Graphs on the Overview** — under the tiles, pick a Graph: Income, accounts Clicking, or the Money, Tokens and Net worth your accounts gained or lost, over 24 hours (a bar an hour) or 7 days (a bar per 6 hours). Off by default, and nothing is loaded while it's off. Money, Tokens and Net worth are recorded from this version on.",
     "**Graphs on plugin pages** — plugins can now draw a bar chart. The Opener's stats are first: pick a Graph (Opened, Drops worth or Return) to see it per hour, day or week. Off by default, so nothing extra is drawn unless you ask.",

@@ -560,6 +560,15 @@ table.wrap td { white-space: normal; }
 table.wrap td:first-child, table.wrap td:last-child { white-space: nowrap; }
 .prow-nl { grid-column-start: 1; }
 .prow-dep { border-left: 2px solid var(--line-2); padding-left: 10px; margin-left: 19px; }
+/* A list inside a list row (e.g. a set's own case queue): one line per entry, its buttons at the end. */
+.psubs { display: grid; gap: 6px; }
+.psub { display: flex; flex-wrap: wrap; align-items: end; gap: 6px 10px; border: 1px solid var(--line); border-radius: var(--r-s); padding: 8px 10px; }
+.psub > .prow-f { flex: 1 1 200px; }
+.psub > .prow-f:has(> input[type="number"]) { flex: 0 1 140px; }
+.psub > .pbtns { margin-left: auto; }
+/* The first entry's Move up: kept for its room (so every entry's fields line up), not shown. */
+.pbtn-ghost { visibility: hidden; }
+[data-ftype="list"] > button { justify-self: start; }
 .prow-bool.prow-dep { margin-left: 19px; }
 .pshop { display: flex; flex-direction: column; gap: 8px; }
 .pshop-row { display: grid; grid-template-columns: 1fr 96px auto; gap: 10px; align-items: center; padding: 10px 12px; border: 1px solid var(--line); border-radius: var(--r-m); background: var(--surface-2); }
