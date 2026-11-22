@@ -57,7 +57,16 @@ function createCore({ version, dataDir, bundledPluginsDir, transport, auth, cryp
 
     errors.on('change', () => engine.emit('change'));
     engine.on('refused', (id) => trouble.noteRefused(id));
-    const income = new Income({ dataDir, sampleMs: incomeSampleMs, sample: () => totals(store.accounts.map(a => engine.view(a))) });
+    // Income history: the income estimate, plus the fleet's money, tokens and net worth (each account's last report) for the Overview graphs.
+    const income = new Income({ dataDir, sampleMs: incomeSampleMs, sample: () => {
+        const views = store.accounts.map(a => engine.view(a)), t = totals(views);
+        t.reported = views.filter(v => v.me).length;   // after a restart accounts report one by one: the totals ramp up
+        for (const k of ['money', 'tokens', 'networth']) {
+            const known = views.map(v => v.me && Number(v.me[k])).filter(Number.isFinite);
+            if (known.length) t[k] = known.reduce((x, y) => x + y, 0);
+        }
+        return t;
+    } });
     // Discord Alerts + Daily report (src/core/notify.js).
     notify = createNotify({ store, log, errors, engine, plugins, income, version, ...(fetchFn ? { fetch: fetchFn } : {}), ...(notifyOpts || {}) });
 

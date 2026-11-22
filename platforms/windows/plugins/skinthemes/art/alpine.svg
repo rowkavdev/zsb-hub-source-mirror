@@ -1,0 +1,40 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="720" height="720" viewBox="0 0 720 720">
+<!-- Alpine camo: dappled patches (periwinkle, lavender, ice blue, white) over ink, thin dark streaks, and
+     topographic contour lines. Drawn by SVG noise filters, so the file stays small; the tile repeats seamlessly. -->
+<filter id="camo" x="0" y="0" width="720" height="720" filterUnits="userSpaceOnUse" color-interpolation-filters="sRGB">
+  <feTurbulence type="fractalNoise" baseFrequency="0.0065" numOctaves="4" seed="11" stitchTiles="stitch" result="n1"/>
+  <feTurbulence type="fractalNoise" baseFrequency="0.009" numOctaves="4" seed="23" stitchTiles="stitch" result="n2"/>
+  <feTurbulence type="fractalNoise" baseFrequency="0.008" numOctaves="4" seed="37" stitchTiles="stitch" result="n3"/>
+  <feTurbulence type="fractalNoise" baseFrequency="0.014" numOctaves="3" seed="41" stitchTiles="stitch" result="n4"/>
+  <feTurbulence type="turbulence" baseFrequency="0.011" numOctaves="2" seed="5" stitchTiles="stitch" result="n5"/>
+  <feTurbulence type="fractalNoise" baseFrequency="0.0042" numOctaves="3" seed="61" stitchTiles="stitch" result="n6"/>
+
+  <feFlood flood-color="#121320" result="ink"/>
+  <!-- each patch colour: its own noise, cut at a level (alpha = k * (noise - level)) -->
+  <feColorMatrix in="n1" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  45 0 0 0 -22.5" result="m1"/>
+  <feFlood flood-color="#7380d0"/><feComposite in2="m1" operator="in" result="peri"/>
+  <feColorMatrix in="n3" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  45 0 0 0 -24.6" result="m3"/>
+  <feFlood flood-color="#c4b3e6"/><feComposite in2="m3" operator="in" result="lav"/>
+  <feColorMatrix in="n2" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  45 0 0 0 -24.8" result="m2"/>
+  <feFlood flood-color="#bfe4f4"/><feComposite in2="m2" operator="in" result="ice"/>
+  <feColorMatrix in="n4" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  50 0 0 0 -30.5" result="m4"/>
+  <feFlood flood-color="#eef6fc"/><feComposite in2="m4" operator="in" result="hi"/>
+  <!-- thin dark streaks, like branches: where the turbulence is near zero -->
+  <feColorMatrix in="n5" type="matrix" values="0 0 0 0 0  0 0 0 0 0  0 0 0 0 0  -60 0 0 0 2.4" result="m5"/>
+  <feFlood flood-color="#05060b" flood-opacity=".85"/><feComposite in2="m5" operator="in" result="streak"/>
+  <!-- contour lines: one slow noise in 14 steps, then the step edges -->
+  <feColorMatrix in="n6" type="matrix" values="2.6 0 0 0 -0.8  2.6 0 0 0 -0.8  2.6 0 0 0 -0.8  0 0 0 0 1" result="h"/>
+  <feComponentTransfer in="h" result="steps">
+    <feFuncR type="discrete" tableValues="0 .07 .14 .21 .28 .35 .42 .5 .57 .64 .71 .78 .85 .92"/>
+    <feFuncG type="discrete" tableValues="0 .07 .14 .21 .28 .35 .42 .5 .57 .64 .71 .78 .85 .92"/>
+    <feFuncB type="discrete" tableValues="0 .07 .14 .21 .28 .35 .42 .5 .57 .64 .71 .78 .85 .92"/>
+  </feComponentTransfer>
+  <feConvolveMatrix in="steps" order="3" kernelMatrix="0 -1 0 -1 4 -1 0 -1 0" edgeMode="wrap" preserveAlpha="true" result="edge"/>
+  <feColorMatrix in="edge" type="matrix" values="0 0 0 0 .86  0 0 0 0 .95  0 0 0 0 1  5 0 0 0 0" result="lines"/>
+  <feMerge>
+    <feMergeNode in="ink"/><feMergeNode in="peri"/><feMergeNode in="lav"/><feMergeNode in="ice"/><feMergeNode in="hi"/>
+    <feMergeNode in="streak"/><feMergeNode in="lines"/>
+  </feMerge>
+</filter>
+<rect width="720" height="720" filter="url(#camo)"/>
+</svg>

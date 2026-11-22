@@ -1,8 +1,8 @@
 {
   "id": "opener",
   "name": "Opener",
-  "version": "1.15.3",
-  "description": "A tool for opening cases, capsules or collections on the accounts you choose: Practice run shows what it would do, Open now buys a set amount (or what the spare cash covers, or uses what is in stock), opens it all and keeps or sells the drops. Tracks XP and rank-ups.",
+  "version": "1.16.0",
+  "description": "A tool for opening cases, capsules or collections on the accounts you choose: Practice run shows what it would do, Open now buys a set amount (or what the spare cash covers, or uses what is in stock), opens it all and keeps or sells the drops. Keeps stats of every open: per case and per account, by day, with the best drop.",
   "minCore": "1.2.14",
   "main": "index.js",
   "tab": "Opener",
@@ -13,11 +13,61 @@
       "type": "accounts",
       "label": "Accounts"
     },
+    "openMode": {
+      "type": "choice",
+      "label": "Open",
+      "default": "one",
+      "options": [
+        {
+          "value": "one",
+          "label": "One item"
+        },
+        {
+          "value": "queue",
+          "label": "A queue of cases"
+        }
+      ]
+    },
     "item": {
       "type": "choice",
       "label": "Item",
       "dynamic": true,
       "default": ""
+    },
+    "queue": {
+      "type": "list",
+      "label": "Case queue",
+      "itemLabel": "case",
+      "reorder": true,
+      "help": "Opened in order, top to bottom: a batch of each, then the next.",
+      "fields": {
+        "item": {
+          "type": "choice",
+          "label": "Case",
+          "dynamic": true,
+          "default": ""
+        },
+        "amount": {
+          "type": "number",
+          "label": "How many",
+          "help": "Each batch: bought and opened (Buy a set amount), the most to buy with spare cash, or the most to open from stock.",
+          "default": 100,
+          "min": 1
+        }
+      }
+    },
+    "queueRounds": {
+      "type": "number",
+      "label": "Rounds (times through the queue per Open now)",
+      "default": 1,
+      "min": 1,
+      "max": 100
+    },
+    "queueForever": {
+      "type": "boolean",
+      "label": "Loop forever",
+      "help": "Goes round the queue again and again until you press Stop. It also stops once a whole round opens nothing (no cash or stock left).",
+      "default": false
     },
     "source": {
       "type": "choice",
@@ -337,6 +387,67 @@
       "label": "Only post drops worth at least ($, 0 = all)",
       "default": 0,
       "min": 0
+    },
+    "statsRange": {
+      "type": "choice",
+      "label": "Time",
+      "default": "today",
+      "options": [
+        {
+          "value": "today",
+          "label": "Today"
+        },
+        {
+          "value": "week",
+          "label": "7 days"
+        },
+        {
+          "value": "month",
+          "label": "30 days"
+        },
+        {
+          "value": "all",
+          "label": "All time"
+        }
+      ]
+    },
+    "statsBy": {
+      "type": "choice",
+      "label": "Show",
+      "default": "case",
+      "options": [
+        {
+          "value": "case",
+          "label": "By case"
+        },
+        {
+          "value": "account",
+          "label": "By account"
+        }
+      ]
+    },
+    "statsGraph": {
+      "type": "choice",
+      "label": "Graph",
+      "default": "off",
+      "options": [
+        {
+          "value": "off",
+          "label": "Off"
+        },
+        {
+          "value": "opened",
+          "label": "Opened"
+        },
+        {
+          "value": "value",
+          "label": "Drops worth"
+        },
+        {
+          "value": "ret",
+          "label": "Return"
+        }
+      ]
     },
     "turnMs": {
       "type": "number",

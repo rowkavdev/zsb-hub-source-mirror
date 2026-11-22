@@ -1,23 +1,26 @@
 // The curated looks: a whole panel styled after a skin (colours, a heading font, small details), no picture of it.
 // Each look: { id, name, font: { file, family } (headings), body: { file, family } (all
 // other text: a variable font, every weight in one file), heads (where the heading font goes, when not HEADS), vars,
-// css(art) } where art(file) is ctx.panel.asset for the plugin's art/ and fonts/ folders. The heading font goes on the
-// brand, tabs, section titles, card names and plugin card heads; code and the log keep the panel's monospace font.
+// wash (the page background over --bg: CSS backgrounds, or art => them), fill, css(art) } where art(file) is
+// ctx.panel.asset for the plugin's art/ and fonts/ folders. A font may instead be { stack } (fonts on the user's
+// computer, by name; nothing bundled). The heading font goes on the brand, tabs, section titles, card names and plugin
+// card heads; code and the log keep the panel's monospace font.
 
 const HEADS = '.brand, .tabs button, .section-title, .c-title .name, .pcard-head, .modal-box h2, main h2';
 const FALLBACK = 'system-ui, -apple-system, "Segoe UI", Roboto, sans-serif';
 
 // What every look shares: its fonts, a wash behind the page, the selected tab and main buttons.
 function base(l, art) {
-    const face = (f, weights) => `@font-face { font-family: "${f.family}"; src: url(${art('fonts/' + f.file)}) format("woff2");${weights ? ` font-weight: ${weights};` : ''} font-display: swap; }`;
+    const face = (f, weights) => (f.file ? `@font-face { font-family: "${f.family}"; src: url(${art('fonts/' + f.file)}) format("woff2");${weights ? ` font-weight: ${weights};` : ''} font-display: swap; }` : '');
+    const fam = (f) => f.stack || `"${f.family}"`;
     return [
         face(l.body, '100 900'),
-        l.font.family === l.body.family ? '' : face(l.font),
+        l.font.file === l.body.file ? '' : face(l.font),
         // lining figures: some of these fonts draw old-style numbers by default, which look off in money columns
         l.light ? `:root { color-scheme: light; }` : '',
-        `html, body { font-family: "${l.body.family}", ${FALLBACK}; font-variant-numeric: lining-nums; }`,
-        `${l.heads || HEADS} { font-family: "${l.font.family}", "${l.body.family}", ${FALLBACK}; }`,
-        `html { background: ${l.wash}, var(--bg); background-attachment: fixed; } body { background: transparent; }`,
+        `html, body { font-family: ${fam(l.body)}, ${FALLBACK}; font-variant-numeric: lining-nums; }`,
+        `${l.heads || HEADS} { font-family: ${fam(l.font)}, ${fam(l.body)}, ${FALLBACK}; }`,
+        `html { background: ${typeof l.wash === 'function' ? l.wash(art) : l.wash}, var(--bg); background-attachment: fixed; } body { background: transparent; }`,
         `.tabs button[aria-selected="true"] { background: ${l.fill}; color: var(--on-white); }`,
         `button.primary { background: ${l.fill}; border-color: transparent; color: var(--on-white); }`,
         `.top::after { content: ""; position: absolute; left: 0; right: 0; bottom: -1px; pointer-events: none; }`,
@@ -121,6 +124,35 @@ const LOOKS = [
             `.section-title { color: #ff9ccc; }`,
             `:root { --scene-2: #8a5cff; }`,   // the Fancy scenes' second colour: violet
             `.brand { font-weight: 700; }`,
+        ],
+    },
+    {
+        id: 'alpine', name: 'USP-S | Alpine Camo',
+        // SimSun (asked for by the user who suggested this look) is a Windows font: named, never bundled. Without it
+        // (Linux, macOS) another Song-style serif if there is one, else the panel's own sans.
+        font: { stack: 'SimSun, NSimSun, "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC"' },
+        body: { stack: 'SimSun, NSimSun, "Songti SC", "Noto Serif CJK SC", "Source Han Serif SC"' },
+        // the vanilla panel, except its surfaces: translucent grey over a dappled camo (periwinkle, lavender, ice blue,
+        // white over ink) with thin contour lines, like the old CS:GO loading screen in the skin's colours
+        vars: {
+            bg: '#0c0d15', surface: 'rgba(40, 40, 47, .8)', 'surface-2': 'rgba(56, 56, 64, .82)', 'surface-3': 'rgba(74, 74, 84, .86)',
+            line: 'rgba(255, 255, 255, .09)', 'line-2': 'rgba(255, 255, 255, .17)',
+            text: '#f6f6f8', 'text-2': '#d0d0d8', muted: '#ababb5', white: '#ffffff', 'on-white': '#000000',
+        },
+        // the camo, dimmed so text over it reads
+        wash: (art) => `linear-gradient(rgb(8 9 15 / .66), rgb(8 9 15 / .66)), url(${art('art/alpine.svg')}) 0 0 / 720px 720px`,
+        fill: 'var(--white)',
+        css: () => [
+            `:root { --panel-grad: linear-gradient(180deg, rgb(54 54 62 / .76), rgb(38 38 45 / .8)); }`,
+            // what opens over the page stays solid: menus and dialogs
+            `.menu, .tab-menu { background: rgb(46 46 54 / .98); } .modal-box { background: rgb(40 40 48 / .97); }`,
+            // tables are surfaces here too (still see-through)
+            `.table-wrap { background: var(--surface); }`,
+            // text straight on the camo (notes, headings, chart labels) gets a dark shadow to stand on; not inside surfaces
+            `main { text-shadow: 0 1px 2px rgb(0 0 0 / .9), 0 0 8px rgb(4 5 10 / .8); }`,
+            `main :is(.card, .row, .stat, .pcard, .phero, .kpi, .table-wrap, .tabs, .seg, .banner, .pnotice, .ov-rank, .menu, button, input, select, textarea) { text-shadow: none; }`,
+            // its accent is white: the Fancy scenes in ice blue and lavender instead
+            `:root { --scene: #bfe4f4; --scene-2: #c4b3e6; }`,
         ],
     },
     {
